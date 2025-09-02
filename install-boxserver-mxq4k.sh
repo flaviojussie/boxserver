@@ -67,7 +67,7 @@ FILEBROWSER_PORT="${FILEBROWSER_PORT:-8080}"
 COCKPIT_PORT="${COCKPIT_PORT:-9090}"
 
 # Modo de configuração (apenas interativo)
-INTERACTIVE_MODE="true"
+INTERACTIVE_MODE="false"
 
 ################################################################################
 # FUNÇÕES AUXILIARES
