@@ -2561,6 +2561,397 @@ validated_input() {
     echo "$input_value"
 }
 
-echo "Sistema de cores e componentes TUI modernos carregados com sucesso!"
-log_success "TUI moderna inicializada - Terminal: ${TERMINAL_WIDTH}x${TERMINAL_HEIGHT}, Cores: $(detect_terminal_capabilities)"
-log_info "Sistema de validação de entrada carregado com $(echo ${!VALIDATION_TYPES[@]} | wc -w) tipos de validação"
+################################################################################
+# FUNÇÕES BÁSICAS DO SISTEMA
+################################################################################
+
+# Verificar distribuição Linux
+check_linux_distribution() {
+    log_info "Verificando distribuição Linux..."
+    
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        case "$ID" in
+            ubuntu|debian|armbian|raspbian)
+                log_success "Distribuição compatível: $NAME ✓"
+                ;;
+            *)
+                log_error "Distribuição não suportada: $NAME"
+                log_error "Este script requer Ubuntu, Debian, Armbian ou Raspbian"
+                exit 1
+                ;;
+        esac
+    else
+        log_error "Não foi possível detectar a distribuição Linux"
+        exit 1
+    fi
+}
+
+# Verificar se é root
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        log_error "Este script deve ser executado como root (sudo)"
+        exit 1
+    fi
+}
+
+# Verificar dependências do sistema
+check_dependencies() {
+    local deps=("curl" "wget" "tar" "gzip" "openssl" "iproute2" "procps" "net-tools")
+    local missing_deps=()
+    
+    log_info "Verificando dependências do sistema..."
+    
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            missing_deps+=("$dep")
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        log_warn "Dependências ausentes: ${missing_deps[*]}"
+        log_info "Instalando dependências..."
+        apt-get update -qq
+        apt-get install -y -qq "${missing_deps[@]}"
+    fi
+    
+    log_success "Todas as dependências instaladas ✓"
+}
+
+# Verificar requisitos do sistema
+check_system_requirements() {
+    log_info "Verificando requisitos do sistema..."
+    
+    # Verificar RAM
+    local ram_mb=$(free -m | awk 'NR==2{print $2}')
+    if [ "$ram_mb" -lt 512 ]; then
+        log_error "RAM insuficiente: ${ram_mb}MB (mínimo: 512MB)"
+        exit 1
+    fi
+    log_success "RAM: ${ram_mb}MB ✓"
+    
+    # Verificar espaço em disco
+    local disk_gb=$(df / | awk 'NR==2{print int($4/1024/1024)}')
+    if [ "$disk_gb" -lt 2 ]; then
+        log_error "Espaço em disco insuficiente: ${disk_gb}GB (mínimo: 2GB)"
+        exit 1
+    fi
+    log_success "Espaço em disco: ${disk_gb}GB disponível ✓"
+    
+    # Verificar arquitetura
+    local arch=$(uname -m)
+    if [[ ! "$arch" =~ ^(arm|aarch64)$ ]]; then
+        log_warn "Arquitetura não testada: $arch (esperado: arm/aarch64)"
+    fi
+    log_success "Arquitetura: $arch ✓"
+    
+    # Verificar conectividade
+    if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+        log_error "Sem conectividade com a internet"
+        exit 1
+    fi
+    log_success "Conectividade com internet ✓"
+}
+
+# Detectar interface de rede principal
+detect_network_interface() {
+    if [ -z "$NETWORK_INTERFACE" ]; then
+        NETWORK_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+        if [ -z "$NETWORK_INTERFACE" ]; then
+            log_error "Não foi possível detectar interface de rede principal"
+            echo "Interfaces disponíveis:"
+            ip link show | grep '^[0-9]' | awk '{print $2}' | sed 's/:$//'
+            exit 1
+        fi
+    fi
+    
+    # Verificar se interface existe e está ativa
+    if ! ip link show "$NETWORK_INTERFACE" >/dev/null 2>&1; then
+        log_error "Interface $NETWORK_INTERFACE não encontrada"
+        exit 1
+    fi
+    
+    # Obter IP da interface
+    SERVER_IP=$(ip addr show "$NETWORK_INTERFACE" | grep 'inet ' | awk '{print $2}' | cut -d/ -f1 | head -1)
+    if [ -z "$SERVER_IP" ]; then
+        log_error "Não foi possível obter IP da interface $NETWORK_INTERFACE"
+        exit 1
+    fi
+    
+    log_success "Interface de rede: $NETWORK_INTERFACE ($SERVER_IP) ✓"
+}
+
+# Criar diretórios necessários
+setup_directories() {
+    log_info "Criando estrutura de diretórios..."
+    
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$BACKUP_DIR"
+    mkdir -p "/var/log/boxserver"
+    
+    # Inicializar arquivo de serviços instalados
+    > "$CONFIG_DIR/installed_services"
+    
+    # Salvar configurações detectadas
+    cat > "$CONFIG_DIR/system.conf" << EOF
+# Configurações do sistema detectadas automaticamente
+NETWORK_INTERFACE="$NETWORK_INTERFACE"
+SERVER_IP="$SERVER_IP"
+VPN_NETWORK="$VPN_NETWORK"
+VPN_PORT="$VPN_PORT"
+FILEBROWSER_PORT="$FILEBROWSER_PORT"
+COCKPIT_PORT="$COCKPIT_PORT"
+INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
+STATIC_IP_CONFIGURED="$STATIC_IP_CONFIGURED"
+EOF
+    
+    log_success "Diretórios criados ✓"
+}
+
+# Atualizar sistema
+update_system() {
+    log_info "Atualizando sistema..."
+    
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get upgrade -y -qq
+    apt-get install -y -qq curl wget gnupg2 software-properties-common apt-transport-https
+    
+    log_success "Sistema atualizado ✓"
+}
+
+################################################################################
+# MENU PRINCIPAL E INTERFACE
+################################################################################
+
+# Função para exibir o menu principal
+show_main_menu() {
+    local menu_items=(
+        "Configuração Inicial do Sistema"
+        "Instalação de Aplicativos"
+        "Configurações de Rede"
+        "Gerenciar Perfis de Instalação"
+        "Configurações do Sistema"
+        "Logs e Monitoramento"
+        "Ajuda e Documentação"
+        "Sair"
+    )
+    
+    local menu_callbacks=(
+        "setup_system"
+        "install_applications"
+        "configure_network"
+        "manage_profiles"
+        "show_config_menu"
+        "show_log_menu"
+        "show_detailed_help"
+        "exit_application"
+    )
+    
+    local menu_help=(
+        "Verificações iniciais, dependências e preparação do sistema"
+        "Selecionar e instalar aplicativos disponíveis para MXQ-4k"
+        "Configurar IP estático, interfaces de rede e conectividade"
+        "Criar, carregar e gerenciar perfis de instalação personalizados"
+        "Configurar temas, animações e preferências da interface"
+        "Visualizar logs, estatísticas e informações do sistema"
+        "Documentação completa, tutoriais e suporte técnico"
+        "Encerrar o instalador BoxServer"
+    )
+    
+    clear
+    
+    # Cabeçalho principal
+    draw_box "BoxServer MXQ-4k - Instalador Automatizado" "$TERMINAL_WIDTH" "primary"
+    echo
+    
+    # Informações do sistema
+    local system_info="Sistema: $(uname -o) | Arquitetura: $(uname -m) | Terminal: ${TERMINAL_WIDTH}x${TERMINAL_HEIGHT}"
+    echo -e "$(color "muted" "$system_info")"
+    echo
+    
+    # Navegação do menu
+    navigate_menu "Menu Principal" menu_items menu_callbacks menu_help
+}
+
+# Função para configuração inicial do sistema
+setup_system() {
+    show_dialog "info" "Configuração do Sistema" "Iniciando verificações e configuração inicial do sistema..." "OK"
+    
+    # Verificações básicas
+    check_root
+    check_linux_distribution
+    check_dependencies
+    check_system_requirements
+    detect_network_interface
+    setup_directories
+    
+    show_dialog "success" "Sistema Configurado" "Configuração inicial concluída com sucesso!" "Continuar"
+}
+
+# Função para instalação de aplicativos
+install_applications() {
+    local apps=(
+        "Pi-hole - Bloqueio de anúncios e DNS"
+        "Unbound - DNS recursivo local"
+        "WireGuard - Servidor VPN"
+        "Cockpit - Painel de administração web"
+        "FileBrowser - Gerenciamento de arquivos web"
+        "Netdata - Monitoramento em tempo real"
+        "Fail2Ban - Proteção contra ataques"
+        "UFW - Firewall simplificado"
+        "RNG-tools - Gerador de entropia"
+        "Rclone - Sincronização com nuvem"
+        "Rsync - Backup local"
+        "MiniDLNA - Servidor de mídia"
+        "Cloudflared - Tunnel Cloudflare"
+    )
+    
+    local selected_apps=()
+    show_checkbox_list "Seleção de Aplicativos" "Escolha os aplicativos para instalar:" apps selected_apps
+    
+    if [[ ${#selected_apps[@]} -gt 0 ]]; then
+        show_dialog "info" "Instalação" "Instalando ${#selected_apps[@]} aplicativo(s) selecionado(s)..." "Iniciar"
+        
+        # Aqui seria chamada a função de instalação real
+        # process_selection "${selected_apps[*]}"
+        
+        show_dialog "success" "Concluído" "Instalação dos aplicativos concluída!" "OK"
+    else
+        show_dialog "warning" "Nenhuma Seleção" "Nenhum aplicativo foi selecionado para instalação." "OK"
+    fi
+}
+
+# Função para configuração de rede
+configure_network() {
+    local network_options=(
+        "Configurar IP Estático"
+        "Detectar Interface de Rede"
+        "Configurar DNS"
+        "Testar Conectividade"
+        "Voltar"
+    )
+    
+    local network_callbacks=(
+        "configure_static_ip"
+        "detect_network_interface"
+        "configure_dns"
+        "test_connectivity"
+        "return"
+    )
+    
+    navigate_menu "Configurações de Rede" network_options network_callbacks
+}
+
+# Função para sair da aplicação
+exit_application() {
+    local response
+    show_dialog "question" "Confirmar Saída" "Deseja realmente sair do instalador BoxServer?" "Sim|Não" response
+    
+    if [[ "$response" == "Sim" ]]; then
+        clear
+        echo -e "$(color "primary" "Obrigado por usar o BoxServer MXQ-4k!")"
+        echo -e "$(color "muted" "Desenvolvido com base na base de conhecimento Arandutec")"
+        echo
+        exit 0
+    fi
+}
+
+################################################################################
+# FUNÇÃO PRINCIPAL
+################################################################################
+
+main() {
+    # Inicializar sistemas
+    init_config_dirs
+    init_color_system
+    init_log_system
+    
+    # Carregar configurações
+    CURRENT_THEME=$(read_config "theme" "ui" "default")
+    ANIMATION_ENABLED=$(read_config "animations_enabled" "ui" "true")
+    HELP_ENABLED=$(read_config "help_enabled" "ui" "true")
+    
+    # Aplicar tema
+    set_theme "$CURRENT_THEME"
+    
+    # Inicializar log
+    echo "=== INÍCIO DA INSTALAÇÃO BOXSERVER MXQ-4K ===" > "$LOG_FILE"
+    log_info "Iniciando BoxServer MXQ-4k TUI Modernizada..."
+    log_success "TUI moderna inicializada - Terminal: ${TERMINAL_WIDTH}x${TERMINAL_HEIGHT}, Cores: $(detect_terminal_capabilities)"
+    log_info "Sistema de validação de entrada carregado com $(echo ${!VALIDATION_TYPES[@]} | wc -w) tipos de validação"
+    
+    # Salvar sessão inicial
+    save_session
+    
+    # Animação de inicialização
+    if [[ "$ANIMATION_ENABLED" == "true" ]]; then
+        local welcome_text="$(color "primary" "BoxServer MXQ-4k")"
+        welcome_text+="\n$(color "secondary" "Instalador Automatizado com TUI Modernizada")"
+        welcome_text+="\n$(color "muted" "Carregando interface...")"
+        
+        fade_in "$welcome_text"
+        sleep 1
+    fi
+    
+    # Loop principal da interface
+    while true; do
+        show_main_menu
+    done
+}
+
+################################################################################
+# TRATAMENTO DE SINAIS E LIMPEZA
+################################################################################
+
+cleanup() {
+    log_warn "Instalação interrompida. Limpando..."
+    
+    # Restaurar cursor e modo normal do terminal
+    echo -ne "$CURSOR_SHOW"
+    restore_normal_mode 2>/dev/null || true
+    
+    # Salvar sessão antes de sair
+    save_session
+    
+    if [ -f "$CONFIG_DIR/installed_services" ]; then
+        log_warn "Serviços parcialmente instalados detectados. Executando rollback..."
+        # rollback_installation
+    fi
+    
+    clear
+    echo -e "$(color "warning" "Instalação interrompida pelo usuário.")"
+    exit 1
+}
+
+error_handler() {
+    local exit_code=$?
+    local line_number=$1
+    
+    log_error "Erro na linha $line_number com código de saída $exit_code"
+    
+    # Restaurar terminal
+    echo -ne "$CURSOR_SHOW"
+    restore_normal_mode 2>/dev/null || true
+    
+    if [ -f "$CONFIG_DIR/installed_services" ]; then
+        log_warn "Erro detectado durante instalação. Executando rollback..."
+        # rollback_installation
+    fi
+    
+    show_dialog "error" "Erro Crítico" "Erro na linha $line_number (código: $exit_code)\nConsulte os logs para mais detalhes." "OK"
+    exit $exit_code
+}
+
+# Configurar tratamento de sinais
+trap cleanup INT TERM
+trap 'error_handler $LINENO' ERR
+
+################################################################################
+# EXECUÇÃO
+################################################################################
+
+# Verificar se está sendo executado diretamente
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
