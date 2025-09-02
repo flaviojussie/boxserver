@@ -67,7 +67,7 @@ FILEBROWSER_PORT="${FILEBROWSER_PORT:-8080}"
 COCKPIT_PORT="${COCKPIT_PORT:-9090}"
 
 # Modo de configuração (apenas interativo)
-INTERACTIVE_MODE="false"
+INTERACTIVE_MODE="true"
 
 ################################################################################
 # FUNÇÕES AUXILIARES
@@ -1812,8 +1812,6 @@ process_selection() {
     local selection="$1"
     local apps_to_install=()
     
-
-    
     if [[ "$selection" == *"99"* ]]; then
         apps_to_install=(1 2 3 4 5 6 7 8 9 10 11 12 13)
         
@@ -2235,8 +2233,6 @@ error_handler() {
 }
 
 trap cleanup INT TERM
-set -e
-trap 'error_handler $LINENO' ERR
 
 ################################################################################
 # EXECUÇÃO
