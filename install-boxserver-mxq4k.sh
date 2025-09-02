@@ -2858,6 +2858,44 @@ exit_application() {
 }
 
 ################################################################################
+# SISTEMA DE LOGGING
+################################################################################
+
+# Função para inicializar sistema de logging
+init_log_system() {
+    # Criar diretório de logs se não existir
+    local log_dir="$(dirname "$LOG_FILE")"
+    if [[ ! -d "$log_dir" ]]; then
+        mkdir -p "$log_dir" 2>/dev/null || {
+            echo "Erro: Não foi possível criar diretório de logs: $log_dir" >&2
+            return 1
+        }
+    fi
+    
+    # Verificar permissões de escrita
+    if [[ ! -w "$log_dir" ]]; then
+        echo "Erro: Sem permissão de escrita no diretório de logs: $log_dir" >&2
+        return 1
+    fi
+    
+    # Inicializar arquivo de log
+    if [[ ! -f "$LOG_FILE" ]]; then
+        touch "$LOG_FILE" 2>/dev/null || {
+            echo "Erro: Não foi possível criar arquivo de log: $LOG_FILE" >&2
+            return 1
+        }
+    fi
+    
+    # Rotacionar logs se muito grandes (>10MB)
+    if [[ -f "$LOG_FILE" ]] && [[ $(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt 10485760 ]]; then
+        mv "$LOG_FILE" "${LOG_FILE}.old" 2>/dev/null
+        touch "$LOG_FILE"
+    fi
+    
+    return 0
+}
+
+################################################################################
 # FUNÇÃO PRINCIPAL
 ################################################################################
 
