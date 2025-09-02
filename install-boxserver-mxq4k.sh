@@ -1,11 +1,12 @@
 #!/bin/bash
 
 ################################################################################
-# Script de Instalação Automatizado - Boxserver MXQ-4k
+# Script de Instalação Automatizado - Boxserver MXQ-4k (TUI Modernizada)
 # 
 # DESCRIÇÃO:
 #   Script completo para configuração automatizada de servidor doméstico
 #   em dispositivos MXQ-4k com chip RK322x e memória NAND limitada.
+#   Versão modernizada com TUI profissional e robusta.
 #
 # REQUISITOS DE HARDWARE:
 #   - CPU: RK322X (ARM Cortex-A7)
@@ -17,47 +18,23 @@
 #   - Sistema: Debian/Ubuntu/Armbian
 #   - Acesso: root/sudo
 #   - Internet: Conexão ativa
-#
-# APLICATIVOS DISPONÍVEIS:
-#   1. Pi-hole - Bloqueio de anúncios e DNS
-#   2. Unbound - DNS recursivo local
-#   3. WireGuard - Servidor VPN
-#   4. Cockpit - Painel de administração web
-#   5. FileBrowser - Gerenciamento de arquivos web
-#   6. Netdata - Monitoramento em tempo real
-#   7. Fail2Ban - Proteção contra ataques
-#   8. UFW - Firewall simplificado
-#   9. RNG-tools - Gerador de entropia
-#   10. Rclone - Sincronização com nuvem
-#   11. Rsync - Backup local
-#   12. MiniDLNA - Servidor de mídia
-#   13. Cloudflared - Tunnel Cloudflare
-#
-# USO:
-#   sudo bash install-boxserver-mxq4k.sh
+#   - Terminal: Suporte a cores ANSI (recomendado 256 cores)
 #
 # AUTOR: Baseado na base de conhecimento Boxserver Arandutec
 # DATA: $(date '+%d/%m/%Y')
-# VERSÃO: 1.0
+# VERSÃO: 2.0 (TUI Modernizada)
 ################################################################################
 
-set -euo pipefail  # Modo rigoroso: sair em erro, variáveis não definidas, pipes
+set -euo pipefail
 
 # Configurações globais
-SCRIPT_NAME="install-boxserver-mxq4k"
+SCRIPT_NAME="install-boxserver-mxq4k-modern"
 LOG_FILE="/var/log/${SCRIPT_NAME}.log"
 CONFIG_DIR="/etc/boxserver"
 BACKUP_DIR="/var/backups/boxserver"
 STATIC_IP_CONFIGURED="false"
 
-# Cores para output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-# Variáveis de ambiente (podem ser pré-definidas)
+# Variáveis de ambiente
 NETWORK_INTERFACE="${NETWORK_INTERFACE:-}"
 SERVER_IP="${SERVER_IP:-}"
 VPN_NETWORK="${VPN_NETWORK:-10.200.200.0/24}"
@@ -66,2179 +43,2524 @@ PIHOLE_PASSWORD="${PIHOLE_PASSWORD:-}"
 FILEBROWSER_PORT="${FILEBROWSER_PORT:-8080}"
 COCKPIT_PORT="${COCKPIT_PORT:-9090}"
 
-# Modo de configuração (apenas interativo)
+# Modo de configuração
 INTERACTIVE_MODE="true"
+CURRENT_THEME="default"
+TERMINAL_WIDTH=$(tput cols 2>/dev/null || echo 80)
+TERMINAL_HEIGHT=$(tput lines 2>/dev/null || echo 24)
 
 ################################################################################
-# FUNÇÕES AUXILIARES
+# SISTEMA DE CORES MODERNO
 ################################################################################
 
-# Função de logging
+# Detecção de capacidades do terminal
+detect_terminal_capabilities() {
+    local colors=0
+    
+    # Detectar suporte a cores
+    if command -v tput >/dev/null 2>&1; then
+        colors=$(tput colors 2>/dev/null || echo 0)
+    fi
+    
+    # Verificar variáveis de ambiente
+    case "$TERM" in
+        *-256color|*-256) colors=256 ;;
+        *color*) [ $colors -lt 8 ] && colors=8 ;;
+        xterm*|screen*|tmux*) [ $colors -lt 8 ] && colors=8 ;;
+    esac
+    
+    echo $colors
+}
+
+# Configuração de temas de cores
+init_color_system() {
+    local terminal_colors=$(detect_terminal_capabilities)
+    
+    # Cores básicas ANSI (compatibilidade)
+    if [ $terminal_colors -ge 8 ]; then
+        # Cores primárias
+        export COLOR_BLACK='\033[0;30m'
+        export COLOR_RED='\033[0;31m'
+        export COLOR_GREEN='\033[0;32m'
+        export COLOR_YELLOW='\033[0;33m'
+        export COLOR_BLUE='\033[0;34m'
+        export COLOR_MAGENTA='\033[0;35m'
+        export COLOR_CYAN='\033[0;36m'
+        export COLOR_WHITE='\033[0;37m'
+        
+        # Cores brilhantes
+        export COLOR_BRIGHT_BLACK='\033[1;30m'
+        export COLOR_BRIGHT_RED='\033[1;31m'
+        export COLOR_BRIGHT_GREEN='\033[1;32m'
+        export COLOR_BRIGHT_YELLOW='\033[1;33m'
+        export COLOR_BRIGHT_BLUE='\033[1;34m'
+        export COLOR_BRIGHT_MAGENTA='\033[1;35m'
+        export COLOR_BRIGHT_CYAN='\033[1;36m'
+        export COLOR_BRIGHT_WHITE='\033[1;37m'
+        
+        # Cores de fundo
+        export COLOR_BG_BLACK='\033[40m'
+        export COLOR_BG_RED='\033[41m'
+        export COLOR_BG_GREEN='\033[42m'
+        export COLOR_BG_YELLOW='\033[43m'
+        export COLOR_BG_BLUE='\033[44m'
+        export COLOR_BG_MAGENTA='\033[45m'
+        export COLOR_BG_CYAN='\033[46m'
+        export COLOR_BG_WHITE='\033[47m'
+    fi
+    
+    # Cores estendidas para terminais com suporte a 256 cores
+    if [ $terminal_colors -ge 256 ]; then
+        # Cores personalizadas usando códigos 256
+        export COLOR_ORANGE='\033[38;5;208m'
+        export COLOR_PURPLE='\033[38;5;135m'
+        export COLOR_PINK='\033[38;5;205m'
+        export COLOR_LIME='\033[38;5;154m'
+        export COLOR_TEAL='\033[38;5;80m'
+        export COLOR_NAVY='\033[38;5;17m'
+        export COLOR_MAROON='\033[38;5;88m'
+        export COLOR_OLIVE='\033[38;5;100m'
+        
+        # Gradientes para barras de progresso
+        export COLOR_PROGRESS_0='\033[38;5;196m'   # Vermelho
+        export COLOR_PROGRESS_25='\033[38;5;208m'  # Laranja
+        export COLOR_PROGRESS_50='\033[38;5;226m'  # Amarelo
+        export COLOR_PROGRESS_75='\033[38;5;154m'  # Verde claro
+        export COLOR_PROGRESS_100='\033[38;5;46m'  # Verde
+    fi
+    
+    # Reset e formatação
+    export COLOR_RESET='\033[0m'
+    export COLOR_BOLD='\033[1m'
+    export COLOR_DIM='\033[2m'
+    export COLOR_ITALIC='\033[3m'
+    export COLOR_UNDERLINE='\033[4m'
+    export COLOR_BLINK='\033[5m'
+    export COLOR_REVERSE='\033[7m'
+    export COLOR_STRIKETHROUGH='\033[9m'
+    
+    # Controles de cursor
+    export CURSOR_HIDE='\033[?25l'
+    export CURSOR_SHOW='\033[?25h'
+    export CURSOR_SAVE='\033[s'
+    export CURSOR_RESTORE='\033[u'
+    
+    # Limpar tela
+    export CLEAR_SCREEN='\033[2J'
+    export CLEAR_LINE='\033[2K'
+    export CLEAR_TO_END='\033[0J'
+    
+    # Definir tema atual
+    set_theme "$CURRENT_THEME"
+}
+
+# Sistema de temas
+set_theme() {
+    local theme="$1"
+    
+    case "$theme" in
+        "default")
+            export THEME_PRIMARY="$COLOR_BLUE"
+            export THEME_SECONDARY="$COLOR_CYAN"
+            export THEME_SUCCESS="$COLOR_GREEN"
+            export THEME_WARNING="$COLOR_YELLOW"
+            export THEME_ERROR="$COLOR_RED"
+            export THEME_INFO="$COLOR_BRIGHT_BLUE"
+            export THEME_ACCENT="$COLOR_MAGENTA"
+            export THEME_MUTED="$COLOR_BRIGHT_BLACK"
+            export THEME_BORDER="$COLOR_BRIGHT_BLUE"
+            export THEME_HIGHLIGHT="$COLOR_BRIGHT_WHITE"
+            ;;
+        "dark")
+            export THEME_PRIMARY="$COLOR_BRIGHT_CYAN"
+            export THEME_SECONDARY="$COLOR_CYAN"
+            export THEME_SUCCESS="$COLOR_BRIGHT_GREEN"
+            export THEME_WARNING="$COLOR_BRIGHT_YELLOW"
+            export THEME_ERROR="$COLOR_BRIGHT_RED"
+            export THEME_INFO="$COLOR_BRIGHT_BLUE"
+            export THEME_ACCENT="$COLOR_BRIGHT_MAGENTA"
+            export THEME_MUTED="$COLOR_BRIGHT_BLACK"
+            export THEME_BORDER="$COLOR_WHITE"
+            export THEME_HIGHLIGHT="$COLOR_BRIGHT_WHITE"
+            ;;
+        "light")
+            export THEME_PRIMARY="$COLOR_BLUE"
+            export THEME_SECONDARY="$COLOR_NAVY"
+            export THEME_SUCCESS="$COLOR_GREEN"
+            export THEME_WARNING="$COLOR_OLIVE"
+            export THEME_ERROR="$COLOR_MAROON"
+            export THEME_INFO="$COLOR_TEAL"
+            export THEME_ACCENT="$COLOR_PURPLE"
+            export THEME_MUTED="$COLOR_BLACK"
+            export THEME_BORDER="$COLOR_BLACK"
+            export THEME_HIGHLIGHT="$COLOR_BLACK"
+            ;;
+        "matrix")
+            export THEME_PRIMARY="$COLOR_LIME"
+            export THEME_SECONDARY="$COLOR_GREEN"
+            export THEME_SUCCESS="$COLOR_BRIGHT_GREEN"
+            export THEME_WARNING="$COLOR_YELLOW"
+            export THEME_ERROR="$COLOR_RED"
+            export THEME_INFO="$COLOR_LIME"
+            export THEME_ACCENT="$COLOR_BRIGHT_GREEN"
+            export THEME_MUTED="$COLOR_GREEN"
+            export THEME_BORDER="$COLOR_BRIGHT_GREEN"
+            export THEME_HIGHLIGHT="$COLOR_BRIGHT_WHITE"
+            ;;
+    esac
+    
+    CURRENT_THEME="$theme"
+}
+
+# Função para aplicar cor com fallback
+color() {
+    local color_name="$1"
+    local text="$2"
+    local color_code=""
+    
+    case "$color_name" in
+        "primary") color_code="$THEME_PRIMARY" ;;
+        "secondary") color_code="$THEME_SECONDARY" ;;
+        "success") color_code="$THEME_SUCCESS" ;;
+        "warning") color_code="$THEME_WARNING" ;;
+        "error") color_code="$THEME_ERROR" ;;
+        "info") color_code="$THEME_INFO" ;;
+        "accent") color_code="$THEME_ACCENT" ;;
+        "muted") color_code="$THEME_MUTED" ;;
+        "border") color_code="$THEME_BORDER" ;;
+        "highlight") color_code="$THEME_HIGHLIGHT" ;;
+        *) color_code="$COLOR_RESET" ;;
+    esac
+    
+    echo -e "${color_code}${text}${COLOR_RESET}"
+}
+
+################################################################################
+# SISTEMA DE ANIMAÇÕES E TRANSIÇÕES
+################################################################################
+
+# Configurações de animação
+ANIMATION_ENABLED=true
+ANIMATION_SPEED=0.05
+TRANSITION_SPEED=0.03
+FADE_STEPS=10
+SLIDE_STEPS=20
+
+# Função para fade in
+fade_in() {
+    local content="$1"
+    local steps="${2:-$FADE_STEPS}"
+    local delay="${3:-$ANIMATION_SPEED}"
+    
+    if [[ "$ANIMATION_ENABLED" != "true" ]]; then
+        echo -e "$content"
+        return 0
+    fi
+    
+    # Dividir conteúdo em linhas
+    local lines=()
+    while IFS= read -r line; do
+        lines+=("$line")
+    done <<< "$content"
+    
+    # Fade in gradual
+    for step in $(seq 1 $steps); do
+        local opacity=$((step * 255 / steps))
+        
+        # Limpar tela
+        echo -ne "\033[H\033[2J"
+        
+        # Desenhar com opacidade simulada
+        for line in "${lines[@]}"; do
+            if [[ $step -lt $steps ]]; then
+                # Simular transparência com caracteres mais claros
+                local faded_line="$(echo "$line" | sed 's/█/▓/g; s/▓/▒/g; s/▒/░/g')"
+                echo -e "$faded_line"
+            else
+                echo -e "$line"
+            fi
+        done
+        
+        sleep "$delay"
+    done
+}
+
+# Função para slide in (da esquerda)
+slide_in_left() {
+    local content="$1"
+    local steps="${2:-$SLIDE_STEPS}"
+    local delay="${3:-$TRANSITION_SPEED}"
+    
+    if [[ "$ANIMATION_ENABLED" != "true" ]]; then
+        echo -e "$content"
+        return 0
+    fi
+    
+    # Dividir conteúdo em linhas
+    local lines=()
+    while IFS= read -r line; do
+        lines+=("$line")
+    done <<< "$content"
+    
+    # Calcular largura máxima
+    local max_width=0
+    for line in "${lines[@]}"; do
+        local clean_line="$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g')"
+        if [[ ${#clean_line} -gt $max_width ]]; then
+            max_width=${#clean_line}
+        fi
+    done
+    
+    # Slide in da esquerda
+    for step in $(seq 1 $steps); do
+        local offset=$((max_width - (step * max_width / steps)))
+        
+        # Limpar tela
+        echo -ne "\033[H\033[2J"
+        
+        # Desenhar com offset
+        for line in "${lines[@]}"; do
+            printf "%*s%s\n" "$offset" "" "$line"
+        done
+        
+        sleep "$delay"
+    done
+}
+
+# Função para slide in (da direita)
+slide_in_right() {
+    local content="$1"
+    local steps="${2:-$SLIDE_STEPS}"
+    local delay="${3:-$TRANSITION_SPEED}"
+    
+    if [[ "$ANIMATION_ENABLED" != "true" ]]; then
+        echo -e "$content"
+        return 0
+    fi
+    
+    # Dividir conteúdo em linhas
+    local lines=()
+    while IFS= read -r line; do
+        lines+=("$line")
+    done <<< "$content"
+    
+    # Slide in da direita
+    for step in $(seq 1 $steps); do
+        local visible_width=$((step * TERMINAL_WIDTH / steps))
+        
+        # Limpar tela
+        echo -ne "\033[H\033[2J"
+        
+        # Desenhar com largura limitada
+        for line in "${lines[@]}"; do
+            local truncated="${line:0:$visible_width}"
+            echo -e "$truncated"
+        done
+        
+        sleep "$delay"
+    done
+}
+
+# Função para typewriter effect
+typewriter() {
+    local text="$1"
+    local delay="${2:-0.02}"
+    local newline="${3:-true}"
+    
+    if [[ "$ANIMATION_ENABLED" != "true" ]]; then
+        if [[ "$newline" == "true" ]]; then
+            echo -e "$text"
+        else
+            echo -ne "$text"
+        fi
+        return 0
+    fi
+    
+    # Processar caracteres especiais ANSI
+    local i=0
+    while [[ $i -lt ${#text} ]]; do
+        local char="${text:$i:1}"
+        
+        # Detectar sequência de escape ANSI
+        if [[ "$char" == $'\033' ]]; then
+            local escape_seq="$char"
+            ((i++))
+            
+            # Ler até 'm' (fim da sequência de cor)
+            while [[ $i -lt ${#text} && "${text:$i:1}" != "m" ]]; do
+                escape_seq+="${text:$i:1}"
+                ((i++))
+            done
+            
+            if [[ $i -lt ${#text} ]]; then
+                escape_seq+="${text:$i:1}"
+                ((i++))
+            fi
+            
+            # Imprimir sequência completa sem delay
+            echo -ne "$escape_seq"
+        else
+            echo -ne "$char"
+            sleep "$delay"
+            ((i++))
+        fi
+    done
+    
+    if [[ "$newline" == "true" ]]; then
+        echo
+    fi
+}
+
+# Função para spinner animado
+show_spinner() {
+    local message="$1"
+    local duration="${2:-3}"
+    local spinner_chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    
+    if [[ "$ANIMATION_ENABLED" != "true" ]]; then
+        echo -e "$message"
+        sleep "$duration"
+        return 0
+    fi
+    
+    local start_time=$(date +%s)
+    local i=0
+    
+    # Ocultar cursor
+    echo -ne "\033[?25l"
+    
+    while [[ $(($(date +%s) - start_time)) -lt $duration ]]; do
+        local char="${spinner_chars:$((i % ${#spinner_chars})):1}"
+        echo -ne "\r$(color "accent" "$char") $message"
+        sleep 0.1
+        ((i++))
+    done
+    
+    # Mostrar cursor e limpar linha
+    echo -ne "\033[?25h\r\033[K"
+}
+
+# Função para barra de progresso animada
+animated_progress() {
+    local current="$1"
+    local total="$2"
+    local message="${3:-Processando}"
+    local width="${4:-50}"
+    
+    if [[ "$ANIMATION_ENABLED" != "true" ]]; then
+        show_progress "$current" "$total" "$message" "$width"
+        return 0
+    fi
+    
+    local percent=$((current * 100 / total))
+    local filled=$((current * width / total))
+    local empty=$((width - filled))
+    
+    # Caracteres de progresso com gradiente
+    local progress_chars=("█" "▉" "▊" "▋" "▌" "▍" "▎" "▏")
+    local bar=""
+    
+    # Construir barra com efeito gradiente
+    for ((i=0; i<filled; i++)); do
+        if [[ $i -eq $((filled-1)) && $filled -lt $width ]]; then
+            # Último caractere com gradiente
+            local remainder=$((current * width * 8 / total % 8))
+            bar+="${progress_chars[$remainder]}"
+        else
+            bar+="█"
+        fi
+    done
+    
+    # Adicionar espaços vazios
+    for ((i=0; i<empty; i++)); do
+        bar+=" "
+    done
+    
+    # Exibir com cores
+    echo -ne "\r$(color "info" "$message") "
+    echo -ne "$(color "accent" "[")$(color "success" "$bar")$(color "accent" "]") "
+    echo -ne "$(color "highlight" "$percent%")"
+}
+
+# Função para transição entre telas
+screen_transition() {
+    local from_content="$1"
+    local to_content="$2"
+    local transition_type="${3:-fade}"
+    
+    if [[ "$ANIMATION_ENABLED" != "true" ]]; then
+        echo -ne "\033[H\033[2J"
+        echo -e "$to_content"
+        return 0
+    fi
+    
+    case "$transition_type" in
+        "fade")
+            # Fade out
+            for step in $(seq $FADE_STEPS -1 1); do
+                echo -ne "\033[H\033[2J"
+                # Simular fade out com caracteres mais claros
+                local faded="$(echo "$from_content" | sed 's/█/▓/g; s/▓/▒/g; s/▒/░/g')"
+                echo -e "$faded"
+                sleep "$TRANSITION_SPEED"
+            done
+            
+            # Fade in
+            fade_in "$to_content"
+            ;;
+        "slide_left")
+            slide_in_left "$to_content"
+            ;;
+        "slide_right")
+            slide_in_right "$to_content"
+            ;;
+        *)
+            echo -ne "\033[H\033[2J"
+            echo -e "$to_content"
+            ;;
+    esac
+}
+
+# Função para piscar elemento
+blink_element() {
+    local element="$1"
+    local times="${2:-3}"
+    local delay="${3:-0.5}"
+    
+    if [[ "$ANIMATION_ENABLED" != "true" ]]; then
+        echo -e "$element"
+        return 0
+    fi
+    
+    for ((i=0; i<times; i++)); do
+        echo -ne "\r$element"
+        sleep "$delay"
+        echo -ne "\r$(printf ' %.0s' $(seq 1 ${#element}))"
+        sleep "$delay"
+    done
+    
+    echo -ne "\r$element"
+}
+
+# Função para toggle de animações
+toggle_animations() {
+    if [[ "$ANIMATION_ENABLED" == "true" ]]; then
+        ANIMATION_ENABLED=false
+        echo -e "$(color "warning" "Animações desabilitadas")"
+    else
+        ANIMATION_ENABLED=true
+        typewriter "$(color "success" "Animações habilitadas")" 0.05
+    fi
+}
+
+# Função para loading dots
+loading_dots() {
+    local message="$1"
+    local duration="${2:-3}"
+    
+    if [[ "$ANIMATION_ENABLED" != "true" ]]; then
+        echo -e "$message..."
+        sleep "$duration"
+        return 0
+    fi
+    
+    local start_time=$(date +%s)
+    local dots=""
+    
+    # Ocultar cursor
+    echo -ne "\033[?25l"
+    
+    while [[ $(($(date +%s) - start_time)) -lt $duration ]]; do
+        for i in {1..3}; do
+            dots+="."
+            echo -ne "\r$message$(color "accent" "$dots")"
+            sleep 0.5
+            
+            if [[ $(($(date +%s) - start_time)) -ge $duration ]]; then
+                break 2
+            fi
+        done
+        
+        dots=""
+        echo -ne "\r$message   \r$message"
+        sleep 0.5
+    done
+    
+    # Mostrar cursor e limpar linha
+    echo -ne "\033[?25h\r\033[K"
+}
+
+################################################################################
+# SISTEMA DE CONFIGURAÇÃO PERSISTENTE E PROFILES
+################################################################################
+
+# Diretórios de configuração
+CONFIG_DIR="$HOME/.config/boxserver"
+PROFILES_DIR="$CONFIG_DIR/profiles"
+LOGS_DIR="$CONFIG_DIR/logs"
+CACHE_DIR="$CONFIG_DIR/cache"
+
+# Arquivo de configuração principal
+CONFIG_FILE="$CONFIG_DIR/config.conf"
+LAST_SESSION_FILE="$CONFIG_DIR/last_session.conf"
+PREFERENCES_FILE="$CONFIG_DIR/preferences.conf"
+
+# Configurações padrão
+DEFAULT_CONFIG="
+# Configuração do BoxServer
+# Gerado automaticamente em $(date)
+
+[general]
+theme=default
+animations_enabled=true
+help_enabled=true
+language=pt_BR
+log_level=info
+auto_save=true
+confirm_actions=true
+
+[ui]
+terminal_width=auto
+terminal_height=auto
+color_depth=auto
+show_tooltips=true
+show_progress=true
+animation_speed=0.05
+
+[installation]
+default_install_path=/opt/boxserver
+backup_configs=true
+verify_checksums=true
+parallel_downloads=true
+max_retries=3
+
+[network]
+timeout=30
+use_proxy=false
+proxy_url=
+verify_ssl=true
+
+[security]
+strict_permissions=true
+backup_before_install=true
+verify_signatures=true
+"
+
+# Função para criar estrutura de diretórios
+init_config_dirs() {
+    local dirs=("$CONFIG_DIR" "$PROFILES_DIR" "$LOGS_DIR" "$CACHE_DIR")
+    
+    for dir in "${dirs[@]}"; do
+        if [[ ! -d "$dir" ]]; then
+            mkdir -p "$dir" 2>/dev/null || {
+                log_error "Não foi possível criar diretório: $dir"
+                return 1
+            }
+        fi
+    done
+    
+    # Criar arquivo de configuração se não existir
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "$DEFAULT_CONFIG" > "$CONFIG_FILE"
+        log_info "Arquivo de configuração criado: $CONFIG_FILE"
+    fi
+    
+    return 0
+}
+
+# Função para ler configuração
+read_config() {
+    local key="$1"
+    local section="${2:-general}"
+    local default_value="$3"
+    
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "$default_value"
+        return 1
+    fi
+    
+    # Ler valor da seção específica
+    local value=$(awk -F'=' -v section="[$section]" -v key="$key" '
+        $0 == section { in_section = 1; next }
+        /^\[/ { in_section = 0; next }
+        in_section && $1 == key { print $2; exit }
+    ' "$CONFIG_FILE" | tr -d ' ')
+    
+    echo "${value:-$default_value}"
+}
+
+# Função para escrever configuração
+write_config() {
+    local key="$1"
+    local value="$2"
+    local section="${3:-general}"
+    
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        init_config_dirs
+    fi
+    
+    # Criar arquivo temporário
+    local temp_file="$(mktemp)"
+    local in_section=false
+    local key_found=false
+    
+    # Processar arquivo linha por linha
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" =~ ^\[.*\]$ ]]; then
+            # Se estávamos na seção e não encontramos a chave, adicionar
+            if [[ "$in_section" == true && "$key_found" == false ]]; then
+                echo "$key=$value" >> "$temp_file"
+                key_found=true
+            fi
+            
+            # Verificar se é a seção desejada
+            if [[ "$line" == "[$section]" ]]; then
+                in_section=true
+            else
+                in_section=false
+            fi
+            
+            echo "$line" >> "$temp_file"
+        elif [[ "$in_section" == true && "$line" =~ ^$key= ]]; then
+            # Substituir valor existente
+            echo "$key=$value" >> "$temp_file"
+            key_found=true
+        else
+            echo "$line" >> "$temp_file"
+        fi
+    done < "$CONFIG_FILE"
+    
+    # Se estávamos na seção e não encontramos a chave, adicionar no final
+    if [[ "$in_section" == true && "$key_found" == false ]]; then
+        echo "$key=$value" >> "$temp_file"
+    fi
+    
+    # Substituir arquivo original
+    mv "$temp_file" "$CONFIG_FILE"
+}
+
+# Função para salvar perfil de instalação
+save_installation_profile() {
+    local profile_name="$1"
+    local selected_apps=("${@:2}")
+    
+    if [[ -z "$profile_name" ]]; then
+        profile_name="profile_$(date +%Y%m%d_%H%M%S)"
+    fi
+    
+    local profile_file="$PROFILES_DIR/${profile_name}.profile"
+    
+    # Criar cabeçalho do perfil
+    cat > "$profile_file" << EOF
+# Perfil de Instalação BoxServer
+# Nome: $profile_name
+# Criado: $(date)
+# Sistema: $(uname -a)
+
+[profile]
+name=$profile_name
+created=$(date +%s)
+version=1.0
+
+[system]
+ram_mb=$(free -m | awk 'NR==2{print $2}')
+storage_gb=$(df -BG / | awk 'NR==2{print $4}' | tr -d 'G')
+os_version=$(lsb_release -d 2>/dev/null | cut -f2 || echo "Unknown")
+kernel=$(uname -r)
+
+[applications]
+EOF
+    
+    # Adicionar aplicativos selecionados
+    for app in "${selected_apps[@]}"; do
+        echo "$app=true" >> "$profile_file"
+    done
+    
+    log_success "Perfil salvo: $profile_file"
+    return 0
+}
+
+# Função para carregar perfil de instalação
+load_installation_profile() {
+    local profile_name="$1"
+    local profile_file="$PROFILES_DIR/${profile_name}.profile"
+    
+    if [[ ! -f "$profile_file" ]]; then
+        log_error "Perfil não encontrado: $profile_name"
+        return 1
+    fi
+    
+    # Ler aplicativos do perfil
+    local apps=()
+    while IFS='=' read -r key value; do
+        if [[ "$value" == "true" ]]; then
+            apps+=("$key")
+        fi
+    done < <(awk '/^\[applications\]$/,/^\[/ {if($0 !~ /^\[/) print}' "$profile_file")
+    
+    echo "${apps[@]}"
+    return 0
+}
+
+# Função para listar perfis disponíveis
+list_profiles() {
+    local profiles=()
+    
+    if [[ -d "$PROFILES_DIR" ]]; then
+        for profile_file in "$PROFILES_DIR"/*.profile; do
+            if [[ -f "$profile_file" ]]; then
+                local profile_name=$(basename "$profile_file" .profile)
+                local created=$(read_config "created" "profile" "0" < "$profile_file")
+                local created_date="$(date -d @$created 2>/dev/null || echo 'Data desconhecida')"
+                
+                profiles+=("$profile_name|$created_date")
+            fi
+        done
+    fi
+    
+    printf '%s\n' "${profiles[@]}"
+}
+
+# Função para salvar sessão atual
+save_session() {
+    local session_data="
+[session]
+timestamp=$(date +%s)
+theme=$CURRENT_THEME
+animations_enabled=$ANIMATION_ENABLED
+help_enabled=$HELP_ENABLED
+last_menu_selection=${MENU_SELECTED_INDEX:-0}
+terminal_width=$TERMINAL_WIDTH
+terminal_height=$TERMINAL_HEIGHT
+
+[runtime]
+script_version=$SCRIPT_VERSION
+start_time=$SCRIPT_START_TIME
+user=$USER
+working_dir=$PWD
+"
+    
+    echo "$session_data" > "$LAST_SESSION_FILE"
+}
+
+# Função para restaurar sessão
+restore_session() {
+    if [[ ! -f "$LAST_SESSION_FILE" ]]; then
+        return 1
+    fi
+    
+    # Restaurar configurações da sessão
+    CURRENT_THEME=$(read_config "theme" "session" "default" < "$LAST_SESSION_FILE")
+    ANIMATION_ENABLED=$(read_config "animations_enabled" "session" "true" < "$LAST_SESSION_FILE")
+    HELP_ENABLED=$(read_config "help_enabled" "session" "true" < "$LAST_SESSION_FILE")
+    MENU_SELECTED_INDEX=$(read_config "last_menu_selection" "session" "0" < "$LAST_SESSION_FILE")
+    
+    log_info "Sessão anterior restaurada"
+    return 0
+}
+
+# Função para exportar configurações
+export_config() {
+    local export_file="${1:-boxserver_config_$(date +%Y%m%d_%H%M%S).tar.gz}"
+    
+    if [[ ! -d "$CONFIG_DIR" ]]; then
+        log_error "Diretório de configuração não encontrado"
+        return 1
+    fi
+    
+    # Criar arquivo de exportação
+    tar -czf "$export_file" -C "$(dirname "$CONFIG_DIR")" "$(basename "$CONFIG_DIR")" 2>/dev/null || {
+        log_error "Falha ao exportar configurações"
+        return 1
+    }
+    
+    log_success "Configurações exportadas para: $export_file"
+    return 0
+}
+
+# Função para importar configurações
+import_config() {
+    local import_file="$1"
+    
+    if [[ ! -f "$import_file" ]]; then
+        log_error "Arquivo de importação não encontrado: $import_file"
+        return 1
+    fi
+    
+    # Fazer backup das configurações atuais
+    if [[ -d "$CONFIG_DIR" ]]; then
+        local backup_file="${CONFIG_DIR}_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+        tar -czf "$backup_file" -C "$(dirname "$CONFIG_DIR")" "$(basename "$CONFIG_DIR")" 2>/dev/null
+        log_info "Backup criado: $backup_file"
+    fi
+    
+    # Extrair configurações importadas
+    tar -xzf "$import_file" -C "$(dirname "$CONFIG_DIR")" 2>/dev/null || {
+        log_error "Falha ao importar configurações"
+        return 1
+    }
+    
+    log_success "Configurações importadas com sucesso"
+    return 0
+}
+
+# Função para resetar configurações
+reset_config() {
+    local confirm=$(show_dialog "question" "Resetar Configurações" "Tem certeza que deseja resetar todas as configurações?\n\nEsta ação não pode ser desfeita." "Sim" "Não")
+    
+    if [[ "$confirm" == "0" ]]; then
+        # Fazer backup antes de resetar
+        if [[ -d "$CONFIG_DIR" ]]; then
+            local backup_file="${CONFIG_DIR}_reset_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+            tar -czf "$backup_file" -C "$(dirname "$CONFIG_DIR")" "$(basename "$CONFIG_DIR")" 2>/dev/null
+            log_info "Backup criado antes do reset: $backup_file"
+        fi
+        
+        # Remover diretório de configuração
+        rm -rf "$CONFIG_DIR" 2>/dev/null
+        
+        # Recriar com configurações padrão
+        init_config_dirs
+        
+        log_success "Configurações resetadas para os valores padrão"
+        return 0
+    fi
+    
+    return 1
+}
+
+# Função para mostrar menu de configurações
+show_config_menu() {
+    local config_items=(
+        "Tema de Cores|Alterar tema visual da interface"
+        "Animações|Habilitar/desabilitar animações"
+        "Sistema de Ajuda|Configurar tooltips e ajuda contextual"
+        "Perfis de Instalação|Gerenciar perfis salvos"
+        "Exportar Configurações|Fazer backup das configurações"
+        "Importar Configurações|Restaurar configurações de backup"
+        "Resetar Configurações|Voltar aos valores padrão"
+        "Voltar|Retornar ao menu principal"
+    )
+    
+    local config_callbacks=(
+        "configure_theme"
+        "toggle_animations"
+        "toggle_help_system"
+        "manage_profiles"
+        "export_config"
+        "import_config_dialog"
+        "reset_config"
+        "return"
+    )
+    
+    navigate_menu "Configurações do BoxServer" config_items config_callbacks
+}
+
+# Função para gerenciar perfis
+manage_profiles() {
+    local profiles_list=()
+    local profile_info=()
+    
+    # Carregar lista de perfis
+    while IFS='|' read -r name date; do
+        profiles_list+=("$name")
+        profile_info+=("Criado: $date")
+    done < <(list_profiles)
+    
+    if [[ ${#profiles_list[@]} -eq 0 ]]; then
+        show_dialog "info" "Perfis de Instalação" "Nenhum perfil encontrado.\n\nCrie um perfil durante a instalação para reutilizar configurações."
+        return 0
+    fi
+    
+    # Adicionar opções de gerenciamento
+    profiles_list+=("Criar Novo Perfil" "Voltar")
+    profile_info+=("Criar um novo perfil de instalação" "Retornar ao menu anterior")
+    
+    local selected=$(navigate_menu "Gerenciar Perfis" profiles_list profile_info)
+    
+    if [[ "$selected" == "Criar Novo Perfil" ]]; then
+        create_new_profile
+    elif [[ "$selected" != "Voltar" && -n "$selected" ]]; then
+        manage_single_profile "$selected"
+    fi
+}
+
+# Função para criar novo perfil
+create_new_profile() {
+    local profile_name
+    profile_name=$(validated_input "Nome do Perfil" "Digite o nome do novo perfil:" "" "required")
+    
+    if [[ -n "$profile_name" ]]; then
+        # Selecionar aplicativos para o perfil
+        local available_apps=("pihole" "unbound" "wireguard" "nginx" "docker" "portainer" "homer" "grafana" "prometheus" "node_exporter" "fail2ban" "ufw" "ssh_hardening")
+        local selected_apps=()
+        
+        selected_apps=$(show_checkbox_list "Selecionar Aplicativos" "Escolha os aplicativos para incluir no perfil:" available_apps)
+        
+        if [[ -n "$selected_apps" ]]; then
+            save_installation_profile "$profile_name" $selected_apps
+            show_dialog "success" "Perfil Criado" "Perfil '$profile_name' criado com sucesso!"
+        fi
+    fi
+}
+
+# Função para gerenciar perfil individual
+manage_single_profile() {
+    local profile_name="$1"
+    local profile_file="$PROFILES_DIR/${profile_name}.profile"
+    
+    if [[ ! -f "$profile_file" ]]; then
+        show_dialog "error" "Erro" "Perfil não encontrado: $profile_name"
+        return 1
+    fi
+    
+    # Ler informações do perfil
+    local created=$(read_config "created" "profile" "0" < "$profile_file")
+    local created_date="$(date -d @$created 2>/dev/null || echo 'Data desconhecida')"
+    local apps=$(load_installation_profile "$profile_name")
+    
+    local profile_actions=(
+        "Usar Perfil|Instalar aplicativos deste perfil"
+        "Visualizar Detalhes|Ver informações completas do perfil"
+        "Excluir Perfil|Remover este perfil permanentemente"
+        "Voltar|Retornar à lista de perfis"
+    )
+    
+    local action=$(navigate_menu "Perfil: $profile_name" profile_actions)
+    
+    case "$action" in
+        "Usar Perfil")
+            # Implementar uso do perfil na instalação
+            show_dialog "info" "Perfil Selecionado" "Perfil '$profile_name' será usado na próxima instalação."
+            ;;
+        "Visualizar Detalhes")
+            show_profile_details "$profile_name"
+            ;;
+        "Excluir Perfil")
+            local confirm=$(show_dialog "question" "Excluir Perfil" "Tem certeza que deseja excluir o perfil '$profile_name'?" "Sim" "Não")
+            if [[ "$confirm" == "0" ]]; then
+                rm -f "$profile_file"
+                show_dialog "success" "Perfil Excluído" "Perfil '$profile_name' foi excluído com sucesso."
+            fi
+            ;;
+    esac
+}
+
+# Função para mostrar detalhes do perfil
+show_profile_details() {
+    local profile_name="$1"
+    local profile_file="$PROFILES_DIR/${profile_name}.profile"
+    
+    local details="$(cat "$profile_file")"
+    show_dialog "info" "Detalhes do Perfil: $profile_name" "$details"
+}
+
+################################################################################
+# COMPONENTES TUI REUTILIZÁVEIS
+################################################################################
+
+# Função para desenhar caixa com bordas
+draw_box() {
+    local width="$1"
+    local height="$2"
+    local title="$3"
+    local border_color="${4:-border}"
+    local title_color="${5:-highlight}"
+    
+    local top_line=""
+    local middle_line=""
+    local bottom_line=""
+    local title_padding=$(( (width - ${#title} - 4) / 2 ))
+    
+    # Construir linhas da caixa
+    top_line="╔$(printf '═%.0s' $(seq 1 $((width-2))))╗"
+    middle_line="║$(printf ' %.0s' $(seq 1 $((width-2))))║"
+    bottom_line="╚$(printf '═%.0s' $(seq 1 $((width-2))))╝"
+    
+    # Linha do título
+    local title_line="║"
+    title_line+="$(printf ' %.0s' $(seq 1 $title_padding))"
+    title_line+="$(color "$title_color" "$title")"
+    title_line+="$(printf ' %.0s' $(seq 1 $((width - ${#title} - title_padding - 2))))"
+    title_line+="║"
+    
+    # Desenhar caixa
+    color "$border_color" "$top_line"
+    color "$border_color" "$title_line"
+    
+    for ((i=2; i<height-1; i++)); do
+        color "$border_color" "$middle_line"
+    done
+    
+    color "$border_color" "$bottom_line"
+}
+
+# Inicializar sistema de cores
+init_color_system
+
+################################################################################
+# FUNÇÕES DE LOGGING MODERNIZADAS
+################################################################################
+
+# Função de logging com níveis visuais
 log() {
     local level="$1"
     shift
     local message="$*"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "[${timestamp}] [${level}] ${message}" | tee -a "$LOG_FILE"
+    local icon=""
+    local color_name=""
+    
+    case "$level" in
+        "INFO")
+            icon="ℹ"
+            color_name="info"
+            ;;
+        "SUCCESS")
+            icon="✓"
+            color_name="success"
+            ;;
+        "WARN")
+            icon="⚠"
+            color_name="warning"
+            ;;
+        "ERROR")
+            icon="✗"
+            color_name="error"
+            ;;
+        "DEBUG")
+            icon="🔍"
+            color_name="muted"
+            ;;
+    esac
+    
+    local formatted_message="[${timestamp}] $(color "$color_name" "${icon} [${level}]") ${message}"
+    echo -e "$formatted_message" | tee -a "$LOG_FILE"
 }
 
 log_info() { log "INFO" "$@"; }
-log_warn() { log "WARN" "${YELLOW}$*${NC}"; }
-log_error() { log "ERROR" "${RED}$*${NC}"; }
-log_success() { log "SUCCESS" "${GREEN}$*${NC}"; }
+log_success() { log "SUCCESS" "$@"; }
+log_warn() { log "WARN" "$@"; }
+log_error() { log "ERROR" "$@"; }
+log_debug() { log "DEBUG" "$@"; }
 
-# Função para exibir progresso
+################################################################################
+# SISTEMA DE PROGRESSO AVANÇADO
+################################################################################
+
+# Barra de progresso moderna com gradiente
 show_progress() {
-    local current=$1
-    local total=$2
+    local current="$1"
+    local total="$2"
     local message="$3"
+    local width="${4:-50}"
+    
     local percent=$((current * 100 / total))
-    printf "\r${BLUE}[%3d%%]${NC} %s" "$percent" "$message"
+    local filled=$((current * width / total))
+    local empty=$((width - filled))
+    
+    # Escolher cor baseada no progresso
+    local progress_color=""
+    if [ $percent -le 25 ]; then
+        progress_color="$COLOR_PROGRESS_25"
+    elif [ $percent -le 50 ]; then
+        progress_color="$COLOR_PROGRESS_50"
+    elif [ $percent -le 75 ]; then
+        progress_color="$COLOR_PROGRESS_75"
+    else
+        progress_color="$COLOR_PROGRESS_100"
+    fi
+    
+    # Construir barra
+    local bar=""
+    bar+="$(color "primary" "[")"
+    
+    # Parte preenchida
+    if [ $filled -gt 0 ]; then
+        bar+="${progress_color}$(printf '█%.0s' $(seq 1 $filled))${COLOR_RESET}"
+    fi
+    
+    # Parte vazia
+    if [ $empty -gt 0 ]; then
+        bar+="$(color "muted" "$(printf '░%.0s' $(seq 1 $empty))")"
+    fi
+    
+    bar+="$(color "primary" "]")"
+    
+    # Exibir progresso
+    printf "\r%s $(color "highlight" "%3d%%") %s" "$bar" "$percent" "$message"
+    
     if [ "$current" -eq "$total" ]; then
         echo
     fi
 }
 
-# Função para solicitar confirmação do usuário
-confirm_action() {
+# Spinner animado
+show_spinner() {
     local message="$1"
-    local default="${2:-n}"
+    local delay="${2:-0.1}"
+    local spinstr='|/-\\'
     
-    if [ "$INTERACTIVE_MODE" != "true" ]; then
-        return 0  # Modo não-interativo, prosseguir automaticamente
-    fi
-    
-    echo -e "\n${YELLOW}$message${NC}"
-    if [ "$default" = "y" ]; then
-        echo -e "${BLUE}Pressione Enter para confirmar ou 'n' para pular: ${NC}"
-    else
-        echo -e "${BLUE}Digite 'y' para confirmar ou pressione Enter para pular: ${NC}"
-    fi
-    
-    read -r response
-    
-    if [ "$default" = "y" ]; then
-        [[ "$response" != "n" && "$response" != "N" ]]
-    else
-        [[ "$response" = "y" || "$response" = "Y" ]]
-    fi
-}
-
-# Função para coletar configurações do usuário
-collect_user_input() {
-    local prompt="$1"
-    local default="$2"
-    local variable_name="$3"
-    
-    if [ "$INTERACTIVE_MODE" != "true" ]; then
-        return 0  # Modo não-interativo, usar valores padrão
-    fi
-    
-    echo -e "\n${YELLOW}$prompt${NC}"
-    if [ -n "$default" ]; then
-        echo -e "${BLUE}Valor padrão: $default${NC}"
-        echo -e "${BLUE}Pressione Enter para usar o padrão ou digite um novo valor: ${NC}"
-    else
-        echo -e "${BLUE}Digite o valor: ${NC}"
-    fi
-    
-    read -r user_input
-    
-    if [ -n "$user_input" ]; then
-        eval "$variable_name='$user_input'"
-    elif [ -n "$default" ]; then
-        eval "$variable_name='$default'"
-    fi
-}
-
-# Verificar distribuição Linux compatível
-check_linux_distribution() {
-    log_info "Verificando distribuição Linux..."
-    
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        case "$ID" in
-            ubuntu|debian|armbian|raspbian)
-                log_success "Distribuição compatível: $NAME ✓"
-                ;;
-            *)
-                log_error "Distribuição não suportada: $NAME"
-                log_error "Este script requer Ubuntu, Debian, Armbian ou Raspbian"
-                exit 1
-                ;;
-        esac
-    else
-        log_error "Não foi possível detectar a distribuição Linux"
-        exit 1
-    fi
-}
-
-# Verificar se é root
-check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        log_error "Este script deve ser executado como root (sudo)"
-        exit 1
-    fi
-}
-
-# Verificar dependências do sistema
-check_dependencies() {
-    local deps=("curl" "wget" "tar" "gzip" "openssl" "iproute2" "procps" "net-tools")
-    local missing_deps=()
-    
-    log_info "Verificando dependências do sistema..."
-    
-    for dep in "${deps[@]}"; do
-        if ! command -v "$dep" &> /dev/null; then
-            missing_deps+=("$dep")
-        fi
-    done
-    
-    if [ ${#missing_deps[@]} -gt 0 ]; then
-        log_warn "Dependências ausentes: ${missing_deps[*]}"
-        log_info "Instalando dependências..."
-        apt-get update -qq
-        apt-get install -y -qq "${missing_deps[@]}"
-    fi
-    
-    log_success "Todas as dependências instaladas ✓"
-}
-
-# Validar formato de IP/CIDR
-validate_cidr() {
-    local cidr="$1"
-    if [[ ! "$cidr" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
-        return 1
-    fi
-    
-    local ip="${cidr%/*}"
-    local prefix="${cidr#*/}"
-    
-    # Validar IP
-    if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        return 1
-    fi
-    
-    # Validar prefixo
-    if [ "$prefix" -lt 0 ] || [ "$prefix" -gt 32 ]; then
-        return 1
-    fi
-    
-    return 0
-}
-
-# Validar formato de IP
-validate_ip() {
-    local ip="$1"
-    if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        return 1
-    fi
-    
-    # Verificar se cada octeto está entre 0-255
-    IFS='.' read -ra OCTETS <<< "$ip"
-    for octet in "${OCTETS[@]}"; do
-        if [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ]; then
-            return 1
-        fi
-    done
-    
-    return 0
-}
-
-# Verificar disponibilidade de porta
-check_port_availability() {
-    local port="$1"
-    local service="${2:-}"
-    
-    if ss -tuln | grep -q ":$port "; then
-        local process=$(ss -tulnp | grep ":$port " | awk '{print $7}' | cut -d',' -f1 | cut -d'"' -f2)
-        log_warn "Porta $port já está em uso por: $process"
-        
-        if [ "$INTERACTIVE_MODE" = "true" ]; then
-            read -p "Deseja usar esta porta mesmo assim? (s/N): " use_anyway
-            use_anyway=${use_anyway:-n}
-            if [[ ! "$use_anyway" =~ ^[Ss]$ ]]; then
-                return 1
-            fi
-        else
-            return 1
-        fi
-    fi
-    
-    return 0
-}
-
-# Gerar senha segura
-generate_secure_password() {
-    openssl rand -base64 32 | tr -d /=+ | cut -c -16
-}
-
-# Verificar requisitos do sistema
-check_system_requirements() {
-    log_info "Verificando requisitos do sistema..."
-    
-    # Verificar RAM
-    local ram_mb=$(free -m | awk 'NR==2{print $2}')
-    if [ "$ram_mb" -lt 512 ]; then
-        log_error "RAM insuficiente: ${ram_mb}MB (mínimo: 512MB)"
-        exit 1
-    fi
-    log_success "RAM: ${ram_mb}MB ✓"
-    
-    # Verificar espaço em disco
-    local disk_gb=$(df / | awk 'NR==2{print int($4/1024/1024)}')
-    if [ "$disk_gb" -lt 2 ]; then
-        log_error "Espaço em disco insuficiente: ${disk_gb}GB (mínimo: 2GB)"
-        exit 1
-    fi
-    log_success "Espaço em disco: ${disk_gb}GB disponível ✓"
-    
-    # Verificar arquitetura
-    local arch=$(uname -m)
-    if [[ ! "$arch" =~ ^(arm|aarch64)$ ]]; then
-        log_warn "Arquitetura não testada: $arch (esperado: arm/aarch64)"
-    fi
-    log_success "Arquitetura: $arch ✓"
-    
-    # Verificar conectividade
-    if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
-        log_error "Sem conectividade com a internet"
-        exit 1
-    fi
-    log_success "Conectividade com internet ✓"
-}
-
-# Detectar interface de rede principal
-detect_network_interface() {
-    if [ -z "$NETWORK_INTERFACE" ]; then
-        NETWORK_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
-        if [ -z "$NETWORK_INTERFACE" ]; then
-            log_error "Não foi possível detectar interface de rede principal"
-            echo "Interfaces disponíveis:"
-            ip link show | grep '^[0-9]' | awk '{print $2}' | sed 's/:$//'
-            exit 1
-        fi
-    fi
-    
-    # Verificar se interface existe e está ativa
-    if ! ip link show "$NETWORK_INTERFACE" >/dev/null 2>&1; then
-        log_error "Interface $NETWORK_INTERFACE não encontrada"
-        exit 1
-    fi
-    
-    # Obter IP da interface
-    SERVER_IP=$(ip addr show "$NETWORK_INTERFACE" | grep 'inet ' | awk '{print $2}' | cut -d/ -f1 | head -1)
-    if [ -z "$SERVER_IP" ]; then
-        log_error "Não foi possível obter IP da interface $NETWORK_INTERFACE"
-        exit 1
-    fi
-    
-    log_success "Interface de rede: $NETWORK_INTERFACE ($SERVER_IP) ✓"
-}
-
-# Configurar IP fixo/estático
-configure_static_ip() {
-    log_info "=== CONFIGURAÇÃO DE IP FIXO ==="
-    
-    echo -e "${YELLOW}IMPORTANTE: Para um servidor doméstico, é recomendado configurar um IP fixo.${NC}"
-    echo -e "${YELLOW}Isso garante que os serviços (Pi-hole, VPN, etc.) funcionem corretamente.${NC}"
-    echo ""
-    echo -e "Configuração atual:"
-    echo -e "  Interface: ${GREEN}$NETWORK_INTERFACE${NC}"
-    echo -e "  IP atual:  ${GREEN}$SERVER_IP${NC}"
-    echo -e "  Gateway:   ${GREEN}$(ip route | grep default | awk '{print $3}' | head -1)${NC}"
-    echo ""
-    
-    read -p "Deseja configurar um IP fixo? (s/N): " configure_static
-    configure_static=${configure_static:-n}
-    
-    if [[ "$configure_static" =~ ^[Ss]$ ]]; then
-        # Detectar método de configuração de rede
-        local config_method=""
-        
-        if [ -d "/etc/netplan" ] && ls /etc/netplan/*.yaml >/dev/null 2>&1; then
-            config_method="netplan"
-        elif [ -f "/etc/network/interfaces" ] && grep -q "iface" /etc/network/interfaces; then
-            config_method="interfaces"
-        elif systemctl is-enabled systemd-networkd >/dev/null 2>&1; then
-            config_method="systemd-networkd"
-        else
-            config_method="netplan"  # Padrão para Ubuntu moderno
-        fi
-        
-        log_info "Método detectado: $config_method"
-        
-        # Coletar informações de rede
-        local current_gateway=$(ip route | grep default | awk '{print $3}' | head -1)
-        local current_dns=$(grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1)
-        
-        echo ""
-        echo -e "${CYAN}=== CONFIGURAÇÃO DE REDE ESTÁTICA ===${NC}"
-        
-        read -p "IP fixo desejado [$SERVER_IP]: " static_ip
-        static_ip=${static_ip:-$SERVER_IP}
-        
-        read -p "Máscara de rede [24]: " netmask
-        netmask=${netmask:-24}
-        
-        read -p "Gateway [$current_gateway]: " gateway
-        gateway=${gateway:-$current_gateway}
-        
-        read -p "DNS primário [$current_dns]: " dns1
-        dns1=${dns1:-$current_dns}
-        
-        read -p "DNS secundário [8.8.8.8]: " dns2
-        dns2=${dns2:-8.8.8.8}
-        
-        # Fazer backup da configuração atual
-        local backup_dir="/etc/boxserver/network-backup-$(date +%Y%m%d-%H%M%S)"
-        mkdir -p "$backup_dir"
-        
-        case "$config_method" in
-            "netplan")
-                configure_netplan_static "$static_ip" "$netmask" "$gateway" "$dns1" "$dns2" "$backup_dir"
-                ;;
-            "interfaces")
-                configure_interfaces_static "$static_ip" "$netmask" "$gateway" "$dns1" "$dns2" "$backup_dir"
-                ;;
-            "systemd-networkd")
-                configure_systemd_networkd_static "$static_ip" "$netmask" "$gateway" "$dns1" "$dns2" "$backup_dir"
-                ;;
-        esac
-        
-        # Atualizar variáveis
-         SERVER_IP="$static_ip"
-         STATIC_IP_CONFIGURED="true"
-         
-         echo ""
-         log_success "Configuração de IP fixo aplicada!"
-         log_warn "IMPORTANTE: O sistema será reiniciado ao final da instalação para aplicar as mudanças de rede."
-         echo ""
-    else
-        log_info "Mantendo configuração DHCP atual"
-    fi
-}
-
-# Configurar IP estático via Netplan
-configure_netplan_static() {
-    local static_ip="$1"
-    local netmask="$2"
-    local gateway="$3"
-    local dns1="$4"
-    local dns2="$5"
-    local backup_dir="$6"
-    
-    log_info "Configurando IP estático via Netplan..."
-    
-    # Backup dos arquivos existentes
-    cp -r /etc/netplan/* "$backup_dir/" 2>/dev/null || true
-    
-    # Criar configuração Netplan
-    cat > "/etc/netplan/01-boxserver-static.yaml" << EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    $NETWORK_INTERFACE:
-      dhcp4: false
-      addresses:
-        - $static_ip/$netmask
-      gateway4: $gateway
-      nameservers:
-        addresses:
-          - $dns1
-          - $dns2
-EOF
-    
-    # Remover configurações DHCP conflitantes
-    find /etc/netplan -name "*.yaml" -not -name "01-boxserver-static.yaml" -exec rm -f {} \;
-    
-    # Testar configuração
-    if netplan try --timeout=10 2>/dev/null; then
-        log_success "Configuração Netplan aplicada com sucesso"
-    else
-        log_error "Erro na configuração Netplan. Restaurando backup..."
-        rm -f /etc/netplan/01-boxserver-static.yaml
-        cp "$backup_dir"/* /etc/netplan/ 2>/dev/null || true
-        netplan apply
-        return 1
-    fi
-}
-
-# Configurar IP estático via /etc/network/interfaces
-configure_interfaces_static() {
-    local static_ip="$1"
-    local netmask="$2"
-    local gateway="$3"
-    local dns1="$4"
-    local dns2="$5"
-    local backup_dir="$6"
-    
-    log_info "Configurando IP estático via /etc/network/interfaces..."
-    
-    # Backup
-    cp /etc/network/interfaces "$backup_dir/interfaces.backup"
-    
-    # Criar nova configuração
-    cat > "/etc/network/interfaces" << EOF
-# Configuração gerada pelo Boxserver
-auto lo
-iface lo inet loopback
-
-auto $NETWORK_INTERFACE
-iface $NETWORK_INTERFACE inet static
-    address $static_ip
-    netmask $(cidr_to_netmask $netmask)
-    gateway $gateway
-    dns-nameservers $dns1 $dns2
-EOF
-    
-    # Configurar DNS
-    echo "nameserver $dns1" > /etc/resolv.conf
-    echo "nameserver $dns2" >> /etc/resolv.conf
-    
-    log_success "Configuração interfaces aplicada"
-}
-
-# Configurar IP estático via systemd-networkd
-configure_systemd_networkd_static() {
-    local static_ip="$1"
-    local netmask="$2"
-    local gateway="$3"
-    local dns1="$4"
-    local dns2="$5"
-    local backup_dir="$6"
-    
-    log_info "Configurando IP estático via systemd-networkd..."
-    
-    # Backup
-    cp -r /etc/systemd/network/* "$backup_dir/" 2>/dev/null || true
-    
-    # Criar configuração de rede
-    cat > "/etc/systemd/network/10-$NETWORK_INTERFACE.network" << EOF
-[Match]
-Name=$NETWORK_INTERFACE
-
-[Network]
-DHCP=no
-Address=$static_ip/$netmask
-Gateway=$gateway
-DNS=$dns1
-DNS=$dns2
-EOF
-    
-    # Habilitar e reiniciar systemd-networkd
-    systemctl enable systemd-networkd
-    systemctl restart systemd-networkd
-    
-    log_success "Configuração systemd-networkd aplicada"
-}
-
-# Converter CIDR para máscara de rede
-cidr_to_netmask() {
-    local cidr=$1
-    local mask=""
-    local full_octets=$((cidr / 8))
-    local partial_octet=$((cidr % 8))
-    
-    for ((i=0; i<4; i++)); do
-        if [ $i -lt $full_octets ]; then
-            mask="${mask}255"
-        elif [ $i -eq $full_octets ]; then
-            mask="${mask}$((256 - 2**(8-partial_octet)))"
-        else
-            mask="${mask}0"
-        fi
-        [ $i -lt 3 ] && mask="${mask}."
-    done
-    
-    echo "$mask"
-}
-
-# Registrar serviço instalado
-register_installation() {
-    local service_name="$1"
-    echo "$service_name" >> "$CONFIG_DIR/installed_services"
-    log_info "Serviço $service_name registrado para possível rollback"
-}
-
-# Sistema de rollback
-rollback_installation() {
-    log_warn "Iniciando rollback devido a erro na instalação..."
-    
-    if [ -f "$CONFIG_DIR/installed_services" ]; then
-        while IFS= read -r service; do
-            case "$service" in
-                pihole)
-                    log_info "Removendo Pi-hole..."
-                    pihole uninstall --yes || true
-                    ;;
-                unbound)
-                    log_info "Removendo Unbound..."
-                    apt-get remove -y unbound unbound-anchor || true
-                    apt-get autoremove -y || true
-                    ;;
-                wireguard)
-                    log_info "Removendo WireGuard..."
-                    apt-get remove -y wireguard wireguard-tools || true
-                    apt-get autoremove -y || true
-                    ;;
-                cockpit)
-                    log_info "Removendo Cockpit..."
-                    apt-get remove -y cockpit cockpit-bridge cockpit-ws || true
-                    apt-get autoremove -y || true
-                    ;;
-                filebrowser)
-                    log_info "Removendo FileBrowser..."
-                    systemctl stop filebrowser || true
-                    systemctl disable filebrowser || true
-                    rm -f /usr/local/bin/filebrowser
-                    rm -f /etc/systemd/system/filebrowser.service
-                    userdel -r filebrowser || true
-                    ;;
-                netdata)
-                    log_info "Removendo Netdata..."
-                    bash <(curl -Ss https://my-netdata.io/kickstart.sh) --uninstall --non-interactive || true
-                    ;;
-                fail2ban)
-                    log_info "Removendo Fail2Ban..."
-                    apt-get remove -y fail2ban || true
-                    apt-get autoremove -y || true
-                    ;;
-                ufw)
-                    log_info "Removendo UFW..."
-                    apt-get remove -y ufw || true
-                    ;;
-                cloudflared)
-                    log_info "Removendo Cloudflared..."
-                    systemctl stop cloudflared || true
-                    systemctl disable cloudflared || true
-                    rm -f /usr/local/bin/cloudflared
-                    rm -f /etc/systemd/system/cloudflared.service
-                    ;;
-            esac
-        done < "$CONFIG_DIR/installed_services"
-        
-        # Restaurar backups de rede se necessário
-        if [ "$STATIC_IP_CONFIGURED" = "true" ]; then
-            log_info "Verificando backups de configuração de rede..."
-            local backup_dirs=$(find /etc/boxserver -name "network-backup-*" -type d | sort -r | head -1)
-            if [ -n "$backup_dirs" ]; then
-                log_warn "Configurações de rede foram modificadas. Verifique manualmente se necessário."
-            fi
-        fi
-        
-        rm -f "$CONFIG_DIR/installed_services"
-    fi
-    
-    log_success "Rollback concluído"
-}
-
-# Criar diretórios necessários
-setup_directories() {
-    log_info "Criando estrutura de diretórios..."
-    
-    mkdir -p "$CONFIG_DIR"
-    mkdir -p "$BACKUP_DIR"
-    mkdir -p "/var/log/boxserver"
-    
-    # Inicializar arquivo de serviços instalados
-    > "$CONFIG_DIR/installed_services"
-    
-    # Salvar configurações detectadas
-    cat > "$CONFIG_DIR/system.conf" << EOF
-# Configurações do sistema detectadas automaticamente
-NETWORK_INTERFACE="$NETWORK_INTERFACE"
-SERVER_IP="$SERVER_IP"
-VPN_NETWORK="$VPN_NETWORK"
-VPN_PORT="$VPN_PORT"
-FILEBROWSER_PORT="$FILEBROWSER_PORT"
-COCKPIT_PORT="$COCKPIT_PORT"
-INSTALL_DATE="$(date '+%Y-%m-%d %H:%M:%S')"
-STATIC_IP_CONFIGURED="$STATIC_IP_CONFIGURED"
-EOF
-    
-    log_success "Diretórios criados ✓"
-}
-
-# Atualizar sistema
-update_system() {
-    log_info "Atualizando sistema..."
-    
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get upgrade -y -qq
-    apt-get install -y -qq curl wget gnupg2 software-properties-common apt-transport-https
-    
-    log_success "Sistema atualizado ✓"
-}
-
-################################################################################
-# FUNÇÕES DE INSTALAÇÃO DOS APLICATIVOS
-################################################################################
-
-# Instalar Pi-hole
-install_pihole() {
-    log_info "Instalando Pi-hole..."
-    
-    # Configurações interativas
-    local pihole_interface="$NETWORK_INTERFACE"
-    local pihole_ip="$SERVER_IP"
-    local pihole_dns="127.0.0.1#5335"
-    local pihole_password="$PIHOLE_PASSWORD"
-    local enable_dnssec="true"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                    ${GREEN}CONFIGURAÇÃO DO PI-HOLE${NC}                     ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        collect_user_input "Interface de rede para o Pi-hole:" "$pihole_interface" "pihole_interface"
-        collect_user_input "Endereço IP do servidor:" "$pihole_ip" "pihole_ip"
-        collect_user_input "Servidor DNS upstream (recomendado: 127.0.0.1#5335 para Unbound):" "$pihole_dns" "pihole_dns"
-        collect_user_input "Senha para interface web (deixe vazio para gerar automaticamente):" "" "pihole_password"
-        
-        echo -e "\n${YELLOW}Configurações do Pi-hole:${NC}"
-        echo -e "${BLUE}Interface: $pihole_interface${NC}"
-        echo -e "${BLUE}IP: $pihole_ip${NC}"
-        echo -e "${BLUE}DNS Upstream: $pihole_dns${NC}"
-        echo -e "${BLUE}DNSSEC: Habilitado${NC}"
-        
-        if ! confirm_action "Confirma a instalação do Pi-hole com essas configurações?" "y"; then
-            log_warn "Instalação do Pi-hole cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    # Configuração baseada nas entradas do usuário
-    mkdir -p /etc/pihole
-    cat > /etc/pihole/setupVars.conf << EOF
-PIHOLE_INTERFACE=$pihole_interface
-IPV4_ADDRESS=$pihole_ip/24
-IPV6_ADDRESS=
-PIHOLE_DNS_1=$pihole_dns
-PIHOLE_DNS_2=
-DNS_FQDN_REQUIRED=true
-DNS_BOGUS_PRIV=true
-DNSSEC=$enable_dnssec
-TEMPERATURE_UNIT=C
-WEBUI_BOXED_LAYOUT=boxed
-WEBPASSWORD=
-EOF
-    
-    # Instalação silenciosa
-    curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
-    
-    # Configurar senha se fornecida
-    if [ -n "$pihole_password" ]; then
-        echo "$pihole_password" | pihole -a -p
-        log_info "Senha da interface web configurada"
-    else
-        log_info "Senha da interface web gerada automaticamente. Use 'pihole -a -p' para definir uma senha personalizada."
-    fi
-    
-    systemctl enable pihole-FTL
-    
-    log_success "Pi-hole instalado ✓"
-}
-
-# Instalar Unbound
-install_unbound() {
-    log_info "Instalando Unbound..."
-    
-    # Configurações interativas
-    local unbound_port="5335"
-    local cache_size="50m"
-    local rrset_cache="100m"
-    local num_threads="1"
-    local enable_ipv6="no"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                    ${GREEN}CONFIGURAÇÃO DO UNBOUND${NC}                     ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        collect_user_input "Porta do Unbound (padrão: 5335):" "$unbound_port" "unbound_port"
-        collect_user_input "Tamanho do cache de mensagens (padrão: 50m):" "$cache_size" "cache_size"
-        collect_user_input "Tamanho do cache RRset (padrão: 100m):" "$rrset_cache" "rrset_cache"
-        collect_user_input "Número de threads (padrão: 1 para ARM):" "$num_threads" "num_threads"
-        
-        echo -e "\n${YELLOW}Configurações do Unbound:${NC}"
-        echo -e "${BLUE}Porta: $unbound_port${NC}"
-        echo -e "${BLUE}Cache de mensagens: $cache_size${NC}"
-        echo -e "${BLUE}Cache RRset: $rrset_cache${NC}"
-        echo -e "${BLUE}Threads: $num_threads${NC}"
-        echo -e "${BLUE}IPv6: Desabilitado (otimização ARM)${NC}"
-        
-        if ! confirm_action "Confirma a instalação do Unbound com essas configurações?" "y"; then
-            log_warn "Instalação do Unbound cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    # Validar porta
-    if [ "$unbound_port" -lt 1 ] || [ "$unbound_port" -gt 65535 ]; then
-        log_error "Porta inválida: $unbound_port (deve estar entre 1-65535)"
-        return 1
-    fi
-    
-    # Verificar disponibilidade da porta
-    if ! check_port_availability "$unbound_port" "Unbound"; then
-        return 1
-    fi
-    
-    if ! apt-get install -y unbound; then
-        log_error "Falha na instalação do Unbound"
-        return 1
-    fi
-    
-    # Configuração otimizada para ARM baseada nas entradas do usuário
-    cat > /etc/unbound/unbound.conf.d/pi-hole.conf << EOF
-server:
-    verbosity: 1
-    interface: 127.0.0.1
-    port: $unbound_port
-    do-ip4: yes
-    do-udp: yes
-    do-tcp: yes
-    do-ip6: $enable_ipv6
-    prefer-ip6: no
-    harden-glue: yes
-    harden-dnssec-stripped: yes
-    use-caps-for-id: no
-    edns-buffer-size: 1232
-    prefetch: yes
-    # Otimizado para ARM/baixa RAM
-    num-threads: $num_threads
-    msg-cache-slabs: 1
-    rrset-cache-slabs: 1
-    infra-cache-slabs: 1
-    key-cache-slabs: 1
-    so-rcvbuf: 512k
-    so-sndbuf: 512k
-    # Configurações de privacidade
-    private-address: 192.168.0.0/16
-    private-address: 169.254.0.0/16
-    private-address: 172.16.0.0/12
-    private-address: 10.0.0.0/8
-    private-address: fd00::/8
-    private-address: fe80::/10
-    hide-identity: yes
-    hide-version: yes
-    # Trust anchor automático
-    auto-trust-anchor-file: "/var/lib/unbound/root.key"
-    root-hints: "/var/lib/unbound/root.hints"
-EOF
-    
-    # Configurar trust anchor e root hints
-    wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
-    unbound-anchor -a /var/lib/unbound/root.key || {
-        wget -O /var/lib/unbound/root.key https://data.iana.org/root-anchors/icannbundle.pem
-    }
-    
-    chown unbound:unbound /var/lib/unbound/root.key /var/lib/unbound/root.hints
-    chmod 644 /var/lib/unbound/root.key /var/lib/unbound/root.hints
-    
-    systemctl enable unbound
-    systemctl restart unbound
-    register_installation "unbound"
-    
-    log_success "Unbound instalado com sucesso ✓"
-    log_info "Porta: $unbound_port (localhost)"
-    log_info "Verificação: dig @127.0.0.1 -p $unbound_port google.com"
-}
-
-# Instalar WireGuard
-install_wireguard() {
-    log_info "Instalando WireGuard..."
-    
-    # Configurações interativas
-    local vpn_network="$VPN_NETWORK"
-    local vpn_port="$VPN_PORT"
-    local vpn_interface="$NETWORK_INTERFACE"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                   ${GREEN}CONFIGURAÇÃO DO WIREGUARD${NC}                   ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        collect_user_input "Rede VPN (formato CIDR):" "$vpn_network" "vpn_network"
-        collect_user_input "Porta do servidor VPN:" "$vpn_port" "vpn_port"
-        collect_user_input "Interface de rede para NAT:" "$vpn_interface" "vpn_interface"
-        
-        echo -e "\n${YELLOW}Configurações do WireGuard:${NC}"
-        echo -e "${BLUE}Rede VPN: $vpn_network${NC}"
-        echo -e "${BLUE}Porta: $vpn_port${NC}"
-        echo -e "${BLUE}Interface NAT: $vpn_interface${NC}"
-        echo -e "${BLUE}IP do Servidor: $(echo $vpn_network | sed 's|0/24|1|')${NC}"
-        
-        if ! confirm_action "Confirma a instalação do WireGuard com essas configurações?" "y"; then
-            log_warn "Instalação do WireGuard cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    apt-get install -y wireguard wireguard-tools
-    
-    # Criar diretórios
-    mkdir -p /etc/wireguard/keys
-    mkdir -p /etc/wireguard/clients
-    
-    # Gerar chaves do servidor
-    cd /etc/wireguard/keys
-    umask 077
-    wg genkey | tee privatekey | wg pubkey | tee publickey
-    chmod 600 privatekey
-    chmod 644 publickey
-    
-    local server_private_key=$(cat privatekey)
-    local server_ip=$(echo $vpn_network | sed 's|0/24|1|')
-    
-    # Configurar IP forwarding permanente
-    if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
-        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    fi
-    sysctl -w net.ipv4.ip_forward=1
-    
-    # Criar configuração do servidor
-    cat > /etc/wireguard/wg0.conf << EOF
-[Interface]
-PrivateKey = $server_private_key
-Address = $server_ip/24
-ListenPort = $vpn_port
-
-# Regras de NAT e forwarding
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $vpn_interface -j MASQUERADE; iptables -A INPUT -i %i -j ACCEPT
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $vpn_interface -j MASQUERADE; iptables -D INPUT -i %i -j ACCEPT
-
-# Adicione peers aqui conforme necessário
-EOF
-    
-    systemctl enable wg-quick@wg0
-    
-    log_success "WireGuard instalado ✓"
-}
-
-# Instalar Cockpit
-install_cockpit() {
-    log_info "Instalando Cockpit..."
-    
-    # Configurações interativas
-    local cockpit_port="$COCKPIT_PORT"
-    local install_machines="yes"
-    local install_podman="yes"
-    local install_networkmanager="yes"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                    ${GREEN}CONFIGURAÇÃO DO COCKPIT${NC}                     ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        collect_user_input "Porta do Cockpit (padrão: 9090):" "$cockpit_port" "cockpit_port"
-        
-        echo -e "\n${YELLOW}Módulos adicionais disponíveis:${NC}"
-        if confirm_action "Instalar cockpit-machines (gerenciamento de VMs)?" "y"; then
-            install_machines="yes"
-        else
-            install_machines="no"
-        fi
-        
-        if confirm_action "Instalar cockpit-podman (gerenciamento de containers)?" "y"; then
-            install_podman="yes"
-        else
-            install_podman="no"
-        fi
-        
-        if confirm_action "Instalar cockpit-networkmanager (gerenciamento de rede)?" "y"; then
-            install_networkmanager="yes"
-        else
-            install_networkmanager="no"
-        fi
-        
-        echo -e "\n${YELLOW}Configurações do Cockpit:${NC}"
-        echo -e "${BLUE}Porta: $cockpit_port${NC}"
-        echo -e "${BLUE}Módulo Machines: $install_machines${NC}"
-        echo -e "${BLUE}Módulo Podman: $install_podman${NC}"
-        echo -e "${BLUE}Módulo NetworkManager: $install_networkmanager${NC}"
-        echo -e "${BLUE}Acesso: https://$SERVER_IP:$cockpit_port${NC}"
-        
-        if ! confirm_action "Confirma a instalação do Cockpit com essas configurações?" "y"; then
-            log_warn "Instalação do Cockpit cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    # Instalação base
-    local packages="cockpit cockpit-system"
-    
-    # Adicionar módulos conforme seleção do usuário
-    [ "$install_machines" = "yes" ] && packages="$packages cockpit-machines"
-    [ "$install_podman" = "yes" ] && packages="$packages cockpit-podman"
-    [ "$install_networkmanager" = "yes" ] && packages="$packages cockpit-networkmanager"
-    
-    apt-get install -y $packages
-    
-    # Configuração da porta se diferente do padrão
-    if [ "$cockpit_port" != "9090" ]; then
-        mkdir -p /etc/systemd/system/cockpit.socket.d
-        cat > /etc/systemd/system/cockpit.socket.d/listen.conf << EOF
-[Socket]
-ListenStream=
-ListenStream=$cockpit_port
-EOF
-    fi
-    
-    systemctl enable cockpit.socket
-    systemctl start cockpit.socket
-    
-    log_success "Cockpit instalado ✓ (Acesso: https://$SERVER_IP:$cockpit_port)"
-}
-
-# Instalar FileBrowser
-install_filebrowser() {
-    log_info "Instalando FileBrowser..."
-    
-    # Configurações interativas
-    local fb_port="$FILEBROWSER_PORT"
-    local fb_username="admin"
-    local fb_password="admin"
-    local fb_root_dir="/"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                  ${GREEN}CONFIGURAÇÃO DO FILEBROWSER${NC}                 ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        collect_user_input "Porta do FileBrowser:" "$fb_port" "fb_port"
-        collect_user_input "Nome de usuário admin:" "$fb_username" "fb_username"
-        collect_user_input "Senha do admin:" "$fb_password" "fb_password"
-        collect_user_input "Diretório raiz para navegação:" "$fb_root_dir" "fb_root_dir"
-        
-        echo -e "\n${YELLOW}Configurações do FileBrowser:${NC}"
-        echo -e "${BLUE}Porta: $fb_port${NC}"
-        echo -e "${BLUE}Usuário: $fb_username${NC}"
-        echo -e "${BLUE}Diretório raiz: $fb_root_dir${NC}"
-        echo -e "${BLUE}Acesso: http://$SERVER_IP:$fb_port${NC}"
-        
-        if ! confirm_action "Confirma a instalação do FileBrowser com essas configurações?" "y"; then
-            log_warn "Instalação do FileBrowser cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    # Download da versão mais recente
-    local fb_version=$(curl -s https://api.github.com/repos/filebrowser/filebrowser/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
-    wget -O /usr/local/bin/filebrowser "https://github.com/filebrowser/filebrowser/releases/download/${fb_version}/linux-arm-filebrowser.tar.gz"
-    tar -xzf /usr/local/bin/filebrowser -C /usr/local/bin/
-    chmod +x /usr/local/bin/filebrowser
-    
-    # Configuração baseada nas entradas do usuário
-    mkdir -p /etc/filebrowser
-    filebrowser config init --database /etc/filebrowser/filebrowser.db
-    filebrowser config set --port $fb_port --database /etc/filebrowser/filebrowser.db --root "$fb_root_dir"
-    filebrowser users add "$fb_username" "$fb_password" --perm.admin --database /etc/filebrowser/filebrowser.db
-    
-    # Criar serviço systemd
-    cat > /etc/systemd/system/filebrowser.service << EOF
-[Unit]
-Description=File Browser
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/filebrowser --database /etc/filebrowser/filebrowser.db
-User=root
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    
-    systemctl daemon-reload
-    systemctl enable filebrowser
-    systemctl start filebrowser
-    
-    log_success "FileBrowser instalado ✓ (Acesso: http://$SERVER_IP:$fb_port)"
-}
-
-# Instalar Netdata
-install_netdata() {
-    log_info "Instalando Netdata..."
-    
-    # Configurações interativas
-    local netdata_port="19999"
-    local allowed_networks="localhost 10.* 192.168.* 172.16.* 172.17.* 172.18.* 172.19.* 172.20.* 172.21.* 172.22.* 172.23.* 172.24.* 172.25.* 172.26.* 172.27.* 172.28.* 172.29.* 172.30.* 172.31.*"
-    local disable_telemetry="yes"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                    ${GREEN}CONFIGURAÇÃO DO NETDATA${NC}                     ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        collect_user_input "Porta do Netdata:" "$netdata_port" "netdata_port"
-        collect_user_input "Redes permitidas (separadas por espaço):" "$allowed_networks" "allowed_networks"
-        
-        echo -e "\n${YELLOW}Configurações do Netdata:${NC}"
-        echo -e "${BLUE}Porta: $netdata_port${NC}"
-        echo -e "${BLUE}Redes permitidas: $allowed_networks${NC}"
-        echo -e "${BLUE}Telemetria: Desabilitada${NC}"
-        echo -e "${BLUE}Acesso: http://$SERVER_IP:$netdata_port${NC}"
-        
-        if ! confirm_action "Confirma a instalação do Netdata com essas configurações?" "y"; then
-            log_warn "Instalação do Netdata cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    # Download e instalação
-    local install_options="--dont-wait"
-    [ "$disable_telemetry" = "yes" ] && install_options="$install_options --disable-telemetry"
-    
-    bash <(curl -Ss https://my-netdata.io/kickstart.sh) $install_options
-    
-    # Configuração baseada nas entradas do usuário
-    cat > /etc/netdata/netdata.conf << EOF
-[global]
-    run as user = netdata
-    web files owner = root
-    web files group = netdata
-    bind socket to IP = 0.0.0.0
-    default port = $netdata_port
-    
-[web]
-    web files owner = root
-    web files group = netdata
-    allow connections from = $allowed_networks
-EOF
-    
-    systemctl restart netdata
-    
-    log_success "Netdata instalado ✓ (Acesso: http://$SERVER_IP:$netdata_port)"
-}
-
-# Instalar Fail2Ban
-install_fail2ban() {
-    log_info "Instalando Fail2Ban..."
-    
-    # Configurações interativas
-    local ban_time="3600"
-    local find_time="600"
-    local max_retry="3"
-    local ssh_enabled="true"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                   ${GREEN}CONFIGURAÇÃO DO FAIL2BAN${NC}                    ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        collect_user_input "Tempo de banimento em segundos (padrão: 3600 = 1 hora):" "$ban_time" "ban_time"
-        collect_user_input "Janela de tempo para detecção em segundos (padrão: 600 = 10 min):" "$find_time" "find_time"
-        collect_user_input "Máximo de tentativas antes do banimento:" "$max_retry" "max_retry"
-        
-        echo -e "\n${YELLOW}Configurações do Fail2Ban:${NC}"
-        echo -e "${BLUE}Tempo de banimento: $ban_time segundos${NC}"
-        echo -e "${BLUE}Janela de detecção: $find_time segundos${NC}"
-        echo -e "${BLUE}Máximo de tentativas: $max_retry${NC}"
-        echo -e "${BLUE}Proteção SSH: Habilitada${NC}"
-        
-        if ! confirm_action "Confirma a instalação do Fail2Ban com essas configurações?" "y"; then
-            log_warn "Instalação do Fail2Ban cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    apt-get install -y fail2ban
-    
-    # Configuração baseada nas entradas do usuário
-    cat > /etc/fail2ban/jail.local << EOF
-[DEFAULT]
-bantime = $ban_time
-findtime = $find_time
-maxretry = $max_retry
-
-[sshd]
-enabled = $ssh_enabled
-port = ssh
-logpath = /var/log/auth.log
-maxretry = $max_retry
-EOF
-    
-    systemctl enable fail2ban
-    systemctl restart fail2ban
-    
-    log_success "Fail2Ban instalado ✓"
-}
-
-# Instalar UFW
-install_ufw() {
-    log_info "Instalando UFW..."
-    
-    # Configurações interativas
-    local allow_ssh="yes"
-    local ssh_port="22"
-    local custom_ports=""
-    local default_policy_in="deny"
-    local default_policy_out="allow"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                     ${GREEN}CONFIGURAÇÃO DO UFW${NC}                        ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        if confirm_action "Permitir acesso SSH (recomendado)?" "y"; then
-            allow_ssh="yes"
-            collect_user_input "Porta SSH (padrão: 22):" "$ssh_port" "ssh_port"
-        else
-            allow_ssh="no"
-        fi
-        
-        collect_user_input "Portas adicionais para permitir (formato: porta/protocolo, separadas por espaço):" "$custom_ports" "custom_ports"
-        
-        echo -e "\n${YELLOW}Configurações do UFW:${NC}"
-        echo -e "${BLUE}Política padrão entrada: $default_policy_in${NC}"
-        echo -e "${BLUE}Política padrão saída: $default_policy_out${NC}"
-        echo -e "${BLUE}SSH permitido: $allow_ssh${NC}"
-        [ "$allow_ssh" = "yes" ] && echo -e "${BLUE}Porta SSH: $ssh_port${NC}"
-        echo -e "${BLUE}Portas dos serviços: Serão permitidas automaticamente${NC}"
-        [ -n "$custom_ports" ] && echo -e "${BLUE}Portas adicionais: $custom_ports${NC}"
-        
-        if ! confirm_action "Confirma a instalação do UFW com essas configurações?" "y"; then
-            log_warn "Instalação do UFW cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    apt-get install -y ufw
-    
-    # Configuração baseada nas entradas do usuário
-    ufw --force reset
-    ufw default $default_policy_in incoming
-    ufw default $default_policy_out outgoing
-    
-    # Permitir SSH se solicitado
-    if [ "$allow_ssh" = "yes" ]; then
-        if [ "$ssh_port" = "22" ]; then
-            ufw allow ssh
-        else
-            ufw allow $ssh_port/tcp
-        fi
-    fi
-    
-    # Permitir serviços essenciais
-    ufw allow 53  # DNS
-    ufw allow $VPN_PORT/udp  # WireGuard
-    ufw allow $COCKPIT_PORT  # Cockpit
-    ufw allow $FILEBROWSER_PORT  # FileBrowser
-    ufw allow 19999  # Netdata
-    
-    # Permitir portas adicionais
-    if [ -n "$custom_ports" ]; then
-        for port in $custom_ports; do
-            ufw allow $port
-        done
-    fi
-    
-    ufw --force enable
-    
-    log_success "UFW instalado ✓"
-}
-
-# Instalar RNG-tools
-install_rng_tools() {
-    log_info "Instalando RNG-tools..."
-    
-    # Configurações interativas
-    local rng_device="auto"
-    local enable_service="yes"
-    local watermark="2048"
-    local feed_interval="60"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                   ${GREEN}CONFIGURAÇÃO DO RNG-TOOLS${NC}                   ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        echo -e "\n${YELLOW}Opções de dispositivo RNG:${NC}"
-        echo -e "${BLUE}1. auto - Detectar automaticamente (recomendado)${NC}"
-        echo -e "${BLUE}2. /dev/hwrng - Hardware RNG (se disponível)${NC}"
-        echo -e "${BLUE}3. /dev/urandom - Software RNG${NC}"
-        
-        collect_user_input "Escolha o dispositivo RNG (auto/hwrng/urandom):" "auto" "rng_choice"
-        
-        case "$rng_choice" in
-            "hwrng") rng_device="/dev/hwrng" ;;
-            "urandom") rng_device="/dev/urandom" ;;
-            *) rng_device="auto" ;;
-        esac
-        
-        collect_user_input "Watermark de preenchimento (padrão: 2048):" "$watermark" "watermark"
-        collect_user_input "Intervalo de alimentação em segundos (padrão: 60):" "$feed_interval" "feed_interval"
-        
-        echo -e "\n${YELLOW}Configurações do RNG-tools:${NC}"
-        echo -e "${BLUE}Dispositivo RNG: $rng_device${NC}"
-        echo -e "${BLUE}Watermark: $watermark${NC}"
-        echo -e "${BLUE}Intervalo: $feed_interval segundos${NC}"
-        echo -e "${BLUE}Função: Melhora a entropia do sistema${NC}"
-        echo -e "${BLUE}Recomendado para: Sistemas ARM com pouca entropia${NC}"
-        
-        if ! confirm_action "Confirma a instalação do RNG-tools com essas configurações?" "y"; then
-            log_warn "Instalação do RNG-tools cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    apt-get install -y rng-tools
-    
-    # Configuração baseada nas entradas do usuário
-    cat > /etc/default/rng-tools << EOF
-# Configuração gerada automaticamente pelo Boxserver
-if [ "$rng_device" = "auto" ]; then
-    # Detectar automaticamente
-    if [ -e "/dev/hwrng" ]; then
-        RNGDEVICE="/dev/hwrng"
-    else
-        RNGDEVICE="/dev/urandom"
-    fi
-else
-    RNGDEVICE="$rng_device"
-fi
-
-# Opções otimizadas para ARM
-RNGDOPTIONS="--fill-watermark=$watermark --feed-interval=$feed_interval --timeout=10"
-EOF
-    
-    if [ "$enable_service" = "yes" ]; then
-        systemctl enable rng-tools
-        systemctl restart rng-tools
-    fi
-    
-    log_success "RNG-tools instalado ✓"
-}
-
-# Instalar Rclone
-install_rclone() {
-    log_info "Instalando Rclone..."
-    
-    # Configurações interativas
-    local install_method="script"
-    local create_config="no"
-    local enable_webui="no"
-    local webui_port="5572"
-    local webui_user="admin"
-    local webui_pass=""
-    local setup_gdrive="no"
-    local gdrive_accounts="1"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                    ${GREEN}CONFIGURAÇÃO DO RCLONE${NC}                      ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        echo -e "\n${YELLOW}Informações sobre o Rclone:${NC}"
-        echo -e "${BLUE}• Ferramenta para sincronização com armazenamento em nuvem${NC}"
-        echo -e "${BLUE}• Suporta Google Drive, Dropbox, OneDrive, AWS S3, etc.${NC}"
-        echo -e "${BLUE}• Web UI disponível para gerenciamento via navegador${NC}"
-        echo -e "${BLUE}• Suporte a múltiplas contas Google Drive${NC}"
-        
-        if confirm_action "Deseja habilitar o Rclone Web UI?" "y"; then
-            enable_webui="yes"
-            collect_user_input "Porta para Web UI (padrão: 5572):" "$webui_port" "webui_port"
-            collect_user_input "Usuário para Web UI (padrão: admin):" "$webui_user" "webui_user"
-            
-            while [ -z "$webui_pass" ]; do
-                collect_user_input "Senha para Web UI (obrigatória):" "" "webui_pass"
-                if [ -z "$webui_pass" ]; then
-                    echo -e "${RED}Senha é obrigatória para segurança!${NC}"
-                fi
-            done
-        fi
-        
-        if confirm_action "Deseja configurar Google Drive agora?" "n"; then
-            setup_gdrive="yes"
-            collect_user_input "Quantas contas Google Drive configurar (1-5):" "$gdrive_accounts" "gdrive_accounts"
-            
-            # Validar número de contas
-            if ! [[ "$gdrive_accounts" =~ ^[1-5]$ ]]; then
-                gdrive_accounts="1"
-            fi
-        fi
-        
-        echo -e "\n${YELLOW}Configurações do Rclone:${NC}"
-        echo -e "${BLUE}Método de instalação: Script oficial${NC}"
-        echo -e "${BLUE}Web UI habilitado: $enable_webui${NC}"
-        [ "$enable_webui" = "yes" ] && echo -e "${BLUE}Web UI porta: $webui_port${NC}"
-        [ "$enable_webui" = "yes" ] && echo -e "${BLUE}Web UI usuário: $webui_user${NC}"
-        echo -e "${BLUE}Google Drive: $setup_gdrive${NC}"
-        [ "$setup_gdrive" = "yes" ] && echo -e "${BLUE}Contas Google Drive: $gdrive_accounts${NC}"
-        
-        if ! confirm_action "Confirma a instalação do Rclone com essas configurações?" "y"; then
-            log_warn "Instalação do Rclone cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    # Instalação
-    curl https://rclone.org/install.sh | bash
-    
-    # Configurar Web UI se solicitado
-    if [ "$enable_webui" = "yes" ]; then
-        # Criar serviço systemd para Rclone Web UI
-        cat > /etc/systemd/system/rclone-webui.service << EOF
-[Unit]
-Description=Rclone Web UI
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/rclone rcd --rc-web-gui --rc-addr 0.0.0.0:$webui_port --rc-user $webui_user --rc-pass $webui_pass --rc-web-gui-no-open-browser
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        
-        systemctl daemon-reload
-        systemctl enable rclone-webui
-        
-        echo -e "\n${GREEN}Rclone Web UI configurado como serviço${NC}"
-        echo -e "${BLUE}Acesse em: http://$(hostname -I | awk '{print $1}'):$webui_port${NC}"
-        echo -e "${BLUE}Usuário: $webui_user${NC}"
-        echo -e "${BLUE}Senha: [configurada]${NC}"
-    fi
-    
-    # Configurar Google Drive se solicitado
-    if [ "$setup_gdrive" = "yes" ] && [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${YELLOW}Configurando Google Drive...${NC}"
-        echo -e "${BLUE}IMPORTANTE: Para múltiplas contas, você precisará:${NC}"
-        echo -e "${BLUE}1. Criar um projeto no Google Cloud Console${NC}"
-        echo -e "${BLUE}2. Habilitar a Google Drive API${NC}"
-        echo -e "${BLUE}3. Criar credenciais OAuth 2.0${NC}"
-        echo -e "${BLUE}4. Configurar cada conta como um 'remote' separado${NC}"
-        
-        for i in $(seq 1 $gdrive_accounts); do
-            echo -e "\n${YELLOW}Configurando conta Google Drive #$i...${NC}"
-            echo -e "${BLUE}Nome sugerido: gdrive$i${NC}"
-            
-            if confirm_action "Configurar conta #$i agora?" "y"; then
-                echo -e "${BLUE}Iniciando configuração interativa...${NC}"
-                sleep 2
-                rclone config || true
-            else
-                echo -e "${BLUE}Configure depois com: rclone config${NC}"
-            fi
-        done
-        
-        echo -e "\n${GREEN}Dicas para Google Drive:${NC}"
-        echo -e "${BLUE}• Use 'rclone config' para adicionar mais contas${NC}"
-        echo -e "${BLUE}• Cada conta será um 'remote' separado (ex: gdrive1:, gdrive2:)${NC}"
-        echo -e "${BLUE}• No Web UI, você verá todos os remotes configurados${NC}"
-    fi
-    
-    # Iniciar Web UI se configurado
-    if [ "$enable_webui" = "yes" ]; then
-        systemctl start rclone-webui
-        sleep 2
-        
-        if systemctl is-active --quiet rclone-webui; then
-            echo -e "\n${GREEN}Rclone Web UI iniciado com sucesso!${NC}"
-        else
-            echo -e "\n${RED}Erro ao iniciar Rclone Web UI. Verifique os logs.${NC}"
-        fi
-    fi
-    
-    log_success "Rclone instalado ✓ (Configure com: rclone config ou Web UI)"
-}
-
-# Instalar Rsync
-install_rsync() {
-    log_info "Instalando Rsync..."
-    
-    # Configurações interativas
-    local enable_daemon="no"
-    local rsync_port="873"
-    local create_config="no"
-    local backup_dir="/var/backups"
-    local enable_websync="no"
-    local websync_port="3000"
-    local websync_user="admin"
-    local websync_pass=""
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                    ${GREEN}CONFIGURAÇÃO DO RSYNC${NC}                       ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        echo -e "\n${YELLOW}Informações sobre o Rsync:${NC}"
-        echo -e "${BLUE}• Ferramenta para sincronização e backup de arquivos${NC}"
-        echo -e "${BLUE}• Pode funcionar como daemon para backups remotos${NC}"
-        echo -e "${BLUE}• Útil para backups incrementais e sincronização${NC}"
-        echo -e "${BLUE}• Websync disponível para interface web${NC}"
-        
-        if confirm_action "Deseja habilitar o daemon do Rsync (para backups remotos)?" "n"; then
-            enable_daemon="yes"
-            collect_user_input "Porta do daemon Rsync (padrão: 873):" "$rsync_port" "rsync_port"
-            
-            if confirm_action "Criar configuração básica do daemon?" "y"; then
-                create_config="yes"
-                collect_user_input "Diretório para backups (padrão: /var/backups):" "$backup_dir" "backup_dir"
-            fi
-        fi
-        
-        if confirm_action "Deseja instalar Websync (interface web para Rsync)?" "y"; then
-            enable_websync="yes"
-            collect_user_input "Porta para Websync (padrão: 3000):" "$websync_port" "websync_port"
-            collect_user_input "Usuário para Websync (padrão: admin):" "$websync_user" "websync_user"
-            
-            while [ -z "$websync_pass" ]; do
-                collect_user_input "Senha para Websync (obrigatória):" "" "websync_pass"
-                if [ -z "$websync_pass" ]; then
-                    echo -e "${RED}Senha é obrigatória para segurança!${NC}"
-                fi
-            done
-        fi
-        
-        echo -e "\n${YELLOW}Configurações do Rsync:${NC}"
-        echo -e "${BLUE}Daemon habilitado: $enable_daemon${NC}"
-        [ "$enable_daemon" = "yes" ] && echo -e "${BLUE}Porta daemon: $rsync_port${NC}"
-        [ "$create_config" = "yes" ] && echo -e "${BLUE}Diretório de backup: $backup_dir${NC}"
-        echo -e "${BLUE}Websync habilitado: $enable_websync${NC}"
-        [ "$enable_websync" = "yes" ] && echo -e "${BLUE}Porta Websync: $websync_port${NC}"
-        [ "$enable_websync" = "yes" ] && echo -e "${BLUE}Usuário Websync: $websync_user${NC}"
-        echo -e "${BLUE}Uso: Sincronização e backup de arquivos${NC}"
-        
-        if ! confirm_action "Confirma a instalação do Rsync com essas configurações?" "y"; then
-            log_warn "Instalação do Rsync cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    apt-get install -y rsync
-    
-    # Configuração do daemon se solicitada
-    if [ "$enable_daemon" = "yes" ]; then
-        # Habilitar daemon no systemd
-        systemctl enable rsync
-        
-        # Criar configuração básica se solicitada
-        if [ "$create_config" = "yes" ]; then
-            mkdir -p "$backup_dir"
-            
-            cat > /etc/rsyncd.conf << EOF
-# Configuração gerada automaticamente pelo Boxserver
-port = $rsync_port
-log file = /var/log/rsyncd.log
-pid file = /var/run/rsyncd.pid
-lock file = /var/run/rsync.lock
-
-[backup]
-path = $backup_dir
-comment = Diretório de backup do Boxserver
-uid = root
-gid = root
-read only = false
-list = yes
-auth users = backup
-secrets file = /etc/rsyncd.secrets
-hosts allow = 192.168.0.0/16 10.0.0.0/8 172.16.0.0/12
-EOF
-            
-            # Criar arquivo de senhas (usuário deve configurar)
-            echo "# Configure as credenciais: backup:senha" > /etc/rsyncd.secrets
-            chmod 600 /etc/rsyncd.secrets
-            
-            echo -e "\n${YELLOW}IMPORTANTE:${NC}"
-            echo -e "${BLUE}Configure a senha em /etc/rsyncd.secrets${NC}"
-            echo -e "${BLUE}Formato: backup:suasenha${NC}"
-        fi
-        
-        systemctl start rsync
-    fi
-    
-    # Instalar Websync se solicitado
-    if [ "$enable_websync" = "yes" ]; then
-        # Verificar se Docker está instalado
-        if ! command -v docker &> /dev/null; then
-            echo -e "\n${YELLOW}Docker não encontrado. Instalando Docker...${NC}"
-            curl -fsSL https://get.docker.com -o get-docker.sh
-            sh get-docker.sh
-            systemctl enable docker
-            systemctl start docker
-            rm get-docker.sh
-        fi
-        
-        # Criar diretório para configurações do Websync
-        mkdir -p /opt/websync
-        
-        # Criar docker-compose.yml para Websync
-        cat > /opt/websync/docker-compose.yml << EOF
-version: '3.8'
-services:
-  websync:
-    image: furier/websync:latest
-    container_name: websync
-    ports:
-      - "$websync_port:3000"
-    environment:
-      - WEBSYNC_USER=$websync_user
-      - WEBSYNC_PASSWORD=$websync_pass
-      - NODE_ENV=production
-    volumes:
-      - /opt/websync/data:/app/data
-      - /opt/websync/logs:/app/logs
-      - $backup_dir:$backup_dir:rw
-      - /etc/ssh:/etc/ssh:ro
-    restart: unless-stopped
-    network_mode: host
-EOF
-        
-        # Criar diretórios necessários
-        mkdir -p /opt/websync/data /opt/websync/logs
-        
-        # Criar serviço systemd para Websync
-        cat > /etc/systemd/system/websync.service << EOF
-[Unit]
-Description=Websync - Web interface for Rsync
-Requires=docker.service
-After=docker.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=/opt/websync
-ExecStart=/usr/bin/docker-compose up -d
-ExecStop=/usr/bin/docker-compose down
-TimeoutStartSec=0
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        
-        # Instalar docker-compose se não estiver instalado
-        if ! command -v docker-compose &> /dev/null; then
-            curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            chmod +x /usr/local/bin/docker-compose
-        fi
-        
-        # Habilitar e iniciar Websync
-        systemctl daemon-reload
-        systemctl enable websync
-        systemctl start websync
-        
-        sleep 5
-        
-        echo -e "\n${GREEN}Websync configurado!${NC}"
-        echo -e "${BLUE}Acesse em: http://$(hostname -I | awk '{print $1}'):$websync_port${NC}"
-        echo -e "${BLUE}Usuário: $websync_user${NC}"
-        echo -e "${BLUE}Senha: [configurada]${NC}"
-        echo -e "\n${YELLOW}Funcionalidades do Websync:${NC}"
-        echo -e "${BLUE}• Gerenciar tarefas Rsync via interface web${NC}"
-        echo -e "${BLUE}• Agendar backups automáticos${NC}"
-        echo -e "${BLUE}• Monitorar logs em tempo real${NC}"
-        echo -e "${BLUE}• Gerenciar hosts SSH${NC}"
-        
-        # Verificar se o serviço está rodando
-        if systemctl is-active --quiet websync; then
-            echo -e "\n${GREEN}Websync iniciado com sucesso!${NC}"
-        else
-            echo -e "\n${RED}Erro ao iniciar Websync. Verifique os logs com: journalctl -u websync${NC}"
-        fi
-    fi
-    
-    log_success "Rsync instalado ✓ $([ "$enable_websync" = "yes" ] && echo "com Websync")"
-}
-
-# Instalar MiniDLNA
-install_minidlna() {
-    log_info "Instalando MiniDLNA..."
-    
-    # Configurações interativas
-    local media_dirs="/home"
-    local friendly_name="Boxserver DLNA"
-    local enable_inotify="yes"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                   ${GREEN}CONFIGURAÇÃO DO MINIDLNA${NC}                    ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        collect_user_input "Diretórios de mídia (separados por vírgula):" "$media_dirs" "media_dirs"
-        collect_user_input "Nome amigável do servidor DLNA:" "$friendly_name" "friendly_name"
-        
-        echo -e "\n${YELLOW}Configurações do MiniDLNA:${NC}"
-        echo -e "${BLUE}Diretórios de mídia: $media_dirs${NC}"
-        echo -e "${BLUE}Nome do servidor: $friendly_name${NC}"
-        echo -e "${BLUE}Monitoramento automático: Habilitado${NC}"
-        
-        if ! confirm_action "Confirma a instalação do MiniDLNA com essas configurações?" "y"; then
-            log_warn "Instalação do MiniDLNA cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    apt-get install -y minidlna
-    
-    # Configuração baseada nas entradas do usuário
-    cat > /etc/minidlna.conf << EOF
-# Configuração gerada automaticamente pelo Boxserver
-EOF
-    
-    # Adicionar diretórios de mídia
-    IFS=',' read -ra DIRS <<< "$media_dirs"
-    for dir in "${DIRS[@]}"; do
-        dir=$(echo "$dir" | xargs)  # Remove espaços
-        echo "media_dir=V,$dir" >> /etc/minidlna.conf
-        echo "media_dir=A,$dir" >> /etc/minidlna.conf
-        echo "media_dir=P,$dir" >> /etc/minidlna.conf
-    done
-    
-    # Adicionar configurações restantes
-    cat >> /etc/minidlna.conf << EOF
-friendly_name=$friendly_name
-db_dir=/var/cache/minidlna
-log_dir=/var/log
-inotify=$enable_inotify
-enable_tivo=no
-strict_dlna=no
-EOF
-    
-    systemctl enable minidlna
-    systemctl restart minidlna
-    
-    log_success "MiniDLNA instalado ✓"
-}
-
-# Instalar Cloudflared
-install_cloudflared() {
-    log_info "Instalando Cloudflared..."
-    
-    # Configurações interativas
-    local install_location="/usr/local/bin/cloudflared"
-    local create_tunnel="no"
-    local tunnel_name="boxserver-tunnel"
-    
-    if [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${BLUE}║${NC}                  ${GREEN}CONFIGURAÇÃO DO CLOUDFLARED${NC}                  ${BLUE}║${NC}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-        
-        echo -e "\n${YELLOW}Informações sobre o Cloudflared:${NC}"
-        echo -e "${BLUE}• Cria túneis seguros para expor serviços locais${NC}"
-        echo -e "${BLUE}• Requer conta Cloudflare (gratuita)${NC}"
-        echo -e "${BLUE}• Permite acesso remoto sem abrir portas no roteador${NC}"
-        
-        collect_user_input "Local de instalação:" "$install_location" "install_location"
-        
-        if confirm_action "Deseja configurar um túnel agora (requer login Cloudflare)?" "n"; then
-            create_tunnel="yes"
-            collect_user_input "Nome do túnel:" "$tunnel_name" "tunnel_name"
-        fi
-        
-        echo -e "\n${YELLOW}Configurações do Cloudflared:${NC}"
-        echo -e "${BLUE}Local de instalação: $install_location${NC}"
-        echo -e "${BLUE}Configuração de túnel: $create_tunnel${NC}"
-        [ "$create_tunnel" = "yes" ] && echo -e "${BLUE}Nome do túnel: $tunnel_name${NC}"
-        echo -e "${BLUE}Comandos úteis:${NC}"
-        echo -e "${BLUE}  - Login: cloudflared tunnel login${NC}"
-        echo -e "${BLUE}  - Criar túnel: cloudflared tunnel create <nome>${NC}"
-        
-        if ! confirm_action "Confirma a instalação do Cloudflared com essas configurações?" "y"; then
-            log_warn "Instalação do Cloudflared cancelada pelo usuário"
-            return 1
-        fi
-    fi
-    
-    # Download da versão ARM
-    wget -O "$install_location" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm
-    chmod +x "$install_location"
-    
-    # Configuração de túnel se solicitada
-    if [ "$create_tunnel" = "yes" ] && [ "$INTERACTIVE_MODE" = "true" ]; then
-        echo -e "\n${YELLOW}Iniciando configuração do túnel Cloudflare...${NC}"
-        echo -e "${BLUE}1. Primeiro faça login:${NC}"
-        cloudflared tunnel login || true
-        
-        echo -e "\n${BLUE}2. Criando túnel '$tunnel_name':${NC}"
-        cloudflared tunnel create "$tunnel_name" || true
-        
-        echo -e "\n${BLUE}3. Configure o arquivo de configuração em ~/.cloudflared/config.yml${NC}"
-    fi
-    
-    log_success "Cloudflared instalado ✓ (Configure com: cloudflared tunnel login)"
-}
-
-################################################################################
-# MENU INTERATIVO
-################################################################################
-
-show_menu() {
-    clear
-    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║${NC}              ${GREEN}BOXSERVER MXQ-4K - INSTALADOR AUTOMATIZADO${NC}              ${BLUE}║${NC}"
-    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${BLUE}║${NC} Sistema detectado: $(uname -m) - RAM: $(free -h | awk 'NR==2{print $2}') - Interface: $NETWORK_INTERFACE ${BLUE}║${NC}"
-    
-    # Mostrar modo atual
-    echo -e "${BLUE}║${NC} Modo: ${GREEN}INTERATIVO${NC} (configurações serão solicitadas)           ${BLUE}║${NC}"
-    
-    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${BLUE}║${NC}  ${YELLOW}Selecione os aplicativos para instalar:${NC}                        ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}                                                              ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [ 1] Pi-hole          - Bloqueio de anúncios e DNS          ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [ 2] Unbound          - DNS recursivo local                 ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [ 3] WireGuard        - Servidor VPN                        ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [ 4] Cockpit          - Painel de administração web         ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [ 5] FileBrowser      - Gerenciamento de arquivos web       ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [ 6] Netdata          - Monitoramento em tempo real         ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [ 7] Fail2Ban         - Proteção contra ataques             ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [ 8] UFW              - Firewall simplificado               ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [ 9] RNG-tools        - Gerador de entropia                 ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [10] Rclone           - Sincronização com nuvem             ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [11] Rsync            - Backup local                        ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [12] MiniDLNA         - Servidor de mídia                   ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [13] Cloudflared      - Tunnel Cloudflare                   ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}                                                              ${BLUE}║${NC}"
-
-    echo -e "${BLUE}║${NC}  [99] Instalar TODOS os aplicativos                          ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [88] DESINSTALAR serviços instalados                        ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  [ 0] Sair                                                   ${BLUE}║${NC}"
-    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo
-    echo -e "${YELLOW}Digite os números separados por espaço (ex: 1 2 3) ou 99 para todos:${NC}"
-}
-
-# Processar seleção do usuário
-process_selection() {
-    local selection="$1"
-    local apps_to_install=()
-    
-    if [[ "$selection" == *"99"* ]]; then
-        apps_to_install=(1 2 3 4 5 6 7 8 9 10 11 12 13)
-        
-        # Confirmação para instalação completa
-        echo -e "\n${YELLOW}ATENÇÃO: Modo interativo ativo!${NC}"
-        echo -e "${BLUE}Cada aplicativo solicitará configurações individuais.${NC}"
-        if ! confirm_action "Deseja continuar com a instalação de TODOS os aplicativos?" "y"; then
-            log_warn "Instalação cancelada pelo usuário"
-            return 0
-        fi
-    else
-        read -ra apps_to_install <<< "$selection"
-    fi
-    
-    local total_apps=${#apps_to_install[@]}
-    local current_app=0
-    
-    for app in "${apps_to_install[@]}"; do
-        ((current_app++))
-        
-        case $app in
-            1)
-                show_progress $current_app $total_apps "Instalando Pi-hole..."
-                install_pihole
-                ;;
-            2)
-                show_progress $current_app $total_apps "Instalando Unbound..."
-                install_unbound
-                ;;
-            3)
-                show_progress $current_app $total_apps "Instalando WireGuard..."
-                install_wireguard
-                ;;
-            4)
-                show_progress $current_app $total_apps "Instalando Cockpit..."
-                install_cockpit
-                ;;
-            5)
-                show_progress $current_app $total_apps "Instalando FileBrowser..."
-                install_filebrowser
-                ;;
-            6)
-                show_progress $current_app $total_apps "Instalando Netdata..."
-                install_netdata
-                ;;
-            7)
-                show_progress $current_app $total_apps "Instalando Fail2Ban..."
-                install_fail2ban
-                ;;
-            8)
-                show_progress $current_app $total_apps "Instalando UFW..."
-                install_ufw
-                ;;
-            9)
-                show_progress $current_app $total_apps "Instalando RNG-tools..."
-                install_rng_tools
-                ;;
-            10)
-                show_progress $current_app $total_apps "Instalando Rclone..."
-                install_rclone
-                ;;
-            11)
-                show_progress $current_app $total_apps "Instalando Rsync..."
-                install_rsync
-                ;;
-            12)
-                show_progress $current_app $total_apps "Instalando MiniDLNA..."
-                install_minidlna
-                ;;
-            13)
-                show_progress $current_app $total_apps "Instalando Cloudflared..."
-                install_cloudflared
-                ;;
-            0)
-                log_info "Saindo..."
-                exit 0
-                ;;
-            88)
-                log_info "Iniciando desinstalação dos serviços..."
-                rollback_installation
-                exit 0
-                ;;
-            *)
-                log_warn "Opção inválida: $app"
-                ;;
-        esac
-    done
-}
-
-################################################################################
-# CONFIGURAÇÕES FINAIS E OTIMIZAÇÕES
-################################################################################
-
-setup_thermal_optimizations() {
-    log_info "Configurando otimizações térmicas para RK322x..."
-    
-    # Instalar cpufrequtils se não estiver presente
-    if ! command -v cpufreq-info &> /dev/null; then
-        apt-get update
-        apt-get install -y cpufrequtils
-    fi
-    
-    # Configurar governor para powersave (reduz temperatura)
-    echo "GOVERNOR=\"powersave\"" > /etc/default/cpufrequtils
-    echo "MIN_SPEED=\"240000\"" >> /etc/default/cpufrequtils
-    echo "MAX_SPEED=\"1200000\"" >> /etc/default/cpufrequtils
-    
-    # Configurar thermal throttling mais agressivo
-    if [ -d /sys/class/thermal/thermal_zone0 ]; then
-        # Definir temperatura crítica mais baixa (75°C ao invés de 85°C)
-        echo 75000 > /sys/class/thermal/thermal_zone0/trip_point_0_temp 2>/dev/null || true
-        echo 70000 > /sys/class/thermal/thermal_zone0/trip_point_1_temp 2>/dev/null || true
-    fi
-    
-    # Criar script de monitoramento térmico
-    cat > /usr/local/bin/thermal-monitor << 'EOF'
-#!/bin/bash
-# Monitor térmico para RK322x
-TEMP_THRESHOLD=75
-COOLDOWN_THRESHOLD=65
-LOG_FILE="/var/log/boxserver/thermal.log"
-
-while true; do
-    if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
-        TEMP=$(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))
-        
-        if [ $TEMP -gt $TEMP_THRESHOLD ]; then
-            echo "$(date): ALERTA - Temperatura alta: ${TEMP}°C" >> $LOG_FILE
-            # Forçar governor powersave
-            echo powersave > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true
-            echo powersave > /sys/devices/system/cpu/cpu1/cpufreq/scaling_governor 2>/dev/null || true
-            echo powersave > /sys/devices/system/cpu/cpu2/cpufreq/scaling_governor 2>/dev/null || true
-            echo powersave > /sys/devices/system/cpu/cpu3/cpufreq/scaling_governor 2>/dev/null || true
-            
-            # Reduzir frequência máxima temporariamente
-            echo 816000 > /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || true
-            echo 816000 > /sys/devices/system/cpu/cpu1/cpufreq/scaling_max_freq 2>/dev/null || true
-            echo 816000 > /sys/devices/system/cpu/cpu2/cpufreq/scaling_max_freq 2>/dev/null || true
-            echo 816000 > /sys/devices/system/cpu/cpu3/cpufreq/scaling_max_freq 2>/dev/null || true
-        elif [ $TEMP -lt $COOLDOWN_THRESHOLD ]; then
-            # Restaurar frequência normal quando esfriar
-            echo 1200000 > /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || true
-            echo 1200000 > /sys/devices/system/cpu/cpu1/cpufreq/scaling_max_freq 2>/dev/null || true
-            echo 1200000 > /sys/devices/system/cpu/cpu2/cpufreq/scaling_max_freq 2>/dev/null || true
-            echo 1200000 > /sys/devices/system/cpu/cpu3/cpufreq/scaling_max_freq 2>/dev/null || true
-        fi
-    fi
-    sleep 30
-done
-EOF
-    
-    chmod +x /usr/local/bin/thermal-monitor
-    
-    # Criar serviço systemd para o monitor térmico
-    cat > /etc/systemd/system/thermal-monitor.service << EOF
-[Unit]
-Description=Monitor Térmico RK322x
-After=multi-user.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/thermal-monitor
-Restart=always
-RestartSec=10
-User=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    
-    systemctl daemon-reload
-    systemctl enable thermal-monitor.service
-    systemctl start thermal-monitor.service
-    
-    log_success "Otimizações térmicas configuradas ✓"
-}
-
-setup_optimizations() {
-    log_info "Aplicando otimizações para ARM..."
-    
-    # Otimizações de memória para ARM
-    cat >> /etc/sysctl.conf << EOF
-
-# Otimizações Boxserver ARM
-vm.swappiness=10
-vm.vfs_cache_pressure=50
-vm.dirty_ratio=15
-vm.dirty_background_ratio=5
-EOF
-    
-    sysctl -p
-    
-    # Configurar logrotate
-    cat > /etc/logrotate.d/boxserver << EOF
-/var/log/boxserver/*.log {
-    daily
-    missingok
-    rotate 7
-    compress
-    delaycompress
-    notifempty
-    create 644 root root
-}
-EOF
-    
-    log_success "Otimizações aplicadas ✓"
-}
-
-setup_monitoring_scripts() {
-    log_info "Criando scripts de monitoramento..."
-    
-    # Script de saúde do sistema
-    cat > /usr/local/bin/boxserver-health << 'EOF'
-#!/bin/bash
-echo "=== RELATÓRIO DE SAÚDE DO BOXSERVER ==="
-echo "Data: $(date)"
-echo "Uptime: $(uptime -p)"
-echo "Memória: $(free -h | awk 'NR==2{printf "%.1f%% (%s/%s)", $3*100/$2, $3, $2}')"
-echo "Disco: $(df -h / | awk 'NR==2{printf "%s usado de %s (%s)", $3, $2, $5}')"
-if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
-    echo "Temperatura CPU: $(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))°C"
-fi
-echo "Entropia: $(cat /proc/sys/kernel/random/entropy_avail)"
-echo
-echo "=== SERVIÇOS ==="
-for service in pihole-FTL unbound wg-quick@wg0 cockpit.socket filebrowser netdata fail2ban ufw; do
-    if systemctl is-active --quiet "$service" 2>/dev/null; then
-        echo "✅ $service: ATIVO"
-    else
-        echo "❌ $service: INATIVO"
-    fi
-done
-EOF
-    
-    chmod +x /usr/local/bin/boxserver-health
-    
-    # Agendar execução diária
-    echo "0 8 * * * root /usr/local/bin/boxserver-health >> /var/log/boxserver/health.log" >> /etc/crontab
-    
-    log_success "Scripts de monitoramento criados ✓"
-}
-
-generate_summary() {
-    log_info "Gerando relatório final..."
-    
-    local summary_file="/var/log/boxserver/installation-summary.txt"
-    
-    cat > "$summary_file" << EOF
-=== RELATÓRIO DE INSTALAÇÃO BOXSERVER MXQ-4K ===
-Data: $(date)
-Interface de rede: $NETWORK_INTERFACE
-IP do servidor: $SERVER_IP
-Rede VPN: $VPN_NETWORK
-
-=== APLICATIVOS INSTALADOS ===
-EOF
-    
-    # Verificar quais serviços estão ativos
-    local services=("pihole-FTL:Pi-hole" "unbound:Unbound" "wg-quick@wg0:WireGuard" 
-                   "cockpit.socket:Cockpit" "filebrowser:FileBrowser" "netdata:Netdata" 
-                   "fail2ban:Fail2Ban" "ufw:UFW" "rng-tools:RNG-tools")
-    
-    for service_info in "${services[@]}"; do
-        local service_name=$(echo "$service_info" | cut -d: -f1)
-        local display_name=$(echo "$service_info" | cut -d: -f2)
-        
-        if systemctl is-active --quiet "$service_name" 2>/dev/null; then
-            echo "✅ $display_name" >> "$summary_file"
-        fi
-    done
-    
-    cat >> "$summary_file" << EOF
-
-=== ACESSOS WEB ===
-Cockpit: https://$SERVER_IP:$COCKPIT_PORT
-FileBrowser: http://$SERVER_IP:$FILEBROWSER_PORT
-Netdata: http://$SERVER_IP:19999
-Pi-hole Admin: http://$SERVER_IP/admin
-
-=== PRÓXIMOS PASSOS ===
-1. Configure clientes WireGuard usando: /etc/wireguard/keys/publickey
-2. Configure Rclone para backup: rclone config
-3. Configure Cloudflared tunnel: cloudflared tunnel login
-4. Monitore o sistema: /usr/local/bin/boxserver-health
-
-=== LOGS ===
-Instalação: $LOG_FILE
-Saúde do sistema: /var/log/boxserver/health.log
-EOF
-    
-    echo
-    echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║${NC}                    ${YELLOW}INSTALAÇÃO CONCLUÍDA!${NC}                        ${GREEN}║${NC}"
-    echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC} Relatório completo salvo em: $summary_file ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC} ${YELLOW}Acessos principais:${NC}                                          ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC} • Cockpit: https://$SERVER_IP:$COCKPIT_PORT                        ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC} • FileBrowser: http://$SERVER_IP:$FILEBROWSER_PORT                     ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC} • Netdata: http://$SERVER_IP:19999                           ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC} • Pi-hole: http://$SERVER_IP/admin                           ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}                                                              ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC} Execute 'boxserver-health' para verificar o status          ${GREEN}║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo
-    
-    log_success "Instalação do Boxserver MXQ-4k concluída com sucesso!"
-}
-
-################################################################################
-# FUNÇÃO PRINCIPAL
-################################################################################
-
-main() {
-    # Inicializar log
-    echo "=== INÍCIO DA INSTALAÇÃO BOXSERVER MXQ-4K ===" > "$LOG_FILE"
-    
-    log_info "Iniciando instalação do Boxserver MXQ-4k..."
-    
-    # Verificações iniciais
-    check_root
-    check_linux_distribution
-    check_system_requirements
-    detect_network_interface
-    configure_static_ip
-    setup_directories
-    
-    # Atualizar sistema
-    update_system
-    
-    # Mostrar menu e processar seleção
     while true; do
-        show_menu
-        read -r selection
+        local temp=${spinstr#?}
+        printf "\r$(color "primary" "[%c]") %s" "$spinstr" "$message"
+        spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+    done
+}
+
+# Parar spinner
+stop_spinner() {
+    kill $! 2>/dev/null
+    printf "\r$(color "success" "[✓]") %s\n" "$1"
+}
+
+################################################################################
+# SISTEMA DE NAVEGAÇÃO AVANÇADO
+################################################################################
+
+# Configurações de navegação
+NAV_SELECTED_INDEX=0
+NAV_MAX_INDEX=0
+NAV_ITEMS=()
+NAV_CALLBACKS=()
+NAV_HELP_TEXT=()
+NAV_ENABLED_ITEMS=()
+
+# Códigos de teclas especiais
+KEY_UP=$'\033[A'
+KEY_DOWN=$'\033[B'
+KEY_RIGHT=$'\033[C'
+KEY_LEFT=$'\033[D'
+KEY_ENTER=$'\n'
+KEY_SPACE=$' '
+KEY_ESC=$'\033'
+KEY_TAB=$'\t'
+KEY_BACKSPACE=$'\177'
+KEY_DELETE=$'\033[3~'
+KEY_HOME=$'\033[H'
+KEY_END=$'\033[F'
+KEY_PAGE_UP=$'\033[5~'
+KEY_PAGE_DOWN=$'\033[6~'
+
+# Função para ler uma tecla sem pressionar Enter
+read_key() {
+    local key
+    IFS= read -rsn1 key 2>/dev/null
+    
+    # Detectar sequências de escape (teclas especiais)
+    if [[ $key == $'\033' ]]; then
+        # Ler próximos caracteres para sequências de escape
+        IFS= read -rsn2 -t 0.1 key2 2>/dev/null
+        if [[ $key2 ]]; then
+            key+="$key2"
+            # Verificar se precisa ler mais caracteres (ex: Delete, Page Up/Down)
+            if [[ $key2 == "[" ]]; then
+                IFS= read -rsn1 -t 0.1 key3 2>/dev/null
+                if [[ $key3 ]]; then
+                    key+="$key3"
+                    # Para teclas como Delete (\033[3~)
+                    if [[ $key3 =~ [0-9] ]]; then
+                        IFS= read -rsn1 -t 0.1 key4 2>/dev/null
+                        if [[ $key4 ]]; then
+                            key+="$key4"
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    fi
+    
+    echo "$key"
+}
+
+# Função para configurar modo de entrada raw (sem buffer)
+set_raw_mode() {
+    stty -echo -icanon min 1 time 0 2>/dev/null
+}
+
+# Função para restaurar modo de entrada normal
+restore_normal_mode() {
+    stty echo icanon 2>/dev/null
+}
+
+# Função para limpar área de navegação
+clear_nav_area() {
+    local lines="$1"
+    for ((i=0; i<lines; i++)); do
+        echo -e "${CLEAR_LINE}"
+        if [ $i -lt $((lines-1)) ]; then
+            echo -ne "\033[1A"  # Mover cursor para cima
+        fi
+    done
+    echo -ne "\033[${lines}A"  # Voltar ao início
+}
+
+# Função para desenhar item de menu
+draw_menu_item() {
+    local index="$1"
+    local text="$2"
+    local is_selected="$3"
+    local is_enabled="${4:-true}"
+    local help_text="${5:-}"
+    local prefix=""
+    local suffix=""
+    local item_color=""
+    
+    if [[ "$is_enabled" == "true" ]]; then
+        if [[ "$is_selected" == "true" ]]; then
+            prefix="$(color "primary" "▶ ")"
+            item_color="highlight"
+            suffix="$(color "accent" " ◀")"
+        else
+            prefix="  "
+            item_color="secondary"
+        fi
+    else
+        prefix="$(color "muted" "  ")"
+        item_color="muted"
+        text="$(color "muted" "$text (indisponível)")"
+    fi
+    
+    local formatted_text="${prefix}$(color "$item_color" "$text")${suffix}"
+    
+    # Adicionar texto de ajuda se selecionado
+    if [[ "$is_selected" == "true" && -n "$help_text" ]]; then
+        formatted_text+="$(color "muted" " - $help_text")"
+    fi
+    
+    echo -e "$formatted_text"
+}
+
+# Função para desenhar menu navegável
+draw_navigation_menu() {
+    local title="$1"
+    local show_help="${2:-true}"
+    
+    # Limpar tela
+    echo -e "$CLEAR_SCREEN"
+    echo -ne "\033[H"  # Mover cursor para home
+    
+    # Desenhar título
+    echo
+    color "primary" "╔$(printf '═%.0s' $(seq 1 $((TERMINAL_WIDTH-2))))╗"
+    local title_padding=$(( (TERMINAL_WIDTH - ${#title} - 4) / 2 ))
+    printf "║%*s$(color "highlight" "%s")%*s║\n" \
+        $title_padding "" "$title" $((TERMINAL_WIDTH - ${#title} - title_padding - 2)) ""
+    color "primary" "╚$(printf '═%.0s' $(seq 1 $((TERMINAL_WIDTH-2))))╝"
+    echo
+    
+    # Desenhar itens do menu
+    for ((i=0; i<${#NAV_ITEMS[@]}; i++)); do
+        local is_selected="false"
+        local is_enabled="true"
         
-        if [ "$selection" = "0" ]; then
-            log_info "Instalação cancelada pelo usuário"
-            exit 0
+        if [ $i -eq $NAV_SELECTED_INDEX ]; then
+            is_selected="true"
         fi
         
-        if [ -n "$selection" ]; then
-            log_info "Iniciando instalação dos aplicativos selecionados: $selection"
-            process_selection "$selection"
-            break
-        else
-            echo -e "${RED}Por favor, selecione pelo menos uma opção.${NC}"
-            sleep 2
+        if [ ${#NAV_ENABLED_ITEMS[@]} -gt $i ]; then
+            is_enabled="${NAV_ENABLED_ITEMS[$i]}"
+        fi
+        
+        local help_text=""
+        if [ ${#NAV_HELP_TEXT[@]} -gt $i ]; then
+            help_text="${NAV_HELP_TEXT[$i]}"
+        fi
+        
+        draw_menu_item "$i" "${NAV_ITEMS[$i]}" "$is_selected" "$is_enabled" "$help_text"
+    done
+    
+    echo
+    
+    # Mostrar ajuda de navegação
+    if [[ "$show_help" == "true" ]]; then
+        color "muted" "┌─ Navegação ─────────────────────────────────────────────────────────────┐"
+        color "muted" "│ ↑/↓: Navegar  │ Enter/Space: Selecionar  │ q/Esc: Sair  │ h: Ajuda │"
+        color "muted" "└─────────────────────────────────────────────────────────────────────────┘"
+    fi
+}
+
+# Função principal de navegação
+navigate_menu() {
+    local title="$1"
+    shift
+    local items=("$@")
+    
+    # Configurar navegação
+    NAV_ITEMS=("${items[@]}")
+    NAV_SELECTED_INDEX=0
+    NAV_MAX_INDEX=$((${#NAV_ITEMS[@]} - 1))
+    
+    # Configurar modo raw
+    set_raw_mode
+    echo -e "$CURSOR_HIDE"
+    
+    local running=true
+    local result=""
+    
+    while [[ "$running" == "true" ]]; do
+        # Desenhar menu
+        draw_navigation_menu "$title"
+        
+        # Ler tecla
+        local key=$(read_key)
+        
+        case "$key" in
+            "$KEY_UP")
+                if [ $NAV_SELECTED_INDEX -gt 0 ]; then
+                    ((NAV_SELECTED_INDEX--))
+                else
+                    NAV_SELECTED_INDEX=$NAV_MAX_INDEX  # Wrap around
+                fi
+                ;;
+            "$KEY_DOWN")
+                if [ $NAV_SELECTED_INDEX -lt $NAV_MAX_INDEX ]; then
+                    ((NAV_SELECTED_INDEX++))
+                else
+                    NAV_SELECTED_INDEX=0  # Wrap around
+                fi
+                ;;
+            "$KEY_ENTER"|"$KEY_SPACE")
+                # Verificar se item está habilitado
+                local is_enabled="true"
+                if [ ${#NAV_ENABLED_ITEMS[@]} -gt $NAV_SELECTED_INDEX ]; then
+                    is_enabled="${NAV_ENABLED_ITEMS[$NAV_SELECTED_INDEX]}"
+                fi
+                
+                if [[ "$is_enabled" == "true" ]]; then
+                    result="$NAV_SELECTED_INDEX"
+                    running=false
+                fi
+                ;;
+            "q"|"Q"|"$KEY_ESC")
+                result="-1"  # Cancelado
+                running=false
+                ;;
+            "h"|"H")
+                show_help_dialog
+                ;;
+            "1"|"2"|"3"|"4"|"5"|"6"|"7"|"8"|"9")
+                local num_index=$((${key} - 1))
+                if [ $num_index -le $NAV_MAX_INDEX ]; then
+                    NAV_SELECTED_INDEX=$num_index
+                fi
+                ;;
+        esac
+    done
+    
+    # Restaurar modo normal
+    echo -e "$CURSOR_SHOW"
+    restore_normal_mode
+    
+    echo "$result"
+}
+
+# Sistema de Help Contextual e Tooltips
+
+# Configurações do sistema de help
+HELP_ENABLED=true
+HELP_TIMEOUT=3
+TOOLTIP_DELAY=1
+
+# Base de conhecimento de help
+declare -A HELP_DATABASE
+HELP_DATABASE["main_menu"]="Use as setas ↑↓ para navegar, ENTER para selecionar, ESC para sair, H para ajuda detalhada"
+HELP_DATABASE["app_selection"]="Selecione os aplicativos que deseja instalar. Use ESPAÇO para marcar/desmarcar"
+HELP_DATABASE["pihole"]="Pi-hole: Bloqueador de anúncios em nível de DNS para toda a rede"
+HELP_DATABASE["unbound"]="Unbound: Servidor DNS recursivo seguro e rápido"
+HELP_DATABASE["wireguard"]="WireGuard: VPN moderna, rápida e segura"
+HELP_DATABASE["nginx"]="Nginx: Servidor web de alta performance"
+HELP_DATABASE["docker"]="Docker: Plataforma de containerização"
+HELP_DATABASE["portainer"]="Portainer: Interface web para gerenciar Docker"
+HELP_DATABASE["homer"]="Homer: Dashboard estático para serviços"
+HELP_DATABASE["grafana"]="Grafana: Plataforma de monitoramento e visualização"
+HELP_DATABASE["prometheus"]="Prometheus: Sistema de monitoramento e alertas"
+HELP_DATABASE["node_exporter"]="Node Exporter: Exportador de métricas do sistema"
+HELP_DATABASE["fail2ban"]="Fail2ban: Proteção contra ataques de força bruta"
+HELP_DATABASE["ufw"]="UFW: Firewall simplificado para Ubuntu"
+HELP_DATABASE["ssh_hardening"]="SSH Hardening: Configurações de segurança para SSH"
+
+# Função para mostrar tooltip
+show_tooltip() {
+    local text="$1"
+    local x="${2:-1}"
+    local y="${3:-1}"
+    local duration="${4:-$TOOLTIP_DELAY}"
+    
+    if [[ "$HELP_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    # Salvar posição atual do cursor
+    echo -ne "\033[s"
+    
+    # Mover para posição do tooltip
+    echo -ne "\033[${y};${x}H"
+    
+    # Desenhar tooltip
+    local tooltip_bg="${COLOR_BG_BLACK:-\033[48;5;236m}"
+    local tooltip_fg="${COLOR_BRIGHT_WHITE:-\033[38;5;255m}"
+    local tooltip_border="${THEME_BORDER:-\033[38;5;240m}"
+    
+    echo -ne "${tooltip_bg}${tooltip_fg}${tooltip_border}┌"
+    printf "─%.0s" $(seq 1 ${#text})
+    echo -ne "┐${COLOR_RESET}"
+    
+    echo -ne "\033[$((y+1));${x}H${tooltip_bg}${tooltip_fg}${tooltip_border}│${tooltip_fg}${text}${tooltip_border}│${COLOR_RESET}"
+    
+    echo -ne "\033[$((y+2));${x}H${tooltip_bg}${tooltip_fg}${tooltip_border}└"
+    printf "─%.0s" $(seq 1 ${#text})
+    echo -ne "┘${COLOR_RESET}"
+    
+    # Aguardar duração especificada
+    sleep "$duration"
+    
+    # Limpar tooltip
+    for i in $(seq 0 2); do
+        echo -ne "\033[$((y+i));${x}H"
+        printf " %.0s" $(seq 1 $((${#text}+2)))
+    done
+    
+    # Restaurar posição do cursor
+    echo -ne "\033[u"
+}
+
+# Função para mostrar help contextual
+show_contextual_help() {
+    local context="$1"
+    local x="${2:-$((TERMINAL_WIDTH-50))}"
+    local y="${3:-2}"
+    
+    if [[ "$HELP_ENABLED" != "true" ]]; then
+        return 0
+    fi
+    
+    local help_text="${HELP_DATABASE[$context]}"
+    if [[ -z "$help_text" ]]; then
+        help_text="Ajuda não disponível para este contexto"
+    fi
+    
+    # Quebrar texto em linhas se muito longo
+    local max_width=45
+    local lines=()
+    
+    while [[ ${#help_text} -gt $max_width ]]; do
+        local break_point=$max_width
+        # Procurar espaço mais próximo
+        while [[ $break_point -gt 0 && "${help_text:$break_point:1}" != " " ]]; do
+            ((break_point--))
+        done
+        
+        if [[ $break_point -eq 0 ]]; then
+            break_point=$max_width
+        fi
+        
+        lines+=("${help_text:0:$break_point}")
+        help_text="${help_text:$((break_point+1))}"
+    done
+    
+    if [[ -n "$help_text" ]]; then
+        lines+=("$help_text")
+    fi
+    
+    # Salvar posição atual do cursor
+    echo -ne "\033[s"
+    
+    # Desenhar caixa de help
+    local help_bg="${COLOR_BG_BLUE:-\033[48;5;17m}"
+    local help_fg="${COLOR_BRIGHT_WHITE:-\033[38;5;255m}"
+    local help_border="${THEME_BORDER:-\033[38;5;33m}"
+    local help_title="${THEME_ACCENT:-\033[38;5;51m}"
+    
+    # Calcular largura máxima
+    local max_line_width=0
+    for line in "${lines[@]}"; do
+        if [[ ${#line} -gt $max_line_width ]]; then
+            max_line_width=${#line}
         fi
     done
     
-    # Configurações finais
-    setup_optimizations
-    setup_thermal_optimizations
-    setup_monitoring_scripts
+    # Desenhar cabeçalho
+    echo -ne "\033[${y};${x}H${help_bg}${help_border}┌─${help_title} AJUDA ${help_border}"
+    printf "─%.0s" $(seq 1 $((max_line_width-6)))
+    echo -ne "┐${COLOR_RESET}"
     
-    # Reiniciar serviços críticos
-    log_info "Reiniciando serviços..."
-    systemctl restart pihole-FTL 2>/dev/null || true
-    systemctl restart unbound 2>/dev/null || true
-    systemctl start wg-quick@wg0 2>/dev/null || true
+    # Desenhar linhas de conteúdo
+    local line_num=1
+    for line in "${lines[@]}"; do
+        echo -ne "\033[$((y+line_num));${x}H${help_bg}${help_border}│${help_fg} ${line}"
+        printf " %.0s" $(seq 1 $((max_line_width-${#line})))
+        echo -ne "${help_border}│${COLOR_RESET}"
+        ((line_num++))
+    done
     
-    # Gerar relatório final
-    generate_summary
+    # Desenhar rodapé
+    echo -ne "\033[$((y+line_num));${x}H${help_bg}${help_border}└"
+    printf "─%.0s" $(seq 1 $max_line_width)
+    echo -ne "┘${COLOR_RESET}"
     
-    # Verificar se precisa reiniciar para aplicar IP fixo
-    if [ "$STATIC_IP_CONFIGURED" = "true" ]; then
-        echo ""
-        log_warn "=== REINICIALIZAÇÃO NECESSÁRIA ==="
-        echo -e "${YELLOW}Um IP fixo foi configurado e o sistema precisa ser reiniciado${NC}"
-        echo -e "${YELLOW}para aplicar as mudanças de rede corretamente.${NC}"
-        echo ""
+    # Restaurar posição do cursor
+    echo -ne "\033[u"
+}
+
+# Função para limpar área de help
+clear_help_area() {
+    local x="${1:-$((TERMINAL_WIDTH-50))}"
+    local y="${2:-2}"
+    local height="${3:-10}"
+    local width="${4:-47}"
+    
+    for i in $(seq 0 $height); do
+        echo -ne "\033[$((y+i));${x}H"
+        printf " %.0s" $(seq 1 $width)
+    done
+}
+
+# Função para help detalhado
+show_detailed_help() {
+    echo -e "$CLEAR_SCREEN"
+    echo -ne "\033[H"
+    
+    local help_content="
+$(color "primary" "╔══════════════════════════════════════════════════════════════════════════════╗")
+$(color "primary" "║                              BOXSERVER - AJUDA DETALHADA                    ║")
+$(color "primary" "╚══════════════════════════════════════════════════════════════════════════════╝")
+
+$(color "secondary" "NAVEGAÇÃO:")
+  $(color "accent" "↑/↓")     - Navegar entre opções
+  $(color "accent" "ENTER")   - Selecionar opção
+  $(color "accent" "ESPAÇO")  - Marcar/desmarcar em listas
+  $(color "accent" "ESC")     - Voltar/Cancelar
+  $(color "accent" "H")       - Mostrar esta ajuda
+  $(color "accent" "TAB")     - Próximo campo (formulários)
+  $(color "accent" "SHIFT+TAB") - Campo anterior (formulários)
+
+$(color "secondary" "APLICATIVOS DISPONÍVEIS:")
+  $(color "success" "Pi-hole")      - Bloqueador de anúncios DNS (Recomendado: 512MB+ RAM)
+  $(color "success" "Unbound")      - Servidor DNS recursivo (Recomendado: 256MB+ RAM)
+  $(color "success" "WireGuard")    - VPN moderna e segura (Recomendado: 512MB+ RAM)
+  $(color "success" "Nginx")        - Servidor web de alta performance (Recomendado: 256MB+ RAM)
+  $(color "success" "Docker")       - Plataforma de containerização (Recomendado: 1GB+ RAM)
+  $(color "success" "Portainer")    - Interface web para Docker (Requer: Docker)
+  $(color "success" "Homer")        - Dashboard para serviços (Recomendado: 128MB+ RAM)
+  $(color "success" "Grafana")      - Monitoramento e visualização (Recomendado: 512MB+ RAM)
+  $(color "success" "Prometheus")   - Sistema de monitoramento (Recomendado: 512MB+ RAM)
+  $(color "success" "Node Exporter") - Métricas do sistema (Recomendado: 128MB+ RAM)
+  $(color "success" "Fail2ban")     - Proteção contra ataques (Recomendado: 256MB+ RAM)
+  $(color "success" "UFW")          - Firewall simplificado (Recomendado: 128MB+ RAM)
+  $(color "success" "SSH Hardening") - Segurança SSH (Sempre recomendado)
+
+$(color "secondary" "REQUISITOS DO SISTEMA:")
+  $(color "info" "Hardware")     - MXQ-4K TV Box (RK322x)
+  $(color "info" "RAM")          - Mínimo 512MB (Recomendado: 1GB+)
+  $(color "info" "Storage")      - Mínimo 8GB livres
+  $(color "info" "OS")           - Ubuntu/Debian baseado
+  $(color "info" "Rede")         - Conexão com internet
+
+$(color "secondary" "DICAS:")
+  $(color "warning" "•") Instale Pi-hole + Unbound para DNS completo
+  $(color "warning" "•") Docker + Portainer para gerenciamento fácil
+  $(color "warning" "•") Grafana + Prometheus para monitoramento
+  $(color "warning" "•") Sempre configure SSH Hardening primeiro
+  $(color "warning" "•") Use WireGuard para acesso remoto seguro
+
+$(color "secondary" "SUPORTE:")
+  $(color "info" "GitHub")       - https://github.com/seu-usuario/boxserver
+  $(color "info" "Documentação") - https://boxserver.docs.com
+  $(color "info" "Issues")       - Reporte problemas no GitHub
+"
+    
+    echo -e "$help_content"
+    
+    echo -e "\n$(color "primary" "Pressione qualquer tecla para voltar ao menu...")"
+    read_key >/dev/null
+}
+
+# Função para toggle do sistema de help
+toggle_help_system() {
+    if [[ "$HELP_ENABLED" == "true" ]]; then
+        HELP_ENABLED=false
+        show_tooltip "Sistema de ajuda desabilitado" 10 $((TERMINAL_HEIGHT-2)) 2
+    else
+        HELP_ENABLED=true
+        show_tooltip "Sistema de ajuda habilitado" 10 $((TERMINAL_HEIGHT-2)) 2
+    fi
+}
+
+# Função para mostrar diálogo de ajuda
+show_help_dialog() {
+    show_detailed_help
+}
+
+################################################################################
+# COMPONENTES TUI REUTILIZÁVEIS
+################################################################################
+
+# Função para criar caixa de diálogo modal
+show_dialog() {
+    local title="$1"
+    local message="$2"
+    local dialog_type="${3:-info}"  # info, warning, error, success, question
+    local buttons="${4:-OK}"        # OK, YES_NO, YES_NO_CANCEL
+    
+    local icon=""
+    local title_color=""
+    local border_color=""
+    
+    case "$dialog_type" in
+        "info")
+            icon="ℹ"
+            title_color="info"
+            border_color="primary"
+            ;;
+        "warning")
+            icon="⚠"
+            title_color="warning"
+            border_color="warning"
+            ;;
+        "error")
+            icon="✗"
+            title_color="error"
+            border_color="error"
+            ;;
+        "success")
+            icon="✓"
+            title_color="success"
+            border_color="success"
+            ;;
+        "question")
+            icon="?"
+            title_color="accent"
+            border_color="accent"
+            ;;
+    esac
+    
+    # Calcular dimensões da caixa
+    local max_width=60
+    local message_lines=()
+    IFS=$'\n' read -rd '' -a message_lines <<< "$message" || true
+    local content_width=0
+    
+    for line in "${message_lines[@]}"; do
+        if [ ${#line} -gt $content_width ]; then
+            content_width=${#line}
+        fi
+    done
+    
+    local dialog_width=$((content_width + 6))
+    if [ $dialog_width -gt $max_width ]; then
+        dialog_width=$max_width
+    fi
+    if [ $dialog_width -lt 30 ]; then
+        dialog_width=30
+    fi
+    
+    local dialog_height=$((${#message_lines[@]} + 8))
+    
+    # Posicionar no centro da tela
+    local start_row=$(( (TERMINAL_HEIGHT - dialog_height) / 2 ))
+    local start_col=$(( (TERMINAL_WIDTH - dialog_width) / 2 ))
+    
+    # Salvar posição do cursor
+    echo -ne "$CURSOR_SAVE"
+    
+    # Mover para posição inicial
+    printf "\033[%d;%dH" $start_row $start_col
+    
+    # Desenhar caixa
+    color "$border_color" "╔$(printf '═%.0s' $(seq 1 $((dialog_width-2))))╗"
+    printf "\033[%d;%dH" $((start_row + 1)) $start_col
+    
+    # Título com ícone
+    local title_text="$icon $title"
+    local title_padding=$(( (dialog_width - ${#title_text} - 2) / 2 ))
+    printf "║%*s$(color "$title_color" "%s")%*s║" \
+        $title_padding "" "$title_text" $((dialog_width - ${#title_text} - title_padding - 2)) ""
+    
+    printf "\033[%d;%dH" $((start_row + 2)) $start_col
+    color "$border_color" "╠$(printf '═%.0s' $(seq 1 $((dialog_width-2))))╣"
+    
+    # Conteúdo da mensagem
+    local row=$((start_row + 3))
+    for line in "${message_lines[@]}"; do
+        printf "\033[%d;%dH" $row $start_col
+        local line_padding=$(( (dialog_width - ${#line} - 2) / 2 ))
+        printf "║%*s%s%*s║" \
+            $line_padding "" "$line" $((dialog_width - ${#line} - line_padding - 2)) ""
+        ((row++))
+    done
+    
+    # Linha separadora
+    printf "\033[%d;%dH" $row $start_col
+    color "$border_color" "╠$(printf '═%.0s' $(seq 1 $((dialog_width-2))))╣"
+    ((row++))
+    
+    # Botões
+    printf "\033[%d;%dH" $row $start_col
+    local button_text=""
+    case "$buttons" in
+        "OK")
+            button_text="[ OK ]"
+            ;;
+        "YES_NO")
+            button_text="[ Sim ]  [ Não ]"
+            ;;
+        "YES_NO_CANCEL")
+            button_text="[ Sim ]  [ Não ]  [ Cancelar ]"
+            ;;
+    esac
+    
+    local button_padding=$(( (dialog_width - ${#button_text} - 2) / 2 ))
+    printf "║%*s$(color "highlight" "%s")%*s║" \
+        $button_padding "" "$button_text" $((dialog_width - ${#button_text} - button_padding - 2)) ""
+    
+    # Linha inferior
+    printf "\033[%d;%dH" $((row + 1)) $start_col
+    color "$border_color" "╚$(printf '═%.0s' $(seq 1 $((dialog_width-2))))╝"
+    
+    # Aguardar entrada do usuário
+    set_raw_mode
+    local result=""
+    
+    while true; do
+        local key=$(read_key)
+        case "$key" in
+            "$KEY_ENTER"|"y"|"Y"|"s"|"S")
+                result="yes"
+                break
+                ;;
+            "n"|"N"|"$KEY_ESC")
+                result="no"
+                break
+                ;;
+            "c"|"C")
+                if [[ "$buttons" == "YES_NO_CANCEL" ]]; then
+                    result="cancel"
+                    break
+                fi
+                ;;
+        esac
         
-        read -p "Deseja reiniciar agora? (S/n): " restart_now
-        restart_now=${restart_now:-s}
+        if [[ "$buttons" == "OK" ]]; then
+            result="ok"
+            break
+        fi
+    done
+    
+    restore_normal_mode
+    
+    # Restaurar cursor
+    echo -ne "$CURSOR_RESTORE"
+    echo -e "$CLEAR_SCREEN"
+    
+    echo "$result"
+}
+
+# Função para criar formulário interativo
+show_form() {
+    local title="$1"
+    shift
+    local fields=("$@")
+    
+    local form_data=()
+    local current_field=0
+    local max_field=$((${#fields[@]} - 1))
+    
+    # Inicializar dados do formulário
+    for ((i=0; i<${#fields[@]}; i++)); do
+        form_data[i]=""
+    done
+    
+    set_raw_mode
+    echo -e "$CURSOR_HIDE"
+    
+    local running=true
+    
+    while [[ "$running" == "true" ]]; do
+        # Limpar tela
+        echo -e "$CLEAR_SCREEN"
+        echo -ne "\033[H"
         
-        if [[ "$restart_now" =~ ^[Ss]$ ]]; then
-            log_info "Reiniciando sistema em 10 segundos..."
-            echo -e "${RED}Pressione Ctrl+C para cancelar${NC}"
+        # Desenhar título do formulário
+        echo
+        color "primary" "╔$(printf '═%.0s' $(seq 1 $((TERMINAL_WIDTH-2))))╗"
+        local title_padding=$(( (TERMINAL_WIDTH - ${#title} - 4) / 2 ))
+        printf "║%*s$(color "highlight" "%s")%*s║\n" \
+            $title_padding "" "$title" $((TERMINAL_WIDTH - ${#title} - title_padding - 2)) ""
+        color "primary" "╚$(printf '═%.0s' $(seq 1 $((TERMINAL_WIDTH-2))))╝"
+        echo
+        
+        # Desenhar campos do formulário
+        for ((i=0; i<${#fields[@]}; i++)); do
+            local field_name="${fields[$i]}"
+            local field_value="${form_data[$i]}"
+            local is_current="false"
             
-            for i in {10..1}; do
-                echo -ne "\rReiniciando em $i segundos..."
-                sleep 1
-            done
+            if [ $i -eq $current_field ]; then
+                is_current="true"
+            fi
             
-            echo ""
-            log_info "Reiniciando sistema..."
-            reboot
-        else
-            echo ""
-            log_warn "IMPORTANTE: Reinicie manualmente o sistema com 'sudo reboot'"
-            log_warn "para que as configurações de rede sejam aplicadas corretamente."
-            echo ""
+            draw_form_field "$field_name" "$field_value" "$is_current"
+        done
+        
+        echo
+        
+        # Instruções
+        color "muted" "┌─ Navegação ─────────────────────────────────────────────────────────────┐"
+        color "muted" "│ ↑/↓: Campo  │ Enter: Editar  │ Tab: Próximo  │ F10: Salvar  │ Esc: Sair │"
+        color "muted" "└─────────────────────────────────────────────────────────────────────────┘"
+        
+        # Ler tecla
+        local key=$(read_key)
+        
+        case "$key" in
+            "$KEY_UP")
+                if [ $current_field -gt 0 ]; then
+                    ((current_field--))
+                else
+                    current_field=$max_field
+                fi
+                ;;
+            "$KEY_DOWN"|"$KEY_TAB")
+                if [ $current_field -lt $max_field ]; then
+                    ((current_field++))
+                else
+                    current_field=0
+                fi
+                ;;
+            "$KEY_ENTER")
+                # Editar campo atual
+                local new_value=$(edit_field "${fields[$current_field]}" "${form_data[$current_field]}")
+                form_data[$current_field]="$new_value"
+                ;;
+            $'\033[21~')  # F10
+                running=false
+                ;;
+            "$KEY_ESC")
+                # Cancelar formulário
+                form_data=()
+                running=false
+                ;;
+        esac
+    done
+    
+    echo -e "$CURSOR_SHOW"
+    restore_normal_mode
+    
+    # Retornar dados do formulário
+    printf '%s\n' "${form_data[@]}"
+}
+
+# Função para desenhar campo de formulário
+draw_form_field() {
+    local field_name="$1"
+    local field_value="$2"
+    local is_current="$3"
+    
+    local prefix=""
+    local suffix=""
+    local name_color="secondary"
+    local value_color="highlight"
+    local border_char="│"
+    
+    if [[ "$is_current" == "true" ]]; then
+        prefix="$(color "primary" "▶ ")"
+        suffix="$(color "accent" " ◀")"
+        name_color="accent"
+        border_char="║"
+    else
+        prefix="  "
+    fi
+    
+    # Truncar valor se muito longo
+    local display_value="$field_value"
+    if [ ${#display_value} -gt 40 ]; then
+        display_value="${display_value:0:37}..."
+    fi
+    
+    if [ -z "$display_value" ]; then
+        display_value="$(color "muted" "(vazio)")"
+    fi
+    
+    echo -e "${prefix}$(color "$name_color" "$field_name:") $(color "$value_color" "$display_value")${suffix}"
+}
+
+# Função para editar campo individual
+edit_field() {
+    local field_name="$1"
+    local current_value="$2"
+    
+    echo -e "$CLEAR_SCREEN"
+    echo -ne "\033[H"
+    
+    echo
+    color "accent" "╔═══════════════════════════════════════════════════════════════════════════╗"
+    color "accent" "║                            $(color "highlight" "EDITAR CAMPO")                              ║"
+    color "accent" "╚═══════════════════════════════════════════════════════════════════════════╝"
+    echo
+    
+    color "secondary" "Campo: $(color "highlight" "$field_name")"
+    echo
+    color "muted" "Valor atual: $current_value"
+    echo
+    color "info" "Digite o novo valor (Enter para confirmar, Esc para cancelar):"
+    echo -n "$(color "primary" "> ")"
+    
+    restore_normal_mode
+    
+    local new_value
+    read -r new_value
+    
+    if [ -z "$new_value" ]; then
+        new_value="$current_value"
+    fi
+    
+    set_raw_mode
+    
+    echo "$new_value"
+}
+
+# Função para criar lista selecionável com checkboxes
+show_checkbox_list() {
+    local title="$1"
+    shift
+    local items=("$@")
+    
+    local selected_items=()
+    local current_index=0
+    local max_index=$((${#items[@]} - 1))
+    
+    # Inicializar seleções (todas desmarcadas)
+    for ((i=0; i<${#items[@]}; i++)); do
+        selected_items[i]="false"
+    done
+    
+    set_raw_mode
+    echo -e "$CURSOR_HIDE"
+    
+    local running=true
+    
+    while [[ "$running" == "true" ]]; do
+        # Limpar tela
+        echo -e "$CLEAR_SCREEN"
+        echo -ne "\033[H"
+        
+        # Desenhar título
+        echo
+        color "primary" "╔$(printf '═%.0s' $(seq 1 $((TERMINAL_WIDTH-2))))╗"
+        local title_padding=$(( (TERMINAL_WIDTH - ${#title} - 4) / 2 ))
+        printf "║%*s$(color "highlight" "%s")%*s║\n" \
+            $title_padding "" "$title" $((TERMINAL_WIDTH - ${#title} - title_padding - 2)) ""
+        color "primary" "╚$(printf '═%.0s' $(seq 1 $((TERMINAL_WIDTH-2))))╝"
+        echo
+        
+        # Desenhar itens com checkboxes
+        for ((i=0; i<${#items[@]}; i++)); do
+            local checkbox="☐"
+            local item_color="secondary"
+            local prefix="  "
+            
+            if [[ "${selected_items[$i]}" == "true" ]]; then
+                checkbox="☑"
+                item_color="success"
+            fi
+            
+            if [ $i -eq $current_index ]; then
+                prefix="$(color "primary" "▶ ")"
+                item_color="highlight"
+            fi
+            
+            echo -e "${prefix}$(color "accent" "$checkbox") $(color "$item_color" "${items[$i]}")"
+        done
+        
+        echo
+        
+        # Instruções
+        color "muted" "┌─ Controles ─────────────────────────────────────────────────────────────┐"
+        color "muted" "│ ↑/↓: Navegar  │ Space: Marcar/Desmarcar  │ Enter: Confirmar  │ Esc: Sair │"
+        color "muted" "└─────────────────────────────────────────────────────────────────────────┘"
+        
+        # Ler tecla
+        local key=$(read_key)
+        
+        case "$key" in
+            "$KEY_UP")
+                if [ $current_index -gt 0 ]; then
+                    ((current_index--))
+                else
+                    current_index=$max_index
+                fi
+                ;;
+            "$KEY_DOWN")
+                if [ $current_index -lt $max_index ]; then
+                    ((current_index++))
+                else
+                    current_index=0
+                fi
+                ;;
+            "$KEY_SPACE")
+                # Alternar seleção do item atual
+                if [[ "${selected_items[$current_index]}" == "true" ]]; then
+                    selected_items[$current_index]="false"
+                else
+                    selected_items[$current_index]="true"
+                fi
+                ;;
+            "$KEY_ENTER")
+                running=false
+                ;;
+            "$KEY_ESC")
+                # Cancelar - limpar todas as seleções
+                for ((i=0; i<${#selected_items[@]}; i++)); do
+                    selected_items[i]="false"
+                done
+                running=false
+                ;;
+        esac
+    done
+    
+    echo -e "$CURSOR_SHOW"
+    restore_normal_mode
+    
+    # Retornar índices dos itens selecionados
+    local result=()
+    for ((i=0; i<${#selected_items[@]}; i++)); do
+        if [[ "${selected_items[$i]}" == "true" ]]; then
+            result+=("$i")
+        fi
+    done
+    
+    printf '%s\n' "${result[@]}"
+}
+
+################################################################################
+# SISTEMA DE VALIDAÇÃO DE ENTRADA
+################################################################################
+
+# Tipos de validação disponíveis
+declare -A VALIDATION_TYPES=(
+    ["required"]="Campo obrigatório"
+    ["email"]="Endereço de email válido"
+    ["ip"]="Endereço IP válido"
+    ["port"]="Porta válida (1-65535)"
+    ["domain"]="Nome de domínio válido"
+    ["path"]="Caminho de arquivo válido"
+    ["number"]="Número válido"
+    ["range"]="Valor dentro do intervalo especificado"
+    ["length"]="Comprimento específico"
+    ["regex"]="Padrão personalizado"
+    ["confirm"]="Confirmação de valor"
+)
+
+# Função principal de validação
+validate_input() {
+    local value="$1"
+    local validation_rule="$2"
+    local field_name="${3:-Campo}"
+    
+    # Separar tipo de validação e parâmetros
+    local validation_type="${validation_rule%%:*}"
+    local validation_params="${validation_rule#*:}"
+    
+    case "$validation_type" in
+        "required")
+            validate_required "$value" "$field_name"
+            ;;
+        "email")
+            validate_email "$value" "$field_name"
+            ;;
+        "ip")
+            validate_ip "$value" "$field_name"
+            ;;
+        "port")
+            validate_port "$value" "$field_name"
+            ;;
+        "domain")
+            validate_domain "$value" "$field_name"
+            ;;
+        "path")
+            validate_path "$value" "$field_name"
+            ;;
+        "number")
+            validate_number "$value" "$field_name"
+            ;;
+        "range")
+            validate_range "$value" "$validation_params" "$field_name"
+            ;;
+        "length")
+            validate_length "$value" "$validation_params" "$field_name"
+            ;;
+        "regex")
+            validate_regex "$value" "$validation_params" "$field_name"
+            ;;
+        "confirm")
+            validate_confirm "$value" "$validation_params" "$field_name"
+            ;;
+        *)
+            echo "error:Tipo de validação desconhecido: $validation_type"
+            return 1
+            ;;
+    esac
+}
+
+# Validadores específicos
+validate_required() {
+    local value="$1"
+    local field_name="$2"
+    
+    if [[ -z "$value" || "$value" =~ ^[[:space:]]*$ ]]; then
+        echo "error:$field_name é obrigatório"
+        return 1
+    fi
+    
+    echo "success:Valor válido"
+    return 0
+}
+
+validate_email() {
+    local value="$1"
+    local field_name="$2"
+    
+    if [[ -z "$value" ]]; then
+        echo "success:Email opcional"
+        return 0
+    fi
+    
+    local email_regex='^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    
+    if [[ ! "$value" =~ $email_regex ]]; then
+        echo "error:$field_name deve ser um endereço de email válido (ex: usuario@dominio.com)"
+        return 1
+    fi
+    
+    echo "success:Email válido"
+    return 0
+}
+
+validate_ip() {
+    local value="$1"
+    local field_name="$2"
+    
+    if [[ -z "$value" ]]; then
+        echo "success:IP opcional"
+        return 0
+    fi
+    
+    # Validar IPv4
+    local ip_regex='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+    
+    if [[ ! "$value" =~ $ip_regex ]]; then
+        echo "error:$field_name deve ser um endereço IP válido (ex: 192.168.1.1)"
+        return 1
+    fi
+    
+    # Verificar se cada octeto está no range 0-255
+    IFS='.' read -ra octets <<< "$value"
+    for octet in "${octets[@]}"; do
+        if [[ $octet -lt 0 || $octet -gt 255 ]]; then
+            echo "error:$field_name contém octeto inválido: $octet (deve ser 0-255)"
+            return 1
+        fi
+    done
+    
+    echo "success:IP válido"
+    return 0
+}
+
+validate_port() {
+    local value="$1"
+    local field_name="$2"
+    
+    if [[ -z "$value" ]]; then
+        echo "success:Porta opcional"
+        return 0
+    fi
+    
+    if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+        echo "error:$field_name deve ser um número"
+        return 1
+    fi
+    
+    if [[ $value -lt 1 || $value -gt 65535 ]]; then
+        echo "error:$field_name deve estar entre 1 e 65535"
+        return 1
+    fi
+    
+    # Verificar portas reservadas
+    if [[ $value -lt 1024 ]]; then
+        echo "warning:Porta $value é reservada do sistema (requer privilégios root)"
+    fi
+    
+    echo "success:Porta válida"
+    return 0
+}
+
+validate_domain() {
+    local value="$1"
+    local field_name="$2"
+    
+    if [[ -z "$value" ]]; then
+        echo "success:Domínio opcional"
+        return 0
+    fi
+    
+    local domain_regex='^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?))*$'
+    
+    if [[ ! "$value" =~ $domain_regex ]]; then
+        echo "error:$field_name deve ser um domínio válido (ex: exemplo.com)"
+        return 1
+    fi
+    
+    if [[ ${#value} -gt 253 ]]; then
+        echo "error:$field_name muito longo (máximo 253 caracteres)"
+        return 1
+    fi
+    
+    echo "success:Domínio válido"
+    return 0
+}
+
+validate_path() {
+    local value="$1"
+    local field_name="$2"
+    
+    if [[ -z "$value" ]]; then
+        echo "success:Caminho opcional"
+        return 0
+    fi
+    
+    # Verificar caracteres inválidos
+    if [[ "$value" =~ [\<\>\:\"|\?\*] ]]; then
+        echo "error:$field_name contém caracteres inválidos"
+        return 1
+    fi
+    
+    # Verificar se o diretório pai existe (se for caminho absoluto)
+    if [[ "$value" =~ ^/ ]]; then
+        local parent_dir="$(dirname "$value")"
+        if [[ ! -d "$parent_dir" ]]; then
+            echo "warning:Diretório pai não existe: $parent_dir"
         fi
     fi
+    
+    echo "success:Caminho válido"
+    return 0
 }
 
-################################################################################
-# TRATAMENTO DE SINAIS E LIMPEZA
-################################################################################
-
-cleanup() {
-    log_warn "Instalação interrompida. Limpando..."
-    if [ -f "$INSTALL_DIR/installed_services" ]; then
-        log_warn "Serviços parcialmente instalados detectados. Executando rollback..."
-        rollback_installation
+validate_number() {
+    local value="$1"
+    local field_name="$2"
+    
+    if [[ -z "$value" ]]; then
+        echo "success:Número opcional"
+        return 0
     fi
-    exit 1
-}
-
-error_handler() {
-    local exit_code=$?
-    local line_number=$1
-    log_error "Erro na linha $line_number com código de saída $exit_code"
-    if [ -f "$INSTALL_DIR/installed_services" ]; then
-        log_warn "Erro detectado durante instalação. Executando rollback..."
-        rollback_installation
+    
+    if [[ ! "$value" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+        echo "error:$field_name deve ser um número válido"
+        return 1
     fi
-    exit $exit_code
+    
+    echo "success:Número válido"
+    return 0
 }
 
-trap cleanup INT TERM
+validate_range() {
+    local value="$1"
+    local range_params="$2"
+    local field_name="$3"
+    
+    if [[ -z "$value" ]]; then
+        echo "success:Valor opcional"
+        return 0
+    fi
+    
+    # Extrair min e max do formato "min-max"
+    local min_val="${range_params%-*}"
+    local max_val="${range_params#*-}"
+    
+    if [[ ! "$value" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+        echo "error:$field_name deve ser um número"
+        return 1
+    fi
+    
+    if (( $(echo "$value < $min_val" | bc -l) )); then
+        echo "error:$field_name deve ser maior ou igual a $min_val"
+        return 1
+    fi
+    
+    if (( $(echo "$value > $max_val" | bc -l) )); then
+        echo "error:$field_name deve ser menor ou igual a $max_val"
+        return 1
+    fi
+    
+    echo "success:Valor dentro do intervalo válido"
+    return 0
+}
 
-################################################################################
-# EXECUÇÃO
-################################################################################
+validate_length() {
+    local value="$1"
+    local length_params="$2"
+    local field_name="$3"
+    
+    if [[ -z "$value" ]]; then
+        echo "success:Comprimento opcional"
+        return 0
+    fi
+    
+    local value_length=${#value}
+    
+    # Suporte para min-max ou valor exato
+    if [[ "$length_params" =~ ^[0-9]+-[0-9]+$ ]]; then
+        local min_len="${length_params%-*}"
+        local max_len="${length_params#*-}"
+        
+        if [[ $value_length -lt $min_len ]]; then
+            echo "error:$field_name deve ter pelo menos $min_len caracteres"
+            return 1
+        fi
+        
+        if [[ $value_length -gt $max_len ]]; then
+            echo "error:$field_name deve ter no máximo $max_len caracteres"
+            return 1
+        fi
+    else
+        local exact_len="$length_params"
+        if [[ $value_length -ne $exact_len ]]; then
+            echo "error:$field_name deve ter exatamente $exact_len caracteres"
+            return 1
+        fi
+    fi
+    
+    echo "success:Comprimento válido"
+    return 0
+}
 
-# Verificar se está sendo executado diretamente
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
+validate_regex() {
+    local value="$1"
+    local regex_pattern="$2"
+    local field_name="$3"
+    
+    if [[ -z "$value" ]]; then
+        echo "success:Padrão opcional"
+        return 0
+    fi
+    
+    if [[ ! "$value" =~ $regex_pattern ]]; then
+        echo "error:$field_name não atende ao padrão exigido"
+        return 1
+    fi
+    
+    echo "success:Padrão válido"
+    return 0
+}
+
+validate_confirm() {
+    local value="$1"
+    local original_value="$2"
+    local field_name="$3"
+    
+    if [[ "$value" != "$original_value" ]]; then
+        echo "error:$field_name não confere com o valor original"
+        return 1
+    fi
+    
+    echo "success:Confirmação válida"
+    return 0
+}
+
+# Função para exibir mensagem de validação com cores
+show_validation_message() {
+    local validation_result="$1"
+    local message_type="${validation_result%%:*}"
+    local message_text="${validation_result#*:}"
+    
+    case "$message_type" in
+        "success")
+            echo "$(color "success" "✓") $(color "muted" "$message_text")"
+            ;;
+        "warning")
+            echo "$(color "warning" "⚠") $(color "warning" "$message_text")"
+            ;;
+        "error")
+            echo "$(color "error" "✗") $(color "error" "$message_text")"
+            ;;
+        *)
+            echo "$(color "info" "ℹ") $(color "secondary" "$message_text")"
+            ;;
+    esac
+}
+
+# Função para input com validação em tempo real
+validated_input() {
+    local prompt="$1"
+    local validation_rules="$2"
+    local field_name="${3:-Campo}"
+    local default_value="${4:-}"
+    
+    local input_value="$default_value"
+    local is_valid=false
+    local attempts=0
+    local max_attempts=3
+    
+    while [[ "$is_valid" == "false" && $attempts -lt $max_attempts ]]; do
+        ((attempts++))
+        
+        # Mostrar prompt
+        echo
+        color "secondary" "$prompt"
+        if [[ -n "$default_value" ]]; then
+            color "muted" "(padrão: $default_value)"
+        fi
+        echo -n "$(color "primary" "> ")"
+        
+        # Ler entrada
+        read -r input_value
+        
+        # Usar valor padrão se entrada vazia
+        if [[ -z "$input_value" && -n "$default_value" ]]; then
+            input_value="$default_value"
+        fi
+        
+        # Validar entrada
+        local validation_result
+        local all_valid=true
+        
+        # Suporte para múltiplas regras separadas por vírgula
+        IFS=',' read -ra rules <<< "$validation_rules"
+        for rule in "${rules[@]}"; do
+            rule=$(echo "$rule" | xargs)  # Remover espaços
+            validation_result=$(validate_input "$input_value" "$rule" "$field_name")
+            
+            show_validation_message "$validation_result"
+            
+            if [[ "$validation_result" =~ ^error: ]]; then
+                all_valid=false
+                break
+            fi
+        done
+        
+        if [[ "$all_valid" == "true" ]]; then
+            is_valid=true
+        else
+            if [[ $attempts -lt $max_attempts ]]; then
+                echo
+                color "warning" "Tentativa $attempts de $max_attempts. Tente novamente."
+                sleep 1
+            fi
+        fi
+    done
+    
+    if [[ "$is_valid" == "false" ]]; then
+        echo
+        color "error" "Número máximo de tentativas excedido. Usando valor padrão."
+        input_value="$default_value"
+    fi
+    
+    echo "$input_value"
+}
+
+echo "Sistema de cores e componentes TUI modernos carregados com sucesso!"
+log_success "TUI moderna inicializada - Terminal: ${TERMINAL_WIDTH}x${TERMINAL_HEIGHT}, Cores: $(detect_terminal_capabilities)"
+log_info "Sistema de validação de entrada carregado com $(echo ${!VALIDATION_TYPES[@]} | wc -w) tipos de validação"
