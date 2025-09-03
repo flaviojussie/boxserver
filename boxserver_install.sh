@@ -177,10 +177,9 @@ check_system_resources() {
     local ram_mb=$(free -m | awk 'NR==2{print $2}')
     local disk_gb=$(df / | awk 'NR==2{print int($4/1024/1024)}')
     local arch=$(uname -m)
-    
     local errors=""
     
-    # Verificar hardware RK3229 R329Q V3.0 específico
+    # MELHORIA: Detecção genérica de hardware RK322x
     local board_info=""
     if [ -f /proc/device-tree/model ]; then
         board_info=$(cat /proc/device-tree/model)
@@ -188,38 +187,27 @@ check_system_resources() {
         board_info=$(cat /sys/firmware/devicetree/base/model)
     fi
     
-    # Detectar RK3229 especificamente com opção de override manual
-    local rk3229_detected=false
-    local hardware_warning=""
-    
-    if [[ "$board_info" =~ "RK3229" ]] || [[ "$board_info" =~ "rk3229" ]]; then
-        rk3229_detected=true
-    elif grep -q "RK3229" /proc/cpuinfo 2>/dev/null; then
-        rk3229_detected=true
-    elif [ -d /sys/bus/platform/drivers/rk322x-cpuinfo ]; then
-        rk3229_detected=true
-    fi
-    
-    # Se não detectado automaticamente, perguntar ao usuário
-    if [ "$rk3229_detected" = false ]; then
-        hardware_warning="• Hardware não detectado automaticamente como RK3229\n"
-        # Permitir override manual do usuário
-        if dialog --title "Confirmação de Hardware" --yesno "Hardware não detectado automaticamente como RK3229 R329Q V3.0.\n\nVocê tem certeza que este é o modelo correto?\n\nSelecione 'Sim' para continuar com otimizações RK3229." 10 60; then
-            rk3229_detected=true
-            log_message "INFO" "Usuário confirmou hardware RK3229 R329Q V3.0 manualmente"
+    local rk322x_detected=false
+    if [[ "$board_info" =~ "rk322x" ]] || [[ "$board_info" =~ "rk3229" ]] || grep -q -E "rk322x|rk3229" /proc/cpuinfo 2>/dev/null; then
+        rk322x_detected=true
+        log_message "INFO" "Hardware RK322x/RK3229 detectado. Informações da placa: $board_info"
+    else
+        if dialog --title "Confirmação de Hardware" --yesno "Não foi possível detectar automaticamente um hardware RK322x.\n\nEste script é otimizado para essa família de chipsets.\n\nDeseja continuar mesmo assim?" 10 70; then
+            log_message "WARN" "Hardware não detectado como RK322x, usuário optou por continuar."
         else
-            errors+="• Hardware incompatível: requer MXQ-4K RK3229 R329Q V3.0\n"
+            log_message "ERROR" "Instalação cancelada pelo usuário devido a hardware incompatível."
+            exit 1
         fi
     fi
     
-    # Verificar RAM para RK3229 (1GB DDR3 esperado)
-    if [ "$ram_mb" -lt 768 ]; then
-        errors+="• RAM insuficiente: ${ram_mb}MB (RK3229 R329Q espera 1GB DDR3)\n"
+    # Verificar RAM (mínimo 512MB, conforme documentação)
+    if [ "$ram_mb" -lt 480 ]; then # Usar 480 como margem
+        errors+="• RAM insuficiente: ${ram_mb}MB (mínimo 512MB)\n"
     fi
     
-    # Verificar espaço em disco NAND 8GB (mínimo 3GB livre para RK3229)
-    if [ "$disk_gb" -lt 3 ]; then
-        errors+="• Espaço em disco NAND insuficiente: ${disk_gb}GB (RK3229 tem 8GB NAND)\n"
+    # Verificar espaço em disco (mínimo 2GB, conforme documentação)
+    if [ "$disk_gb" -lt 2 ]; then
+        errors+="• Espaço em disco insuficiente: ${disk_gb}GB (mínimo 2GB)\n"
     fi
     
     # Verificar arquitetura ARM
@@ -227,30 +215,12 @@ check_system_resources() {
         errors+="• Arquitetura não suportada: $arch (requer ARM Cortex-A7)\n"
     fi
     
-    # Verificar tipo de armazenamento (NAND 8GB vs eMMC)
-    if [ -d /sys/block/mtdblock0 ]; then
-        log_message "INFO" "Armazenamento NAND 8GB detectado - aplicando otimizações RK3229"
-        # Detectar tamanho específico do NAND
-        local nand_size=0
-        if [ -f /sys/block/mtdblock0/size ]; then
-            nand_size=$(($(cat /sys/block/mtdblock0/size) * 512 / 1024 / 1024 / 1024))
-            log_message "INFO" "Tamanho NAND detectado: ${nand_size}GB"
-        fi
-    elif [ -d /sys/block/mmcblk0 ]; then
-        log_message "INFO" "Armazenamento eMMC detectado - otimizações alternativas"
-    fi
-    
     if [ -n "$errors" ]; then
         dialog --title "Verificação do Sistema" --msgbox "Problemas encontrados:\n\n$errors\nRecomenda-se resolver estes problemas antes de continuar." 12 60
         return 1
     fi
     
-    # Mostrar warning se houver, mas continuar
-    if [ -n "$hardware_warning" ] && [ "$rk3229_detected" = true ]; then
-        dialog --title "Aviso de Hardware" --msgbox "⚠️ ATENÇÃO:\n\n$hardware_warning\n\nContinuando com otimizações RK3229 R329Q V3.0 conforme confirmado." 10 60
-    fi
-    
-    dialog --title "Verificação do Sistema" --msgbox "Sistema RK322x compatível:\n\n• RAM: ${ram_mb}MB ✓\n• NAND: ${disk_gb}GB ✓\n• Arquitetura: $arch ✓" 10 50
+    dialog --title "Verificação do Sistema" --msgbox "Sistema compatível com RK322x:\n\n• RAM: ${ram_mb}MB ✓\n• Disco Livre: ${disk_gb}GB ✓\n• Arquitetura: $arch ✓" 10 50
     return 0
 }
 
