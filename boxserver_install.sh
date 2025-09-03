@@ -29,6 +29,11 @@ DIALOG_HEIGHT=20
 DIALOG_WIDTH=70
 DIALOG_MENU_HEIGHT=12
 
+# MELHORIA: Opções globais do dialog para consistência visual
+export DIALOGRC=/etc/dialogrc.boxserver
+BACKTITLE="Boxserver TUI v1.0 | IP: ${SERVER_IP:-Detectando...} | Hardware: RK322x"
+DIALOG_OPTS=(--backtitle "$BACKTITLE" --colors --ok-label "Confirmar" --cancel-label "Voltar")
+
 # Variáveis globais de configuração
 NETWORK_INTERFACE=""
 SERVER_IP=""
@@ -172,17 +177,16 @@ check_system_resources() {
     local ram_mb=$(free -m | awk 'NR==2{print $2}')
     local disk_gb=$(df / | awk 'NR==2{print int($4/1024/1024)}')
     local arch=$(uname -m)
-    
     local errors=""
     
-    # Verificar hardware RK3229 R329Q V3.0 específico
+    # MELHORIA: Detecção genérica de hardware RK322x
     local board_info=""
     if [ -f /proc/device-tree/model ]; then
         board_info=$(cat /proc/device-tree/model)
     elif [ -f /sys/firmware/devicetree/base/model ]; then
         board_info=$(cat /sys/firmware/devicetree/base/model)
     fi
-
+    
     local rk322x_detected=false
     if [[ "$board_info" =~ "rk322x" ]] || [[ "$board_info" =~ "rk3229" ]] || grep -q -E "rk322x|rk3229" /proc/cpuinfo 2>/dev/null; then
         rk322x_detected=true
@@ -420,6 +424,39 @@ show_app_details() {
     fi
 }
 
+# MELHORIA: Função para verificar o status de um aplicativo
+check_app_status() {
+    local app_id="$1"
+    local service_name=$(get_service_name "$app_id")
+
+    # Verificação baseada em arquivos de configuração ou binários
+    local is_installed=false
+    case $app_id in
+        1) [[ -f "/etc/pihole/setupVars.conf" ]] && is_installed=true ;;
+        2) [[ -f "/etc/unbound/unbound.conf" ]] && is_installed=true ;;
+        3) [[ -f "/etc/wireguard/wg0.conf" ]] && is_installed=true ;;
+        4) command -v cockpit-ws &>/dev/null && is_installed=true ;;
+        5) command -v filebrowser &>/dev/null && is_installed=true ;;
+        6) [[ -f "/etc/netdata/netdata.conf" ]] && is_installed=true ;;
+        7) command -v fail2ban-client &>/dev/null && is_installed=true ;;
+        8) command -v ufw &>/dev/null && is_installed=true ;;
+        9) command -v rngd &>/dev/null && is_installed=true ;;
+        10) command -v rclone &>/dev/null && is_installed=true ;;
+        11) command -v rsync &>/dev/null && is_installed=true ;;
+        12) [[ -f "/etc/minidlna.conf" ]] && is_installed=true ;;
+        13) command -v cloudflared &>/dev/null && is_installed=true ;;
+        14) command -v chronyd &>/dev/null && is_installed=true ;;
+    esac
+
+    if [ "$is_installed" = false ]; then
+        echo "not_installed"
+    elif [ -n "$service_name" ] && ! systemctl is-active --quiet "$service_name" 2>/dev/null; then
+        echo "installed_error"
+    else
+        echo "installed_ok"
+    fi
+}
+
 # Função para seleção de aplicativos
 select_applications() {
     local selected_apps=()
@@ -438,7 +475,7 @@ select_applications() {
     menu_items+=("config" "Configurações avançadas" "OFF")
     
     while true; do
-        local choices=$(dialog --title "Seleção de Aplicativos" \
+        local choices=$(dialog "${DIALOG_OPTS[@]}" --title "Seleção de Aplicativos" \
             --checklist "Selecione os aplicativos para instalar:\n\nUse ESPAÇO para selecionar, ENTER para confirmar" \
             20 80 10 "${menu_items[@]}" 3>&1 1>&2 2>&3)
         
@@ -486,15 +523,26 @@ select_applications() {
     fi
     
     # Confirmar seleção
-    local confirmation="Aplicativos selecionados para instalação:\n\n"
+    local confirmation="Ações a serem executadas:\n\n"
+    local to_install=()
+    local to_reinstall=()
     for app_id in "${selected_apps[@]}"; do
-        local app_info="${APPS[$app_id]}"
-        IFS='|' read -r name description access <<< "$app_info"
-        confirmation+="• $name\n"
+        local status=$(check_app_status "$app_id")
+        if [[ "$status" == "not_installed" ]]; then
+            to_install+=("• ${APPS[$app_id]%%|*}")
+        else
+            to_reinstall+=("• ${APPS[$app_id]%%|*}")
+        fi
+    done
+    if [ ${#to_install[@]} -gt 0 ]; then
+        confirmation+="Instalar:\n${to_install[*]}\n\n"
+    fi
+    if [ ${#to_reinstall[@]} -gt 0 ]; then
+        confirmation+="Reinstalar (para corrigir erros):\n${to_reinstall[*]}\n\n"
     done
     confirmation+="\nDeseja continuar com a instalação?"
     
-    if dialog --title "Confirmar Instalação" --yesno "$confirmation" 15 60; then
+    if dialog "${DIALOG_OPTS[@]}" --title "Confirmar Instalação" --yesno "$confirmation" 15 60; then
         # CORREÇÃO: Ordenar aplicativos por dependências antes da instalação
         local sorted_apps=($(sort_installation_order "${selected_apps[@]}"))
         install_selected_apps "${sorted_apps[@]}"
@@ -511,8 +559,8 @@ sort_installation_order() {
     # Fase 2: DNS core (Unbound ANTES Pi-hole)
     # Fase 3: Serviços de rede
     # Fase 4: Segurança (após todos os serviços)
-    # Fase 5: Serviços avançados
-    local priority_order=(9 11 10 2 1 3 4 5 6 12 8 7 13)
+    # Fase 5: Serviços avançados e de tempo
+    local priority_order=(9 11 10 14 2 1 3 4 5 6 12 8 7 13)
     
     log_message "INFO" "Ordenando aplicativos por dependências..."
     
@@ -537,11 +585,11 @@ sort_installation_order() {
     echo "${sorted_apps[@]}"
 }
 
-# MELHORIA: Função para instalar aplicativos com progresso silencioso
+# MELHORIA: Função de instalação refatorada para eficiência e robustez
 install_selected_apps() {
     local apps_to_install=("$@")
-    local total_apps=${#apps_to_install[@]}
-    local current_app=0
+    local total_steps=$(( ${#apps_to_install[@]} * 2 + 2 )) # Preparação, apt, e 2 etapas por app
+    local current_step=0
     
     # Criar arquivo de configuração
     cat > "$CONFIG_DIR/system.conf" << EOF
@@ -556,63 +604,91 @@ COCKPIT_PORT="$COCKPIT_PORT"
 INSTALL_DATE="$(date)"
 EOF
     
-    log_message "INFO" "Iniciando instalação silenciosa de ${total_apps} aplicativos"
-    
-    # Configurar modo silencioso
+    log_message "INFO" "Iniciando instalação de ${#apps_to_install[@]} aplicativos"
     export DEBIAN_FRONTEND=noninteractive
-    export APT_LISTCHANGES_FRONTEND=none
-    
+
+    # --- FASE 1: Coleta e Preparação ---
+    local apt_packages=()
+    local external_scripts=()
+    local download_pids=()
+
     for app_id in "${apps_to_install[@]}"; do
-        current_app=$((current_app + 1))
-        local app_info="${APPS[$app_id]}"
-        IFS='|' read -r name description access <<< "$app_info"
-        
-        # Calcular progresso detalhado
-        local base_progress=$(((current_app - 1) * 100 / total_apps))
-        local step_size=$((100 / total_apps))
-        
-        # Mostrar início da instalação
-        echo "$base_progress" | dialog --title "Instalação Silenciosa" \
-            --gauge "Preparando: $name ($current_app/$total_apps)" 10 70
-        
-        log_message "INFO" "Instalando $name (ID: $app_id)"
-        
-        # Executar instalação com progresso em tempo real
-        {
-            case $app_id in
-                1) install_pihole_silent "$base_progress" "$step_size" ;;
-                2) install_unbound_silent "$base_progress" "$step_size" ;;
-                3) install_wireguard_silent "$base_progress" "$step_size" ;;
-                4) install_cockpit_silent "$base_progress" "$step_size" ;;
-                5) install_filebrowser_silent "$base_progress" "$step_size" ;;
-                6) install_netdata_silent "$base_progress" "$step_size" ;;
-                7) install_fail2ban_silent "$base_progress" "$step_size" ;;
-                8) install_ufw_silent "$base_progress" "$step_size" ;;
-                9) install_rng_tools_silent "$base_progress" "$step_size" ;;
-                10) install_rclone_silent "$base_progress" "$step_size" ;;
-                11) install_rsync_silent "$base_progress" "$step_size" ;;
-                12) install_minidlna_silent "$base_progress" "$step_size" ;;
-                13) install_cloudflared_silent "$base_progress" "$step_size" ;;
-                14) install_chrony_silent "$base_progress" "$step_size" ;;
-            esac
-        } 2>&1 | while IFS= read -r line; do
-            # Filtrar apenas logs importantes
-            if [[ "$line" =~ (ERROR|WARN|Instalando|Configurando|Testando) ]]; then
-                log_message "INFO" "$line"
-            fi
-        done
-        
-        # Mostrar conclusão
-        local final_progress=$((current_app * 100 / total_apps))
-        echo "$final_progress" | dialog --title "Instalação Silenciosa" \
-            --gauge "Concluído: $name ($current_app/$total_apps)" 10 70
-        
-        log_message "INFO" "$name instalado com sucesso"
-        sleep 1
+        case $app_id in
+            1) external_scripts+=("pihole|https://install.pi-hole.net") ;;
+            2) apt_packages+=("unbound") ;;
+            3) apt_packages+=("wireguard-tools") ;;
+            4) apt_packages+=("cockpit") ;;
+            5) external_scripts+=("filebrowser|https://raw.githubusercontent.com/filebrowser/get/master/get.sh") ;;
+            6) external_scripts+=("netdata|https://my-netdata.io/kickstart.sh") ;;
+            7) apt_packages+=("fail2ban") ;;
+            8) apt_packages+=("ufw") ;;
+            9) apt_packages+=("rng-tools") ;;
+            10) external_scripts+=("rclone|https://rclone.org/install.sh") ;;
+            11) apt_packages+=("rsync") ;;
+            12) apt_packages+=("minidlna") ;;
+            13) external_scripts+=("cloudflared|https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm.deb") ;;
+            14) apt_packages+=("chrony") ;;
+        esac
     done
-    
-    # Mostrar conclusão final
-    dialog --title "Instalação Concluída" --msgbox "Todos os aplicativos foram instalados com sucesso!\n\n✅ $total_apps aplicativos instalados\n📋 Logs detalhados: $LOG_FILE\n🔧 Configurações: $CONFIG_DIR" 12 70
+
+    (
+    # --- FASE 2: Instalação APT em Lote ---
+    current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Atualizando lista de pacotes..."; echo "XXX"
+    apt-get update -y >/dev/null 2>&1
+
+    if [ ${#apt_packages[@]} -gt 0 ]; then
+        current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Instalando pacotes base (${#apt_packages[@]} pacotes)..."; echo "XXX"
+        apt-get install -y --no-install-recommends ${apt_packages[@]} >/dev/null 2>&1
+        if [ $? -ne 0 ]; then log_message "ERROR" "Falha ao instalar pacotes APT: ${apt_packages[*]}"; exit 1; fi
+    fi
+
+    # --- FASE 3: Instalação e Configuração Individual ---
+    for app_id in "${apps_to_install[@]}"; do
+        local app_name=$(echo "${APPS[$app_id]}" | cut -d'|' -f1)
+        
+        current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Instalando: $app_name..."; echo "XXX"
+        
+        # Instalação
+        case $app_id in
+            1) install_pihole ;;
+            2) install_unbound ;;
+            3) install_wireguard ;;
+            4) install_cockpit ;;
+            5) install_filebrowser ;;
+            6) install_netdata ;;
+            7) install_fail2ban ;;
+            8) install_ufw ;;
+            9) install_rng_tools ;;
+            10) install_rclone ;;
+            11) install_rsync ;;
+            12) install_minidlna ;;
+            13) install_cloudflared ;;
+            14) install_chrony ;;
+        esac
+        if [ $? -ne 0 ]; then log_message "ERROR" "Falha na instalação de $app_name"; exit 1; fi
+
+        current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Configurando: $app_name..."; echo "XXX"
+        
+        # Configuração Pós-Instalação (se necessário)
+        case $app_id in
+            1) setup_logrotate ;; # Configura logrotate para pihole
+        esac
+        
+        # Verificação
+        if ! systemctl is-active --quiet $(get_service_name "$app_id") 2>/dev/null; then
+            log_message "WARN" "Serviço para $app_name não está ativo após instalação."
+        fi
+    done
+
+    ) | dialog "${DIALOG_OPTS[@]}" --title "Instalação em Andamento" --mixedgauge "Progresso da instalação..." 20 70 0
+
+    if [ $? -ne 0 ]; then
+        dialog "${DIALOG_OPTS[@]}" --title "Erro na Instalação" --msgbox "A instalação falhou. Verifique os logs em $LOG_FILE para mais detalhes." 8 60
+        exit 1
+    fi
+
+    dialog "${DIALOG_OPTS[@]}" --title "Instalação Concluída" --infobox "Finalizando e aplicando configurações..." 5 50
+    sleep 2
     
     # CORREÇÃO: Reconfigurar integrações após instalação completa
     reconfigure_service_integrations "${apps_to_install[@]}"
@@ -620,8 +696,31 @@ EOF
     # MELHORIA: Criar scripts de manutenção documentados
     create_maintenance_scripts
     
+    # MELHORIA: Gerar relatório final
+    generate_installation_summary "${apps_to_install[@]}"
+    
     # Oferecer menu pós-instalação
     post_installation_menu
+}
+
+# MELHORIA: Função para obter o nome do serviço systemd de um app
+get_service_name() {
+    local app_id="$1"
+    case $app_id in
+        1) echo "pihole-FTL" ;;
+        2) echo "unbound" ;;
+        3) echo "wg-quick@wg0" ;;
+        4) echo "cockpit.socket" ;;
+        5) echo "filebrowser" ;;
+        6) echo "netdata" ;;
+        7) echo "fail2ban" ;;
+        8) echo "ufw" ;;
+        9) echo "rng-tools" ;;
+        12) echo "minidlna" ;;
+        13) echo "cloudflared" ;;
+        14) echo "chrony" ;;
+        *) echo "" ;;
+    esac
 }
 
 # IMPLEMENTAÇÃO: Reconfigurar integrações entre serviços após instalação
@@ -4330,6 +4429,33 @@ toggle_silent_mode() {
     fi
 }
 
+# MELHORIA: Gerar relatório final da instalação
+generate_installation_summary() {
+    local installed_apps=("$@")
+    local summary_file="$LOG_DIR/installation-summary.txt"
+    local summary_dialog="Instalação Concluída!\n\n"
+
+    echo "=== Relatório de Instalação Boxserver ===" > "$summary_file"
+    echo "Data: $(date)" >> "$summary_file"
+    echo "----------------------------------------" >> "$summary_file"
+    summary_dialog+="Serviços instalados:\n"
+
+    for app_id in "${installed_apps[@]}"; do
+        local app_info="${APPS[$app_id]}"
+        IFS='|' read -r name description access <<< "$app_info"
+        
+        local status_icon="✅"
+        if ! systemctl is-active --quiet $(get_service_name "$app_id") 2>/dev/null && [[ -n "$(get_service_name "$app_id")" ]]; then
+            status_icon="⚠️"
+        fi
+
+        echo "$status_icon $name: Instalado" >> "$summary_file"
+        summary_dialog+="$status_icon $name\n"
+    done
+
+    dialog "${DIALOG_OPTS[@]}" --title "Resumo da Instalação" --msgbox "$summary_dialog\nRelatório detalhado em:\n$summary_file" 18 60
+}
+
 # IMPLEMENTAÇÃO: Criar scripts de manutenção documentados
 create_maintenance_scripts() {
     log_message "INFO" "Criando scripts de manutenção..."
@@ -4385,6 +4511,9 @@ main() {
     
     # Detectar interface de rede inicial
     detect_network_interface
+    
+    # Atualizar o backtitle com o IP detectado
+    BACKTITLE="Boxserver TUI v1.0 | IP: $SERVER_IP | Hardware: RK322x"
     
     # Mostrar tela de boas-vindas
     dialog --title "Bem-vindo" --msgbox "Boxserver TUI Installer v1.0\n\nInstalador automatizado para MXQ-4K\n\nEste assistente irá guiá-lo através da\ninstalação e configuração do seu\nservidor doméstico.\n\nPressione ENTER para continuar..." 12 50
