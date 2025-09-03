@@ -275,6 +275,21 @@ EOF
     log_message "INFO" "Limite de memória de ${memory_limit}MB aplicado para $service_name"
 }
 
+# MELHORIA: Função para aplicar limites de memória genéricos RK322x
+apply_rk322x_memory_limits() {
+    log_message "INFO" "Aplicando limites de memória para RK322x genérico (512MB DDR3)"
+    
+    # Limites otimizados para 512MB DDR3 no RK322x
+    # Reservar ~200MB para sistema operacional
+    limit_service_memory "pihole-FTL" "96"       # Reduzido para 512MB total
+    limit_service_memory "unbound" "64"          # Reduzido para 512MB total
+    limit_service_memory "netdata" "64"           # Reduzido para limites RK322x
+    limit_service_memory "cockpit" "64"           # Reduzido para 512MB total
+    limit_service_memory "filebrowser" "32"       # Novo limite para FileBrowser
+    
+    log_message "INFO" "Todos os limites de memória RK322x genéricos aplicados"
+}
+
 # MELHORIA: Função para aplicar limites de memória RK3229 R329Q (1GB DDR3)
 apply_rk3229_memory_limits() {
     log_message "INFO" "Aplicando limites de memória para RK3229 R329Q V3.0 (1GB DDR3)"
@@ -422,6 +437,28 @@ show_app_details() {
         
         dialog --title "Detalhes: $name" --msgbox "$details" 15 70
     fi
+}
+
+# MELHORIA: Função auxiliar para obter o nome do serviço baseado no ID do aplicativo
+get_service_name() {
+    local app_id="$1"
+    case $app_id in
+        1) echo "pihole-FTL" ;;
+        2) echo "unbound" ;;
+        3) echo "wg-quick@wg0" ;;
+        4) echo "cockpit" ;;
+        5) echo "filebrowser" ;;
+        6) echo "netdata" ;;
+        7) echo "fail2ban" ;;
+        8) echo "ufw" ;;
+        9) echo "rng-tools" ;;
+        10) echo "" ;; # CLI tool, no service
+        11) echo "" ;; # CLI tool, no service
+        12) echo "minidlna" ;;
+        13) echo "cloudflared" ;;
+        14) echo "chrony" ;;
+        *) echo "" ;;
+    esac
 }
 
 # MELHORIA: Função para verificar o status de um aplicativo
