@@ -145,10 +145,10 @@ secure_input() {
     
     while [ $attempts -lt $max_attempts ]; do
         if [ -n "$default" ]; then
-            input=$(dialog --inputbox "$prompt" 8 40 "$default" 2>&1 >/dev/tty)
+            read -p "$prompt [$default]: " input
             input="${input:-$default}"
         else
-            input=$(dialog --inputbox "$prompt" 8 40 2>&1 >/dev/tty)
+            read -p "$prompt: " input
         fi
         
         if validate_input "$input" "$type" "$description"; then
@@ -174,9 +174,9 @@ secure_password_input() {
     local max_attempts=3
     
     while [ $attempts -lt $max_attempts ]; do
-        password=$(dialog --passwordbox "$prompt" 8 40 2>&1 >/dev/tty)
+        read -s -p "$prompt: " password
         echo
-        confirm_password=$(dialog --passwordbox "Confirme a senha:" 8 40 2>&1 >/dev/tty)
+        read -s -p "Confirme a senha: " confirm_password
         echo
         
         if [ "$password" != "$confirm_password" ]; then
@@ -2326,7 +2326,7 @@ show_main_menu() {
         esac
         
         # Pausa para o usuário ver o resultado
-        dialog --pause "Pressione Enter para continuar..." 10 30 5
+        read -p "Pressione Enter para continuar..."
     done
 }
 
