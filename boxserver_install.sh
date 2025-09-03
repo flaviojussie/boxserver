@@ -103,39 +103,71 @@ check_connectivity() {
     return 0
 }
 
-# Função para download com URLs de fallback
+# Função para download com URLs de fallback (simplificada)
 download_with_fallback() {
     local primary_url="$1"
     local fallback_urls="$2"  # URLs separadas por espaço
     local expected_hash="$3"
     local output_file="$4"
     local max_retries="${5:-3}"
-    local timeout="${6:-300}"
     
-    # Tentar URL principal primeiro
-    if verify_download "$primary_url" "$expected_hash" "$output_file" "$max_retries" "$timeout"; then
+    # Tentar URL principal primeiro com método simples
+    if simple_download "$primary_url" "$output_file" "$max_retries"; then
         return 0
     fi
     
     # Se falhou, tentar URLs de fallback
     if [[ -n "$fallback_urls" ]]; then
-        echo "[$(date)] URL principal falhou, tentando URLs de fallback..." >> "$LOG_FILE" 2>/dev/null || true
-        
         for fallback_url in $fallback_urls; do
-            echo "[$(date)] Tentando URL de fallback: $fallback_url" >> "$LOG_FILE" 2>/dev/null || true
-            if verify_download "$fallback_url" "$expected_hash" "$output_file" "$max_retries" "$timeout"; then
-                echo "[$(date)] Download bem-sucedido com URL de fallback" >> "$LOG_FILE" 2>/dev/null || true
+            if simple_download "$fallback_url" "$output_file" "$max_retries"; then
                 return 0
             fi
         done
-        
-        echo "[$(date)] ERRO: Todas as URLs falharam (principal + fallbacks)" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+    
+    # Se tudo falhou, tentar com verify_download (método avançado)
+    if verify_download "$primary_url" "$expected_hash" "$output_file" "$max_retries"; then
+        return 0
     fi
     
     return 1
 }
 
 # Função para verificar integridade de downloads
+# Função simplificada de download que funciona como o backup original
+simple_download() {
+    local url="$1"
+    local output_file="$2"
+    local max_retries="${3:-3}"
+    
+    # Criar diretório de destino se não existir
+    local output_dir
+    output_dir=$(dirname "$output_file")
+    mkdir -p "$output_dir" 2>/dev/null || true
+    
+    # Tentar download simples como no backup
+    local attempt=1
+    while [[ $attempt -le $max_retries ]]; do
+        if wget -O "$output_file" "$url" 2>/dev/null; then
+            # Verificar se o arquivo foi criado e não está vazio
+            if [[ -f "$output_file" && -s "$output_file" ]]; then
+                return 0
+            fi
+        fi
+        
+        # Remover arquivo parcial se existir
+        rm -f "$output_file" 2>/dev/null || true
+        
+        attempt=$((attempt + 1))
+        if [[ $attempt -le $max_retries ]]; then
+            sleep 2
+        fi
+    done
+    
+    return 1
+}
+
+# Função de download avançada (mantida para compatibilidade)
 verify_download() {
     local url="$1"
     local expected_hash="$2"
@@ -143,15 +175,24 @@ verify_download() {
     local max_retries="${4:-3}"
     local timeout="${5:-300}"
     
+    # Tentar primeiro o método simples que funcionava no backup
+    if simple_download "$url" "$output_file" "$max_retries"; then
+        # Verificar hash se fornecido
+        if [[ -n "$expected_hash" ]]; then
+            local file_hash
+            file_hash=$(sha256sum "$output_file" 2>/dev/null | cut -d' ' -f1) || return 1
+            if [[ "$file_hash" != "$expected_hash" ]]; then
+                rm -f "$output_file" 2>/dev/null || true
+                return 1
+            fi
+        fi
+        return 0
+    fi
+    
+    # Se o método simples falhar, tentar com curl (método avançado)
     # Criar arquivo de log se não existir
     touch "$LOG_FILE" 2>/dev/null || true
-    echo "[$(date)] Iniciando download: $url" >> "$LOG_FILE" 2>/dev/null || true
-    
-    # Verificar conectividade antes do download
-    if ! check_connectivity; then
-        echo "[$(date)] ERRO: Falha na verificação de conectividade" >> "$LOG_FILE" 2>/dev/null || true
-        return 1
-    fi
+    echo "[$(date)] Método wget falhou, tentando curl: $url" >> "$LOG_FILE" 2>/dev/null || true
     
     # Criar diretório de destino se não existir
     local output_dir
@@ -161,44 +202,33 @@ verify_download() {
         return 1
     fi
     
-    # Tentar download com múltiplas tentativas
+    # Tentar download com curl
     local attempt=1
     while [[ $attempt -le $max_retries ]]; do
-        echo "[$(date)] Tentativa $attempt/$max_retries: Baixando $url" >> "$LOG_FILE" 2>/dev/null || true
+        echo "[$(date)] Tentativa curl $attempt/$max_retries: Baixando $url" >> "$LOG_FILE" 2>/dev/null || true
         
-        # Download com verificações de segurança e logs detalhados
-        local curl_output
-        curl_output=$(curl -fsSL \
+        if curl -fsSL \
             --connect-timeout 30 \
             --max-time "$timeout" \
             --retry 2 \
             --retry-delay 5 \
             --user-agent "BoxServer-Installer/1.0" \
             --location \
-            --write-out "HTTP_CODE:%{http_code};SIZE:%{size_download};TIME:%{time_total}" \
             --output "$output_file" \
-            "$url" 2>&1)
-        
-        local curl_exit_code=$?
-        echo "[$(date)] Curl resultado: $curl_output (código: $curl_exit_code)" >> "$LOG_FILE" 2>/dev/null || true
-        
-        if [[ $curl_exit_code -eq 0 ]]; then
+            "$url" 2>/dev/null; then
+            
             # Verificar se o arquivo foi criado e não está vazio
             if [[ -f "$output_file" && -s "$output_file" ]]; then
-                echo "[$(date)] Download bem-sucedido na tentativa $attempt" >> "$LOG_FILE" 2>/dev/null || true
+                echo "[$(date)] Download curl bem-sucedido na tentativa $attempt" >> "$LOG_FILE" 2>/dev/null || true
                 break
-            else
-                echo "[$(date)] ERRO: Arquivo vazio ou não criado na tentativa $attempt" >> "$LOG_FILE" 2>/dev/null || true
             fi
-        else
-            echo "[$(date)] ERRO: Falha no curl na tentativa $attempt (código: $curl_exit_code)" >> "$LOG_FILE" 2>/dev/null || true
-            # Remover arquivo parcial se existir
-            rm -f "$output_file" 2>/dev/null || true
         fi
+        
+        # Remover arquivo parcial se existir
+        rm -f "$output_file" 2>/dev/null || true
         
         attempt=$((attempt + 1))
         if [[ $attempt -le $max_retries ]]; then
-            echo "[$(date)] Aguardando 5 segundos antes da próxima tentativa..." >> "$LOG_FILE" 2>/dev/null || true
             sleep 5
         fi
     done
@@ -219,24 +249,13 @@ verify_download() {
         }
         if [[ "$file_hash" != "$expected_hash" ]]; then
             echo "[$(date)] ERRO: Hash inválido para $output_file" >> "$LOG_FILE" 2>/dev/null || true
-            echo "[$(date)] Esperado: $expected_hash" >> "$LOG_FILE" 2>/dev/null || true
-            echo "[$(date)] Obtido: $file_hash" >> "$LOG_FILE" 2>/dev/null || true
             rm -f "$output_file" 2>/dev/null || true
             return 1
         fi
         echo "[$(date)] Verificação de hash bem-sucedida" >> "$LOG_FILE" 2>/dev/null || true
     fi
     
-    # Verificar tipo de arquivo
-    local file_type
-    file_type=$(file "$output_file" 2>/dev/null || echo "unknown")
-    echo "[$(date)] Tipo de arquivo detectado: $file_type" >> "$LOG_FILE" 2>/dev/null || true
-    
-    # Log de sucesso com informações detalhadas
-    local file_size
-    file_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null || echo "unknown")
-    echo "[$(date)] Download verificado com sucesso: $output_file (tamanho: $file_size bytes)" >> "$LOG_FILE" 2>/dev/null || true
-    
+    echo "[$(date)] Download verificado com sucesso: $output_file" >> "$LOG_FILE" 2>/dev/null || true
     return 0
 }
 
