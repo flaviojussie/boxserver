@@ -189,21 +189,36 @@ check_system_resources() {
     
     local errors=""
     
-    # Verificar hardware RK322x específico
+    # Verificar hardware RK3229 R329Q V3.0 específico
+    local board_info=""
     if [ -f /proc/device-tree/model ]; then
-        if ! grep -q 'rk322x' /proc/device-tree/model; then
-            errors+="• Hardware incompatível: requer MXQ-4K RK322x\n"
-        fi
+        board_info=$(cat /proc/device-tree/model)
+    elif [ -f /sys/firmware/devicetree/base/model ]; then
+        board_info=$(cat /sys/firmware/devicetree/base/model)
     fi
     
-    # Verificar RAM (mínimo 512MB para RK322x)
-    if [ "$ram_mb" -lt 512 ]; then
-        errors+="• RAM insuficiente: ${ram_mb}MB (mínimo 512MB para RK322x)\n"
+    # Detectar RK3229 especificamente
+    local rk3229_detected=false
+    if [[ "$board_info" =~ "RK3229" ]] || [[ "$board_info" =~ "rk3229" ]]; then
+        rk3229_detected=true
+    elif grep -q "RK3229" /proc/cpuinfo 2>/dev/null; then
+        rk3229_detected=true
+    elif [ -d /sys/bus/platform/drivers/rk322x-cpuinfo ]; then
+        rk3229_detected=true
     fi
     
-    # Verificar espaço em disco NAND (mínimo 2GB livre)
-    if [ "$disk_gb" -lt 2 ]; then
-        errors+="• Espaço em disco NAND insuficiente: ${disk_gb}GB (mínimo 2GB)\n"
+    if [ "$rk3229_detected" = false ]; then
+        errors+="• Hardware incompatível: requer MXQ-4K RK3229 R329Q V3.0\n"
+    fi
+    
+    # Verificar RAM para RK3229 (1GB DDR3 esperado)
+    if [ "$ram_mb" -lt 768 ]; then
+        errors+="• RAM insuficiente: ${ram_mb}MB (RK3229 R329Q espera 1GB DDR3)\n"
+    fi
+    
+    # Verificar espaço em disco NAND 8GB (mínimo 3GB livre para RK3229)
+    if [ "$disk_gb" -lt 3 ]; then
+        errors+="• Espaço em disco NAND insuficiente: ${disk_gb}GB (RK3229 tem 8GB NAND)\n"
     fi
     
     # Verificar arquitetura ARM
@@ -211,9 +226,17 @@ check_system_resources() {
         errors+="• Arquitetura não suportada: $arch (requer ARM Cortex-A7)\n"
     fi
     
-    # Verificar tipo de armazenamento (NAND vs eMMC)
+    # Verificar tipo de armazenamento (NAND 8GB vs eMMC)
     if [ -d /sys/block/mtdblock0 ]; then
-        log_message "INFO" "Armazenamento NAND detectado - aplicando otimizações"
+        log_message "INFO" "Armazenamento NAND 8GB detectado - aplicando otimizações RK3229"
+        # Detectar tamanho específico do NAND
+        local nand_size=0
+        if [ -f /sys/block/mtdblock0/size ]; then
+            nand_size=$(($(cat /sys/block/mtdblock0/size) * 512 / 1024 / 1024 / 1024))
+            log_message "INFO" "Tamanho NAND detectado: ${nand_size}GB"
+        fi
+    elif [ -d /sys/block/mmcblk0 ]; then
+        log_message "INFO" "Armazenamento eMMC detectado - otimizações alternativas"
     fi
     
     if [ -n "$errors" ]; then
@@ -270,17 +293,19 @@ EOF
     log_message "INFO" "Limite de memória de ${memory_limit}MB aplicado para $service_name"
 }
 
-# MELHORIA: Função para aplicar limites de memória RK322x
-apply_rk322x_memory_limits() {
-    log_message "INFO" "Aplicando limites de memória para serviços RK322x"
+# MELHORIA: Função para aplicar limites de memória RK3229 R329Q (1GB DDR3)
+apply_rk3229_memory_limits() {
+    log_message "INFO" "Aplicando limites de memória para RK3229 R329Q V3.0 (1GB DDR3)"
     
-    # Limites otimizados para 512MB RAM
-    limit_service_memory "pihole-FTL" "128"
-    limit_service_memory "unbound" "64"
-    limit_service_memory "netdata" "96"
-    limit_service_memory "cockpit" "64"
+    # Limites otimizados para 1GB DDR3 no RK3229
+    # Reservar ~300MB para sistema operacional
+    limit_service_memory "pihole-FTL" "192"      # Aumentado para 1GB total
+    limit_service_memory "unbound" "96"            # Aumentado para 1GB total
+    limit_service_memory "netdata" "128"           # Reduzido para limites RK3229
+    limit_service_memory "cockpit" "96"            # Aumentado para 1GB total
+    limit_service_memory "filebrowser" "64"        # Novo limite para FileBrowser
     
-    log_message "INFO" "Todos os limites de memória RK322x aplicados"
+    log_message "INFO" "Todos os limites de memória RK3229 R329Q aplicados"
 }
 
 # Função para detectar interface de rede
@@ -335,13 +360,20 @@ run_system_checks() {
     # Aplicar otimizações específicas RK322x
     dialog --title "Otimização RK322x" --infobox "Aplicando otimizações para MXQ-4K..." 5 40
     
-    # Otimizar para NAND
-    optimize_for_nand
-    
-    # Aplicar limites de memória
-    apply_rk322x_memory_limits
-    
-    dialog --title "Otimização Concluída" --msgbox "Sistema otimizado para MXQ-4K TV Box RK322x!\n\n• NAND otimizado\n• Memória limitada\n• I/O otimizado" 8 50
+    # Detectar e otimizar para hardware específico
+    if [[ "$board_info" =~ "RK3229" ]] || [[ "$board_info" =~ "R329Q" ]]; then
+        log_message "INFO" "Detectado RK3229 R329Q V3.0 - aplicando otimizações específicas"
+        # Otimizar para NAND 8GB
+        optimize_for_nand
+        # Aplicar limites de memória para 1GB DDR3
+        apply_rk3229_memory_limits
+        dialog --title "Otimização RK3229" --msgbox "Sistema otimizado para RK3229 R329Q V3.0!\n\n• NAND 8GB otimizado\n• 1GB DDR3 gerenciado\n• Cortex-A7 otimizado" 8 50
+    else
+        # Fallback para RK322x genérico
+        optimize_for_nand
+        apply_rk322x_memory_limits
+        dialog --title "Otimização Genérica" --msgbox "Sistema otimizado para MXQ-4K TV Box RK322x!\n\n• NAND otimizado\n• Memória limitada\n• I/O otimizado" 8 50
+    fi
 }
 
 # Função para mostrar informações do sistema
