@@ -539,7 +539,7 @@ select_applications() {
     fi
     if [ ${#to_reinstall[@]} -gt 0 ]; then
         confirmation+="Reinstalar (para corrigir erros):\n${to_reinstall[*]}\n\n"
-    done
+    fi
     confirmation+="\nDeseja continuar com a instalação?"
     
     if dialog "${DIALOG_OPTS[@]}" --title "Confirmar Instalação" --yesno "$confirmation" 15 60; then
