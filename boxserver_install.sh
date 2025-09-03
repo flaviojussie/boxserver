@@ -197,8 +197,10 @@ check_system_resources() {
         board_info=$(cat /sys/firmware/devicetree/base/model)
     fi
     
-    # Detectar RK3229 especificamente
+    # Detectar RK3229 especificamente com opção de override manual
     local rk3229_detected=false
+    local hardware_warning=""
+    
     if [[ "$board_info" =~ "RK3229" ]] || [[ "$board_info" =~ "rk3229" ]]; then
         rk3229_detected=true
     elif grep -q "RK3229" /proc/cpuinfo 2>/dev/null; then
@@ -207,8 +209,16 @@ check_system_resources() {
         rk3229_detected=true
     fi
     
+    # Se não detectado automaticamente, perguntar ao usuário
     if [ "$rk3229_detected" = false ]; then
-        errors+="• Hardware incompatível: requer MXQ-4K RK3229 R329Q V3.0\n"
+        hardware_warning="• Hardware não detectado automaticamente como RK3229\n"
+        # Permitir override manual do usuário
+        if dialog --title "Confirmação de Hardware" --yesno "Hardware não detectado automaticamente como RK3229 R329Q V3.0.\n\nVocê tem certeza que este é o modelo correto?\n\nSelecione 'Sim' para continuar com otimizações RK3229." 10 60; then
+            rk3229_detected=true
+            log_message "INFO" "Usuário confirmou hardware RK3229 R329Q V3.0 manualmente"
+        else
+            errors+="• Hardware incompatível: requer MXQ-4K RK3229 R329Q V3.0\n"
+        fi
     fi
     
     # Verificar RAM para RK3229 (1GB DDR3 esperado)
@@ -242,6 +252,11 @@ check_system_resources() {
     if [ -n "$errors" ]; then
         dialog --title "Verificação do Sistema" --msgbox "Problemas encontrados:\n\n$errors\nRecomenda-se resolver estes problemas antes de continuar." 12 60
         return 1
+    fi
+    
+    # Mostrar warning se houver, mas continuar
+    if [ -n "$hardware_warning" ] && [ "$rk3229_detected" = true ]; then
+        dialog --title "Aviso de Hardware" --msgbox "⚠️ ATENÇÃO:\n\n$hardware_warning\n\nContinuando com otimizações RK3229 R329Q V3.0 conforme confirmado." 10 60
     fi
     
     dialog --title "Verificação do Sistema" --msgbox "Sistema RK322x compatível:\n\n• RAM: ${ram_mb}MB ✓\n• NAND: ${disk_gb}GB ✓\n• Arquitetura: $arch ✓" 10 50
