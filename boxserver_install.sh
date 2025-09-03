@@ -21,89 +21,333 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly TEMP_DIR="$(mktemp -d)"
 readonly LOG_FILE="$HOME/boxserver_install.log"
 
+# --- Funções de Logging ---
+
+# Função padronizada de log com níveis de severidade
+log_message() {
+    local level="${1:-INFO}"
+    local message="$2"
+    local timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
+    
+    # Validar parâmetros
+    if [[ -z "$message" ]]; then
+        return 1
+    fi
+    
+    # Criar arquivo de log se não existir
+    touch "$LOG_FILE" 2>/dev/null || return 1
+    
+    # Formatar mensagem com timestamp e nível
+    local formatted_message="[$timestamp] [$level] $message"
+    
+    # Escrever no arquivo de log
+    echo "$formatted_message" >> "$LOG_FILE" 2>/dev/null || return 1
+    
+    # Para níveis críticos, também exibir no stderr
+    case "$level" in
+        "ERROR"|"CRITICAL")
+            echo "$formatted_message" >&2
+            ;;
+        "DEBUG")
+            # Debug só é exibido se variável DEBUG estiver definida
+            [[ -n "${DEBUG:-}" ]] && echo "$formatted_message" >&2
+            ;;
+    esac
+    
+    return 0
+}
+
+# Função auxiliar para log de início de operação
+log_start() {
+    log_message "INFO" "Iniciando: $1"
+}
+
+# Função auxiliar para log de sucesso
+log_success() {
+    log_message "SUCCESS" "$1"
+}
+
+# Função auxiliar para log de erro
+log_error() {
+    log_message "ERROR" "$1"
+}
+
+# Função auxiliar para log de aviso
+log_warning() {
+    log_message "WARNING" "$1"
+}
+
+# Função auxiliar para log de debug
+log_debug() {
+    log_message "DEBUG" "$1"
+}
+
 # --- Funções de Segurança ---
 
 # Função de cleanup para limpeza em caso de erro
+# Função de limpeza robusta com tratamento de erros
 cleanup() {
     local exit_code=$?
     
     # Criar arquivo de log se não existir
     touch "$LOG_FILE" 2>/dev/null || true
-    echo "[$(date)] Executando cleanup..." >> "$LOG_FILE" 2>/dev/null || true
+    echo "[$(date)] Iniciando cleanup (código de saída: $exit_code)..." >> "$LOG_FILE" 2>/dev/null || true
     
-    # Remover arquivos temporários
-    if [[ -d "$TEMP_DIR" ]]; then
-        rm -rf "$TEMP_DIR" 2>/dev/null || true
-    fi
+    # Lista de arquivos e diretórios temporários para remover
+    local temp_items=(
+        "$TEMP_DIR"
+        "/tmp/menu_choice"
+        "/tmp/pihole_install_script.sh"
+        "/tmp/rclone_install_script.sh"
+        "/tmp/boxserver_*"
+        "/tmp/download_*"
+    )
     
-    # Remover arquivos temporários específicos
-    rm -f /tmp/menu_choice 2>/dev/null || true
-    rm -f /tmp/pihole_install_script.sh 2>/dev/null || true
-    rm -f /tmp/rclone_install_script.sh 2>/dev/null || true
+    # Remover itens temporários com verificação
+    for item in "${temp_items[@]}"; do
+        if [[ -n "$item" ]]; then
+            if [[ -d "$item" ]]; then
+                if rm -rf "$item" 2>/dev/null; then
+                    echo "[$(date)] Diretório removido: $item" >> "$LOG_FILE" 2>/dev/null || true
+                else
+                    echo "[$(date)] Aviso: Falha ao remover diretório: $item" >> "$LOG_FILE" 2>/dev/null || true
+                fi
+            elif [[ -f "$item" ]]; then
+                if rm -f "$item" 2>/dev/null; then
+                    echo "[$(date)] Arquivo removido: $item" >> "$LOG_FILE" 2>/dev/null || true
+                else
+                    echo "[$(date)] Aviso: Falha ao remover arquivo: $item" >> "$LOG_FILE" 2>/dev/null || true
+                fi
+            fi
+        fi
+    done
     
-    if [[ $exit_code -ne 0 ]]; then
+    # Finalizar com mensagem apropriada
+    if [[ $exit_code -eq 0 ]]; then
+        echo "[$(date)] Script finalizado com sucesso" >> "$LOG_FILE" 2>/dev/null || true
+    else
         echo "[$(date)] Script finalizado com erro (código: $exit_code)" >> "$LOG_FILE" 2>/dev/null || true
-        dialog --title "Erro" --msgbox "Ocorreu um erro durante a execução. Verifique o log em: $LOG_FILE" 8 70 2>/dev/null || true
+        if command -v dialog >/dev/null 2>&1; then
+            dialog --title "Erro" --msgbox "Ocorreu um erro durante a execução. Verifique o log em: $LOG_FILE" 8 70 2>/dev/null || true
+        fi
     fi
     
+    echo "[$(date)] Cleanup concluído" >> "$LOG_FILE" 2>/dev/null || true
     exit $exit_code
 }
 
 # Configurar trap para cleanup automático
 trap cleanup EXIT INT TERM
 
-# Função para validar permissões sudo
+# Função para validar permissões sudo com tratamento robusto
 validate_sudo() {
-    if ! sudo -n true 2>/dev/null; then
-        dialog --title "Permissões" --msgbox "Este script requer permissões sudo. Por favor, execute 'sudo -v' antes de continuar." 8 60
+    # Criar arquivo de log se não existir
+    touch "$LOG_FILE" 2>/dev/null || true
+    echo "[$(date)] Verificando permissões sudo..." >> "$LOG_FILE" 2>/dev/null || true
+    
+    # Verificar se sudo está disponível
+    if ! command -v sudo >/dev/null 2>&1; then
+        echo "[$(date)] ERRO: sudo não está disponível no sistema" >> "$LOG_FILE" 2>/dev/null || true
+        if command -v dialog >/dev/null 2>&1; then
+            dialog --title "Erro" --msgbox "sudo não está disponível no sistema. Este script requer sudo para funcionar." 8 60 2>/dev/null || true
+        else
+            echo "ERRO: sudo não está disponível no sistema. Este script requer sudo para funcionar."
+        fi
         return 1
     fi
-    return 0
+    
+    # Verificar se já temos permissões sudo ativas
+    if sudo -n true 2>/dev/null; then
+        echo "[$(date)] Permissões sudo verificadas com sucesso" >> "$LOG_FILE" 2>/dev/null || true
+        return 0
+    fi
+    
+    # Se não temos permissões, solicitar ao usuário
+    echo "[$(date)] Permissões sudo não ativas, solicitando ao usuário" >> "$LOG_FILE" 2>/dev/null || true
+    
+    if command -v dialog >/dev/null 2>&1; then
+        dialog --title "Permissões" --msgbox "Este script requer permissões sudo. Por favor, execute 'sudo -v' antes de continuar ou digite sua senha quando solicitado." 8 70 2>/dev/null || true
+    else
+        echo "Este script requer permissões sudo. Por favor, digite sua senha quando solicitado."
+    fi
+    
+    # Tentar obter permissões sudo
+    if sudo -v 2>/dev/null; then
+        echo "[$(date)] Permissões sudo obtidas com sucesso" >> "$LOG_FILE" 2>/dev/null || true
+        return 0
+    else
+        echo "[$(date)] ERRO: Falha ao obter permissões sudo" >> "$LOG_FILE" 2>/dev/null || true
+        if command -v dialog >/dev/null 2>&1; then
+            dialog --title "Erro" --msgbox "Falha ao obter permissões sudo. O script não pode continuar." 8 60 2>/dev/null || true
+        else
+            echo "ERRO: Falha ao obter permissões sudo. O script não pode continuar."
+        fi
+        return 1
+    fi
 }
 
-# Função para backup seguro de arquivos
+# Função para backup seguro de arquivos com validação robusta
 safe_backup() {
     local file="$1"
-    local backup_dir="$HOME/boxserver_backups"
+    local backup_dir="${2:-$HOME/boxserver_backups}"
+    
+    # Validar parâmetros obrigatórios
+    if [[ -z "$file" ]]; then
+        echo "[$(date)] ERRO: Parâmetro file é obrigatório para safe_backup" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
     
     # Criar arquivo de log se não existir
     touch "$LOG_FILE" 2>/dev/null || true
+    echo "[$(date)] Iniciando backup seguro de: $file" >> "$LOG_FILE" 2>/dev/null || true
     
-    if [[ -f "$file" ]]; then
-        if mkdir -p "$backup_dir" 2>/dev/null; then
-            local backup_file="$backup_dir/$(basename "$file").backup.$(date +%Y%m%d_%H%M%S)"
-            if cp "$file" "$backup_file" 2>/dev/null; then
-                echo "[$(date)] Backup criado: $backup_file" >> "$LOG_FILE" 2>/dev/null || true
+    # Verificar se o arquivo existe
+    if [[ ! -f "$file" ]]; then
+        echo "[$(date)] AVISO: Arquivo não encontrado para backup: $file" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Verificar se o arquivo é legível
+    if [[ ! -r "$file" ]]; then
+        echo "[$(date)] ERRO: Arquivo não é legível para backup: $file" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Verificar se temos permissão para criar o diretório de backup
+    local backup_parent
+    backup_parent=$(dirname "$backup_dir")
+    if [[ ! -w "$backup_parent" ]]; then
+        echo "[$(date)] ERRO: Sem permissão de escrita no diretório pai: $backup_parent" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Criar diretório de backup
+    if ! mkdir -p "$backup_dir" 2>/dev/null; then
+        echo "[$(date)] ERRO: Falha ao criar diretório de backup: $backup_dir" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Gerar nome do arquivo de backup
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    local backup_file="$backup_dir/$(basename "$file").backup.$timestamp"
+    
+    # Verificar se já existe um backup com o mesmo nome
+    if [[ -f "$backup_file" ]]; then
+        backup_file="$backup_dir/$(basename "$file").backup.$timestamp.$$"
+    fi
+    
+    # Realizar o backup
+    if cp "$file" "$backup_file" 2>/dev/null; then
+        # Verificar se o backup foi criado corretamente
+        if [[ -f "$backup_file" && -s "$backup_file" ]]; then
+            local original_size backup_size
+            original_size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo "0")
+            backup_size=$(stat -f%z "$backup_file" 2>/dev/null || stat -c%s "$backup_file" 2>/dev/null || echo "0")
+            
+            if [[ "$original_size" == "$backup_size" ]]; then
+                echo "[$(date)] Backup criado com sucesso: $backup_file ($backup_size bytes)" >> "$LOG_FILE" 2>/dev/null || true
                 echo "$backup_file"
+                return 0
             else
-                echo "[$(date)] AVISO: Falha ao criar backup de $file" >> "$LOG_FILE" 2>/dev/null || true
+                echo "[$(date)] ERRO: Tamanho do backup não confere (original: $original_size, backup: $backup_size)" >> "$LOG_FILE" 2>/dev/null || true
+                rm -f "$backup_file" 2>/dev/null || true
+                return 1
             fi
         else
-            echo "[$(date)] AVISO: Falha ao criar diretório de backup" >> "$LOG_FILE" 2>/dev/null || true
+            echo "[$(date)] ERRO: Backup criado mas está vazio ou não existe: $backup_file" >> "$LOG_FILE" 2>/dev/null || true
+            return 1
         fi
+    else
+        echo "[$(date)] ERRO: Falha ao copiar arquivo para backup: $file -> $backup_file" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
     fi
 }
 
-# Função para verificar conectividade
+# Função para verificar conectividade de rede com testes abrangentes
 check_connectivity() {
     local test_url="${1:-8.8.8.8}"
     local timeout="${2:-10}"
+    local dns_server="${3:-8.8.8.8}"
     
-    # Testar conectividade básica
-    if ! ping -c 1 -W "$timeout" "$test_url" >/dev/null 2>&1; then
-        echo "[$(date)] ERRO: Sem conectividade de rede (ping falhou para $test_url)" >> "$LOG_FILE" 2>/dev/null || true
+    # Criar arquivo de log se não existir
+    touch "$LOG_FILE" 2>/dev/null || true
+    echo "[$(date)] Iniciando verificação de conectividade..." >> "$LOG_FILE" 2>/dev/null || true
+    
+    # Verificar se ping está disponível
+    if ! command -v ping >/dev/null 2>&1; then
+        echo "[$(date)] ERRO: comando ping não está disponível" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Testar conectividade básica com múltiplos servidores
+    local test_servers=("$test_url" "1.1.1.1" "8.8.4.4")
+    local ping_success=false
+    
+    for server in "${test_servers[@]}"; do
+        echo "[$(date)] Testando conectividade para $server..." >> "$LOG_FILE" 2>/dev/null || true
+        if ping -c 1 -W "$timeout" "$server" >/dev/null 2>&1; then
+            echo "[$(date)] Conectividade OK para $server" >> "$LOG_FILE" 2>/dev/null || true
+            ping_success=true
+            break
+        else
+            echo "[$(date)] Falha na conectividade para $server" >> "$LOG_FILE" 2>/dev/null || true
+        fi
+    done
+    
+    if [[ "$ping_success" != "true" ]]; then
+        echo "[$(date)] ERRO: Sem conectividade de rede (ping falhou para todos os servidores)" >> "$LOG_FILE" 2>/dev/null || true
         return 1
     fi
     
     # Testar resolução DNS
-    if ! nslookup google.com >/dev/null 2>&1; then
+    local dns_test_domains=("google.com" "github.com" "ubuntu.com")
+    local dns_success=false
+    
+    if command -v nslookup >/dev/null 2>&1; then
+        for domain in "${dns_test_domains[@]}"; do
+            echo "[$(date)] Testando resolução DNS para $domain..." >> "$LOG_FILE" 2>/dev/null || true
+            if nslookup "$domain" "$dns_server" >/dev/null 2>&1; then
+                echo "[$(date)] Resolução DNS OK para $domain" >> "$LOG_FILE" 2>/dev/null || true
+                dns_success=true
+                break
+            else
+                echo "[$(date)] Falha na resolução DNS para $domain" >> "$LOG_FILE" 2>/dev/null || true
+            fi
+        done
+    elif command -v dig >/dev/null 2>&1; then
+        for domain in "${dns_test_domains[@]}"; do
+            echo "[$(date)] Testando resolução DNS (dig) para $domain..." >> "$LOG_FILE" 2>/dev/null || true
+            if dig +short "$domain" @"$dns_server" >/dev/null 2>&1; then
+                echo "[$(date)] Resolução DNS OK para $domain" >> "$LOG_FILE" 2>/dev/null || true
+                dns_success=true
+                break
+            fi
+        done
+    else
+        echo "[$(date)] AVISO: nslookup e dig não disponíveis, pulando teste DNS" >> "$LOG_FILE" 2>/dev/null || true
+        dns_success=true  # Assumir sucesso se não podemos testar
+    fi
+    
+    if [[ "$dns_success" != "true" ]]; then
         echo "[$(date)] AVISO: Problemas de resolução DNS detectados" >> "$LOG_FILE" 2>/dev/null || true
     fi
     
+    # Testar conectividade HTTP/HTTPS se curl estiver disponível
+    if command -v curl >/dev/null 2>&1; then
+        echo "[$(date)] Testando conectividade HTTP..." >> "$LOG_FILE" 2>/dev/null || true
+        if curl -s --connect-timeout 10 --max-time 15 -o /dev/null "https://www.google.com" 2>/dev/null; then
+            echo "[$(date)] Conectividade HTTP/HTTPS OK" >> "$LOG_FILE" 2>/dev/null || true
+        else
+            echo "[$(date)] AVISO: Problemas de conectividade HTTP/HTTPS detectados" >> "$LOG_FILE" 2>/dev/null || true
+        fi
+    fi
+    
+    echo "[$(date)] Verificação de conectividade concluída" >> "$LOG_FILE" 2>/dev/null || true
     return 0
 }
 
-# Função para download com URLs de fallback (simplificada)
+# Função para download com URLs de fallback (otimizada)
 download_with_fallback() {
     local primary_url="$1"
     local fallback_urls="$2"  # URLs separadas por espaço
@@ -111,46 +355,67 @@ download_with_fallback() {
     local output_file="$4"
     local max_retries="${5:-3}"
     
-    # Tentar URL principal primeiro com método simples
-    if simple_download "$primary_url" "$output_file" "$max_retries"; then
-        return 0
-    fi
+    # Log da tentativa
+    echo "[$(date)] Iniciando download: $primary_url" >> "$LOG_FILE" 2>/dev/null || true
     
-    # Se falhou, tentar URLs de fallback
+    # Lista de URLs para tentar (principal + fallbacks)
+    local urls_to_try="$primary_url"
     if [[ -n "$fallback_urls" ]]; then
-        for fallback_url in $fallback_urls; do
-            if simple_download "$fallback_url" "$output_file" "$max_retries"; then
-                return 0
-            fi
-        done
+        urls_to_try="$urls_to_try $fallback_urls"
     fi
     
-    # Se tudo falhou, tentar com verify_download (método avançado)
-    if verify_download "$primary_url" "$expected_hash" "$output_file" "$max_retries"; then
-        return 0
-    fi
+    # Tentar cada URL com método simples primeiro
+    for url in $urls_to_try; do
+        if simple_download "$url" "$output_file" "$max_retries"; then
+            echo "[$(date)] Download bem-sucedido (simples): $url" >> "$LOG_FILE" 2>/dev/null || true
+            return 0
+        fi
+    done
     
+    # Se método simples falhou para todas as URLs, tentar método avançado
+    echo "[$(date)] Método simples falhou, tentando método avançado" >> "$LOG_FILE" 2>/dev/null || true
+    for url in $urls_to_try; do
+        if verify_download "$url" "$expected_hash" "$output_file" "$max_retries"; then
+            echo "[$(date)] Download bem-sucedido (avançado): $url" >> "$LOG_FILE" 2>/dev/null || true
+            return 0
+        fi
+    done
+    
+    echo "[$(date)] ERRO: Falha em todos os métodos de download" >> "$LOG_FILE" 2>/dev/null || true
     return 1
 }
 
-# Função para verificar integridade de downloads
-# Função simplificada de download que funciona como o backup original
+# Função simplificada de download (método wget)
 simple_download() {
     local url="$1"
     local output_file="$2"
     local max_retries="${3:-3}"
     
+    # Validar parâmetros
+    if [[ -z "$url" || -z "$output_file" ]]; then
+        echo "[$(date)] ERRO: Parâmetros inválidos para simple_download" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
     # Criar diretório de destino se não existir
     local output_dir
     output_dir=$(dirname "$output_file")
-    mkdir -p "$output_dir" 2>/dev/null || true
+    if ! mkdir -p "$output_dir" 2>/dev/null; then
+        echo "[$(date)] ERRO: Falha ao criar diretório $output_dir" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
     
-    # Tentar download simples como no backup
+    # Tentar download com wget
     local attempt=1
     while [[ $attempt -le $max_retries ]]; do
-        if wget -O "$output_file" "$url" 2>/dev/null; then
+        echo "[$(date)] Tentativa wget $attempt/$max_retries: $url" >> "$LOG_FILE" 2>/dev/null || true
+        
+        if wget --timeout=30 --tries=1 --quiet -O "$output_file" "$url" 2>/dev/null; then
             # Verificar se o arquivo foi criado e não está vazio
             if [[ -f "$output_file" && -s "$output_file" ]]; then
+                local file_size
+                file_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null || echo "unknown")
+                echo "[$(date)] Download wget bem-sucedido: $output_file ($file_size bytes)" >> "$LOG_FILE" 2>/dev/null || true
                 return 0
             fi
         fi
@@ -164,10 +429,11 @@ simple_download() {
         fi
     done
     
+    echo "[$(date)] ERRO: Falha no download wget após $max_retries tentativas: $url" >> "$LOG_FILE" 2>/dev/null || true
     return 1
 }
 
-# Função de download avançada (mantida para compatibilidade)
+# Função avançada de download com verificação de integridade (método curl)
 verify_download() {
     local url="$1"
     local expected_hash="$2"
@@ -175,24 +441,21 @@ verify_download() {
     local max_retries="${4:-3}"
     local timeout="${5:-300}"
     
-    # Tentar primeiro o método simples que funcionava no backup
-    if simple_download "$url" "$output_file" "$max_retries"; then
-        # Verificar hash se fornecido
-        if [[ -n "$expected_hash" ]]; then
-            local file_hash
-            file_hash=$(sha256sum "$output_file" 2>/dev/null | cut -d' ' -f1) || return 1
-            if [[ "$file_hash" != "$expected_hash" ]]; then
-                rm -f "$output_file" 2>/dev/null || true
-                return 1
-            fi
-        fi
-        return 0
+    # Validar parâmetros obrigatórios
+    if [[ -z "$url" || -z "$output_file" ]]; then
+        echo "[$(date)] ERRO: Parâmetros inválidos para verify_download" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
     fi
     
-    # Se o método simples falhar, tentar com curl (método avançado)
+    # Verificar se curl está disponível
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "[$(date)] ERRO: curl não está disponível" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
     # Criar arquivo de log se não existir
     touch "$LOG_FILE" 2>/dev/null || true
-    echo "[$(date)] Método wget falhou, tentando curl: $url" >> "$LOG_FILE" 2>/dev/null || true
+    echo "[$(date)] Iniciando download curl: $url" >> "$LOG_FILE" 2>/dev/null || true
     
     # Criar diretório de destino se não existir
     local output_dir
@@ -202,11 +465,14 @@ verify_download() {
         return 1
     fi
     
-    # Tentar download com curl
+    # Tentar download com curl usando configurações otimizadas
     local attempt=1
+    local download_success=false
+    
     while [[ $attempt -le $max_retries ]]; do
-        echo "[$(date)] Tentativa curl $attempt/$max_retries: Baixando $url" >> "$LOG_FILE" 2>/dev/null || true
+        echo "[$(date)] Tentativa curl $attempt/$max_retries: $url" >> "$LOG_FILE" 2>/dev/null || true
         
+        # Download com curl usando parâmetros otimizados
         if curl -fsSL \
             --connect-timeout 30 \
             --max-time "$timeout" \
@@ -214,14 +480,22 @@ verify_download() {
             --retry-delay 5 \
             --user-agent "BoxServer-Installer/1.0" \
             --location \
+            --fail \
             --output "$output_file" \
             "$url" 2>/dev/null; then
             
             # Verificar se o arquivo foi criado e não está vazio
             if [[ -f "$output_file" && -s "$output_file" ]]; then
-                echo "[$(date)] Download curl bem-sucedido na tentativa $attempt" >> "$LOG_FILE" 2>/dev/null || true
+                local file_size
+                file_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null || echo "unknown")
+                echo "[$(date)] Download curl bem-sucedido na tentativa $attempt: $output_file ($file_size bytes)" >> "$LOG_FILE" 2>/dev/null || true
+                download_success=true
                 break
+            else
+                echo "[$(date)] ERRO: Arquivo vazio ou não criado na tentativa $attempt" >> "$LOG_FILE" 2>/dev/null || true
             fi
+        else
+            echo "[$(date)] ERRO: Falha no curl na tentativa $attempt" >> "$LOG_FILE" 2>/dev/null || true
         fi
         
         # Remover arquivo parcial se existir
@@ -233,29 +507,46 @@ verify_download() {
         fi
     done
     
-    # Verificar se o download final foi bem-sucedido
-    if [[ ! -f "$output_file" || ! -s "$output_file" ]]; then
-        echo "[$(date)] ERRO: Falha no download após $max_retries tentativas: $url" >> "$LOG_FILE" 2>/dev/null || true
+    # Verificar se o download foi bem-sucedido
+    if [[ "$download_success" != "true" ]]; then
+        echo "[$(date)] ERRO: Falha no download curl após $max_retries tentativas: $url" >> "$LOG_FILE" 2>/dev/null || true
         return 1
     fi
     
     # Verificar hash se fornecido
     if [[ -n "$expected_hash" ]]; then
         echo "[$(date)] Verificando integridade do arquivo..." >> "$LOG_FILE" 2>/dev/null || true
+        
+        # Verificar se as ferramentas de hash estão disponíveis
         local file_hash
-        file_hash=$(sha256sum "$output_file" 2>/dev/null | cut -d' ' -f1) || {
+        if command -v sha256sum >/dev/null 2>&1; then
+            file_hash=$(sha256sum "$output_file" 2>/dev/null | cut -d' ' -f1)
+        elif command -v shasum >/dev/null 2>&1; then
+            file_hash=$(shasum -a 256 "$output_file" 2>/dev/null | cut -d' ' -f1)
+        else
+            echo "[$(date)] Aviso: Verificação de hash ignorada - sha256sum/shasum não disponível" >> "$LOG_FILE" 2>/dev/null || true
+            echo "[$(date)] Download curl concluído sem verificação de hash: $output_file" >> "$LOG_FILE" 2>/dev/null || true
+            return 0
+        fi
+        
+        # Verificar se o hash foi calculado com sucesso
+        if [[ -z "$file_hash" ]]; then
             echo "[$(date)] ERRO: Falha ao calcular hash de $output_file" >> "$LOG_FILE" 2>/dev/null || true
-            return 1
-        }
-        if [[ "$file_hash" != "$expected_hash" ]]; then
-            echo "[$(date)] ERRO: Hash inválido para $output_file" >> "$LOG_FILE" 2>/dev/null || true
             rm -f "$output_file" 2>/dev/null || true
             return 1
         fi
-        echo "[$(date)] Verificação de hash bem-sucedida" >> "$LOG_FILE" 2>/dev/null || true
+        
+        # Comparar hashes
+        if [[ "$file_hash" != "$expected_hash" ]]; then
+            echo "[$(date)] ERRO: Hash inválido para $output_file. Esperado: $expected_hash, Obtido: $file_hash" >> "$LOG_FILE" 2>/dev/null || true
+            rm -f "$output_file" 2>/dev/null || true
+            return 1
+        fi
+        
+        echo "[$(date)] Verificação de hash bem-sucedida: $output_file" >> "$LOG_FILE" 2>/dev/null || true
     fi
     
-    echo "[$(date)] Download verificado com sucesso: $output_file" >> "$LOG_FILE" 2>/dev/null || true
+    echo "[$(date)] Download curl verificado com sucesso: $output_file" >> "$LOG_FILE" 2>/dev/null || true
     return 0
 }
 
@@ -264,27 +555,73 @@ safe_execute_script() {
     local script_file="$1"
     local script_args="${2:-}"
     
+    # Validar parâmetros obrigatórios
+    if [[ -z "$script_file" ]]; then
+        echo "[$(date)] ERRO: Parâmetro script_file é obrigatório" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
     # Criar arquivo de log se não existir
     touch "$LOG_FILE" 2>/dev/null || true
+    echo "[$(date)] Iniciando execução segura de script: $script_file" >> "$LOG_FILE" 2>/dev/null || true
     
     # Verificar se o arquivo existe e é legível
-    if [[ ! -f "$script_file" || ! -r "$script_file" ]]; then
-        echo "[$(date)] ERRO: Script não encontrado ou não legível: $script_file" >> "$LOG_FILE" 2>/dev/null || true
+    if [[ ! -f "$script_file" ]]; then
+        echo "[$(date)] ERRO: Script não encontrado: $script_file" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    if [[ ! -r "$script_file" ]]; then
+        echo "[$(date)] ERRO: Script não é legível: $script_file" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Verificar se o arquivo não está vazio
+    if [[ ! -s "$script_file" ]]; then
+        echo "[$(date)] ERRO: Script está vazio: $script_file" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Verificar se bash está disponível
+    if ! command -v bash >/dev/null 2>&1; then
+        echo "[$(date)] ERRO: bash não está disponível" >> "$LOG_FILE" 2>/dev/null || true
         return 1
     fi
     
     # Verificar se o script não contém comandos perigosos
-    if grep -qE '(rm -rf /|mkfs|fdisk|dd if=|> /dev/)' "$script_file" 2>/dev/null; then
-        echo "[$(date)] ERRO: Script contém comandos perigosos: $script_file" >> "$LOG_FILE" 2>/dev/null || true
-        return 1
+    local dangerous_patterns=(
+        'rm -rf /'
+        'mkfs'
+        'fdisk'
+        'dd if='
+        '> /dev/'
+        'format'
+        'wipefs'
+        'shred'
+        'rm -rf \$HOME'
+        'rm -rf ~'
+    )
+    
+    for pattern in "${dangerous_patterns[@]}"; do
+        if grep -qF "$pattern" "$script_file" 2>/dev/null; then
+            echo "[$(date)] ERRO: Script contém comando perigoso '$pattern': $script_file" >> "$LOG_FILE" 2>/dev/null || true
+            return 1
+        fi
+    done
+    
+    # Executar o script com tratamento de erro robusto
+    echo "[$(date)] Executando script: $script_file $script_args" >> "$LOG_FILE" 2>/dev/null || true
+    
+    # Capturar código de saída
+    local exit_code=0
+    if ! bash "$script_file" $script_args 2>&1 | tee -a "$LOG_FILE"; then
+        exit_code=$?
+        echo "[$(date)] ERRO: Falha na execução do script: $script_file (código: $exit_code)" >> "$LOG_FILE" 2>/dev/null || true
+        return $exit_code
     fi
     
-    # Executar o script com permissões limitadas
-    echo "[$(date)] Executando script: $script_file $script_args" >> "$LOG_FILE" 2>/dev/null || true
-    bash "$script_file" $script_args 2>&1 | tee -a "$LOG_FILE" || {
-        echo "[$(date)] ERRO: Falha na execução do script: $script_file" >> "$LOG_FILE" 2>/dev/null || true
-        return 1
-    }
+    echo "[$(date)] Script executado com sucesso: $script_file" >> "$LOG_FILE" 2>/dev/null || true
+    return 0
 }
 
 # --- Variáveis Globais ---
@@ -2214,16 +2551,7 @@ check_resources() {
     fi
 }
 
-check_connectivity() {
-    if ping -c 1 8.8.8.8 > /dev/null 2>&1; then
-        echo "🌐 Conectividade: OK"
-        log_message "Connectivity: OK"
-    else
-        echo "❌ Conectividade: Falha"
-        log_message "ALERT: No internet connectivity!"
-        return 1
-    fi
-}
+
 
 check_dns() {
     if nslookup google.com 127.0.0.1 > /dev/null 2>&1; then
