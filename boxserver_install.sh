@@ -84,24 +84,134 @@ safe_backup() {
     fi
 }
 
+# Função para verificar conectividade
+check_connectivity() {
+    local test_url="${1:-8.8.8.8}"
+    local timeout="${2:-10}"
+    
+    # Testar conectividade básica
+    if ! ping -c 1 -W "$timeout" "$test_url" >/dev/null 2>&1; then
+        echo "[$(date)] ERRO: Sem conectividade de rede (ping falhou para $test_url)" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Testar resolução DNS
+    if ! nslookup google.com >/dev/null 2>&1; then
+        echo "[$(date)] AVISO: Problemas de resolução DNS detectados" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+    
+    return 0
+}
+
+# Função para download com URLs de fallback
+download_with_fallback() {
+    local primary_url="$1"
+    local fallback_urls="$2"  # URLs separadas por espaço
+    local expected_hash="$3"
+    local output_file="$4"
+    local max_retries="${5:-3}"
+    local timeout="${6:-300}"
+    
+    # Tentar URL principal primeiro
+    if verify_download "$primary_url" "$expected_hash" "$output_file" "$max_retries" "$timeout"; then
+        return 0
+    fi
+    
+    # Se falhou, tentar URLs de fallback
+    if [[ -n "$fallback_urls" ]]; then
+        echo "[$(date)] URL principal falhou, tentando URLs de fallback..." >> "$LOG_FILE" 2>/dev/null || true
+        
+        for fallback_url in $fallback_urls; do
+            echo "[$(date)] Tentando URL de fallback: $fallback_url" >> "$LOG_FILE" 2>/dev/null || true
+            if verify_download "$fallback_url" "$expected_hash" "$output_file" "$max_retries" "$timeout"; then
+                echo "[$(date)] Download bem-sucedido com URL de fallback" >> "$LOG_FILE" 2>/dev/null || true
+                return 0
+            fi
+        done
+        
+        echo "[$(date)] ERRO: Todas as URLs falharam (principal + fallbacks)" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+    
+    return 1
+}
+
 # Função para verificar integridade de downloads
 verify_download() {
     local url="$1"
     local expected_hash="$2"
     local output_file="$3"
+    local max_retries="${4:-3}"
+    local timeout="${5:-300}"
     
     # Criar arquivo de log se não existir
     touch "$LOG_FILE" 2>/dev/null || true
-    echo "[$(date)] Baixando: $url" >> "$LOG_FILE" 2>/dev/null || true
+    echo "[$(date)] Iniciando download: $url" >> "$LOG_FILE" 2>/dev/null || true
     
-    # Download com verificações de segurança
-    if ! curl -fsSL --max-time 300 --retry 3 "$url" -o "$output_file" 2>/dev/null; then
-        echo "[$(date)] ERRO: Falha no download de $url" >> "$LOG_FILE" 2>/dev/null || true
+    # Verificar conectividade antes do download
+    if ! check_connectivity; then
+        echo "[$(date)] ERRO: Falha na verificação de conectividade" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Criar diretório de destino se não existir
+    local output_dir
+    output_dir=$(dirname "$output_file")
+    if ! mkdir -p "$output_dir" 2>/dev/null; then
+        echo "[$(date)] ERRO: Falha ao criar diretório $output_dir" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Tentar download com múltiplas tentativas
+    local attempt=1
+    while [[ $attempt -le $max_retries ]]; do
+        echo "[$(date)] Tentativa $attempt/$max_retries: Baixando $url" >> "$LOG_FILE" 2>/dev/null || true
+        
+        # Download com verificações de segurança e logs detalhados
+        local curl_output
+        curl_output=$(curl -fsSL \
+            --connect-timeout 30 \
+            --max-time "$timeout" \
+            --retry 2 \
+            --retry-delay 5 \
+            --user-agent "BoxServer-Installer/1.0" \
+            --location \
+            --write-out "HTTP_CODE:%{http_code};SIZE:%{size_download};TIME:%{time_total}" \
+            --output "$output_file" \
+            "$url" 2>&1)
+        
+        local curl_exit_code=$?
+        echo "[$(date)] Curl resultado: $curl_output (código: $curl_exit_code)" >> "$LOG_FILE" 2>/dev/null || true
+        
+        if [[ $curl_exit_code -eq 0 ]]; then
+            # Verificar se o arquivo foi criado e não está vazio
+            if [[ -f "$output_file" && -s "$output_file" ]]; then
+                echo "[$(date)] Download bem-sucedido na tentativa $attempt" >> "$LOG_FILE" 2>/dev/null || true
+                break
+            else
+                echo "[$(date)] ERRO: Arquivo vazio ou não criado na tentativa $attempt" >> "$LOG_FILE" 2>/dev/null || true
+            fi
+        else
+            echo "[$(date)] ERRO: Falha no curl na tentativa $attempt (código: $curl_exit_code)" >> "$LOG_FILE" 2>/dev/null || true
+            # Remover arquivo parcial se existir
+            rm -f "$output_file" 2>/dev/null || true
+        fi
+        
+        attempt=$((attempt + 1))
+        if [[ $attempt -le $max_retries ]]; then
+            echo "[$(date)] Aguardando 5 segundos antes da próxima tentativa..." >> "$LOG_FILE" 2>/dev/null || true
+            sleep 5
+        fi
+    done
+    
+    # Verificar se o download final foi bem-sucedido
+    if [[ ! -f "$output_file" || ! -s "$output_file" ]]; then
+        echo "[$(date)] ERRO: Falha no download após $max_retries tentativas: $url" >> "$LOG_FILE" 2>/dev/null || true
         return 1
     fi
     
     # Verificar hash se fornecido
     if [[ -n "$expected_hash" ]]; then
+        echo "[$(date)] Verificando integridade do arquivo..." >> "$LOG_FILE" 2>/dev/null || true
         local file_hash
         file_hash=$(sha256sum "$output_file" 2>/dev/null | cut -d' ' -f1) || {
             echo "[$(date)] ERRO: Falha ao calcular hash de $output_file" >> "$LOG_FILE" 2>/dev/null || true
@@ -114,15 +224,19 @@ verify_download() {
             rm -f "$output_file" 2>/dev/null || true
             return 1
         fi
+        echo "[$(date)] Verificação de hash bem-sucedida" >> "$LOG_FILE" 2>/dev/null || true
     fi
     
-    # Verificar se o arquivo não está vazio
-    if [[ ! -s "$output_file" ]]; then
-        echo "[$(date)] ERRO: Arquivo baixado está vazio: $output_file" >> "$LOG_FILE" 2>/dev/null || true
-        return 1
-    fi
+    # Verificar tipo de arquivo
+    local file_type
+    file_type=$(file "$output_file" 2>/dev/null || echo "unknown")
+    echo "[$(date)] Tipo de arquivo detectado: $file_type" >> "$LOG_FILE" 2>/dev/null || true
     
-    echo "[$(date)] Download verificado com sucesso: $output_file" >> "$LOG_FILE" 2>/dev/null || true
+    # Log de sucesso com informações detalhadas
+    local file_size
+    file_size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null || echo "unknown")
+    echo "[$(date)] Download verificado com sucesso: $output_file (tamanho: $file_size bytes)" >> "$LOG_FILE" 2>/dev/null || true
+    
     return 0
 }
 
@@ -439,13 +553,34 @@ run_unbound_installation() {
     fi
 
     dialog --title "Configurar Trust Anchor" --infobox "Baixando root hints e configurando trust anchor..." 5 60
-    sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root > "$HOME/unbound_setup.log" 2>&1
+    
+    # Download seguro do root hints com URLs de fallback
+    local root_hints_fallbacks="https://ftp.internic.net/domain/named.root https://www.iana.org/domains/root/files/named.root"
+    if download_with_fallback "https://www.internic.net/domain/named.root" "$root_hints_fallbacks" "" "$TEMP_DIR/root.hints"; then
+        sudo mv "$TEMP_DIR/root.hints" /var/lib/unbound/root.hints
+        echo "[$(date)] Root hints baixado com sucesso" >> "$HOME/unbound_setup.log" 2>/dev/null || true
+    else
+        echo "[$(date)] ERRO: Falha no download do root hints" >> "$HOME/unbound_setup.log" 2>/dev/null || true
+        dialog --msgbox "Erro: Falha no download do root hints. Verifique a conectividade." 6 50
+        return 1
+    fi
+    
+    # Tentar configurar trust anchor automaticamente
     sudo unbound-anchor -a /var/lib/unbound/root.key >> "$HOME/unbound_setup.log" 2>&1
 
     if [ $? -ne 0 ]; then
         dialog --infobox "Método principal falhou. Usando método manual para trust anchor..." 5 70
-        sudo wget -O "$HOME/root.key" https://data.iana.org/root-anchors/icannbundle.pem >> "$HOME/unbound_setup.log" 2>&1
-        sudo mv "$HOME/root.key" /var/lib/unbound/root.key
+        
+        # Download seguro do trust anchor manual com URLs de fallback
+        local trust_anchor_fallbacks="https://www.internic.net/domain/root.zone https://ftp.rs.internic.net/domain/root.zone"
+        if download_with_fallback "https://data.iana.org/root-anchors/icannbundle.pem" "$trust_anchor_fallbacks" "" "$TEMP_DIR/root.key"; then
+            sudo mv "$TEMP_DIR/root.key" /var/lib/unbound/root.key
+            echo "[$(date)] Trust anchor baixado com sucesso (método manual)" >> "$HOME/unbound_setup.log" 2>/dev/null || true
+        else
+            echo "[$(date)] ERRO: Falha no download do trust anchor" >> "$HOME/unbound_setup.log" 2>/dev/null || true
+            dialog --msgbox "Erro: Falha no download do trust anchor. Verifique a conectividade." 6 50
+            return 1
+        fi
     fi
 
     sudo chown unbound:unbound /var/lib/unbound/root.key /var/lib/unbound/root.hints
@@ -843,7 +978,17 @@ run_final_optimizations() {
     if [ $? -eq 0 ]; then
         dialog --infobox "Instalando Log2Ram..." 4 40
         echo "deb [signed-by=/usr/share/keyrings/azlux-archive-keyring.gpg] http://packages.azlux.fr/debian/ buster main" | sudo tee /etc/apt/sources.list.d/azlux.list
-        sudo wget -O /usr/share/keyrings/azlux-archive-keyring.gpg  https://azlux.fr/repo.gpg
+        
+        # Download seguro da chave GPG do repositório azlux
+        if verify_download "https://azlux.fr/repo.gpg" "" "$TEMP_DIR/azlux-archive-keyring.gpg"; then
+            sudo mv "$TEMP_DIR/azlux-archive-keyring.gpg" /usr/share/keyrings/azlux-archive-keyring.gpg
+            echo "[$(date)] Chave GPG azlux baixada com sucesso" >> "$LOG_FILE" 2>/dev/null || true
+        else
+            echo "[$(date)] ERRO: Falha no download da chave GPG azlux" >> "$LOG_FILE" 2>/dev/null || true
+            dialog --msgbox "Erro: Falha no download da chave GPG. Log2Ram não será instalado." 6 50
+            return 1
+        fi
+        
         sudo apt update > /tmp/optimizations.log 2>&1
         sudo apt install log2ram -y >> /tmp/optimizations.log 2>&1
         dialog --msgbox "Log2Ram instalado com sucesso!" 6 40
@@ -2672,8 +2817,17 @@ install_filebrowser_silent() {
     local fb_version="v2.24.2"
     local fb_url="https://github.com/filebrowser/filebrowser/releases/download/$fb_version/linux-arm-filebrowser.tar.gz"
     
-    cd /tmp && \
-    wget -q "$fb_url" -O filebrowser.tar.gz && \
+    # Download seguro do FileBrowser com URLs de fallback
+    local fb_fallbacks="https://mirror.ghproxy.com/https://github.com/filebrowser/filebrowser/releases/download/$fb_version/linux-arm-filebrowser.tar.gz https://ghproxy.net/https://github.com/filebrowser/filebrowser/releases/download/$fb_version/linux-arm-filebrowser.tar.gz"
+    if download_with_fallback "$fb_url" "$fb_fallbacks" "" "$TEMP_DIR/filebrowser.tar.gz"; then
+        echo "[$(date)] FileBrowser baixado com sucesso" >> "$LOG_FILE" 2>/dev/null || true
+    else
+        echo "[$(date)] ERRO: Falha no download do FileBrowser" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Extrair e instalar FileBrowser
+    cd "$TEMP_DIR" && \
     tar -xzf filebrowser.tar.gz && \
     sudo mv filebrowser /usr/local/bin/ && \
     sudo chmod +x /usr/local/bin/filebrowser && \
@@ -2780,8 +2934,16 @@ install_cloudflared_silent() {
     
     local cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm"
     
-    sudo wget -q "$cf_url" -O /usr/local/bin/cloudflared && \
-    sudo chmod +x /usr/local/bin/cloudflared
+    # Download seguro do cloudflared com URLs de fallback
+    local cf_fallbacks="https://mirror.ghproxy.com/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm https://ghproxy.net/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm"
+    if download_with_fallback "$cf_url" "$cf_fallbacks" "" "$TEMP_DIR/cloudflared"; then
+        sudo mv "$TEMP_DIR/cloudflared" /usr/local/bin/cloudflared
+        sudo chmod +x /usr/local/bin/cloudflared
+        echo "[$(date)] Cloudflared baixado e instalado com sucesso" >> "$LOG_FILE" 2>/dev/null || true
+    else
+        echo "[$(date)] ERRO: Falha no download do cloudflared" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    fi
 }
 
 run_monitoring_silent() {
