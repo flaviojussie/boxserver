@@ -675,9 +675,10 @@ EOF
         esac
         
         # Verificação
-        if ! systemctl is-active --quiet $(get_service_name "$app_id") 2>/dev/null; then
+        if [[ -n "$(get_service_name "$app_id")" ]] && ! systemctl is-active --quiet $(get_service_name "$app_id") 2>/dev/null; then
             log_message "WARN" "Serviço para $app_name não está ativo após instalação."
         fi
+
     done
 
     ) | dialog "${DIALOG_OPTS[@]}" --title "Instalação em Andamento" --mixedgauge "Progresso da instalação..." 20 70 0
