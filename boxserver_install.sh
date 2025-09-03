@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Script aprimorado para instalação do Boxserver - melhorias estruturais, clareza e eficiência
 #
 # Boxserver TUI Installer - Interface Gráfica Terminal
@@ -12,20 +11,6 @@
 #
 
 # Configurações globais do script
-
-# Diretorios principais
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="/var/log/boxserver"
-CONFIG_DIR="/etc/boxserver"
-BACKUP_DIR="/var/backups/boxserver"
-LOG_FILE="$LOG_DIR/tui-installer.log"
-
-# Cores para output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="/var/log/boxserver"
 CONFIG_DIR="/etc/boxserver"
@@ -43,6 +28,11 @@ NC='\033[0m' # No Color
 DIALOG_HEIGHT=20
 DIALOG_WIDTH=70
 DIALOG_MENU_HEIGHT=12
+
+# MELHORIA: Opções globais do dialog para consistência visual
+export DIALOGRC=/etc/dialogrc.boxserver
+BACKTITLE="Boxserver TUI v1.0 | IP: ${SERVER_IP:-Detectando...} | Hardware: RK322x"
+DIALOG_OPTS=(--backtitle "$BACKTITLE" --colors --ok-label "Confirmar" --cancel-label "Voltar")
 
 # Variáveis globais de configuração
 NETWORK_INTERFACE=""
@@ -73,6 +63,7 @@ declare -A APPS=(
     [11]="Rsync|Backup local|CLI"
     [12]="MiniDLNA|Servidor de mídia|Porta 8200"
     [13]="Cloudflared|Tunnel Cloudflare|CLI"
+    [14]="Chrony|Sincronização de tempo (NTP)|Serviço em background"
 )
 
 # MELHORIA: Função para logging com modo silencioso
@@ -284,6 +275,12 @@ optimize_for_nand() {
         echo "1 4 1 7" > /proc/sys/kernel/printk
         log_message "INFO" "Nível de log do kernel reduzido"
     fi
+
+    # Otimizar cache de dentries e inodes para NAND
+    if sysctl vm.vfs_cache_pressure >/dev/null 2>&1; then
+        echo 'vm.vfs_cache_pressure=50' | tee -a /etc/sysctl.conf >/dev/null
+        log_message "INFO" "Nível de log do kernel reduzido"
+    fi
     
     # Limpar caches antigos
     sync && echo 3 > /proc/sys/vm/drop_caches
@@ -475,7 +472,7 @@ select_applications() {
     menu_items+=("config" "Configurações avançadas" "OFF")
     
     while true; do
-        local choices=$(dialog --title "Seleção de Aplicativos" \
+        local choices=$(dialog "${DIALOG_OPTS[@]}" --title "Seleção de Aplicativos" \
             --checklist "Selecione os aplicativos para instalar:\n\nUse ESPAÇO para selecionar, ENTER para confirmar" \
             20 80 10 "${menu_items[@]}" 3>&1 1>&2 2>&3)
         
@@ -531,7 +528,7 @@ select_applications() {
     done
     confirmation+="\nDeseja continuar com a instalação?"
     
-    if dialog --title "Confirmar Instalação" --yesno "$confirmation" 15 60; then
+    if dialog "${DIALOG_OPTS[@]}" --title "Confirmar Instalação" --yesno "$confirmation" 15 60; then
         # CORREÇÃO: Ordenar aplicativos por dependências antes da instalação
         local sorted_apps=($(sort_installation_order "${selected_apps[@]}"))
         install_selected_apps "${sorted_apps[@]}"
@@ -548,8 +545,8 @@ sort_installation_order() {
     # Fase 2: DNS core (Unbound ANTES Pi-hole)
     # Fase 3: Serviços de rede
     # Fase 4: Segurança (após todos os serviços)
-    # Fase 5: Serviços avançados
-    local priority_order=(9 11 10 2 1 3 4 5 6 12 8 7 13)
+    # Fase 5: Serviços avançados e de tempo
+    local priority_order=(9 11 10 14 2 1 3 4 5 6 12 8 7 13)
     
     log_message "INFO" "Ordenando aplicativos por dependências..."
     
@@ -574,11 +571,11 @@ sort_installation_order() {
     echo "${sorted_apps[@]}"
 }
 
-# MELHORIA: Função para instalar aplicativos com progresso silencioso
+# MELHORIA: Função de instalação refatorada para eficiência e robustez
 install_selected_apps() {
     local apps_to_install=("$@")
-    local total_apps=${#apps_to_install[@]}
-    local current_app=0
+    local total_steps=$(( ${#apps_to_install[@]} * 2 + 2 )) # Preparação, apt, e 2 etapas por app
+    local current_step=0
     
     # Criar arquivo de configuração
     cat > "$CONFIG_DIR/system.conf" << EOF
@@ -593,68 +590,123 @@ COCKPIT_PORT="$COCKPIT_PORT"
 INSTALL_DATE="$(date)"
 EOF
     
-    log_message "INFO" "Iniciando instalação silenciosa de ${total_apps} aplicativos"
-    
-    # Configurar modo silencioso
+    log_message "INFO" "Iniciando instalação de ${#apps_to_install[@]} aplicativos"
     export DEBIAN_FRONTEND=noninteractive
-    export APT_LISTCHANGES_FRONTEND=none
-    
+
+    # --- FASE 1: Coleta e Preparação ---
+    local apt_packages=()
+    local external_scripts=()
+    local download_pids=()
+
     for app_id in "${apps_to_install[@]}"; do
-        current_app=$((current_app + 1))
-        local app_info="${APPS[$app_id]}"
-        IFS='|' read -r name description access <<< "$app_info"
-        
-        # Calcular progresso detalhado
-        local base_progress=$(((current_app - 1) * 100 / total_apps))
-        local step_size=$((100 / total_apps))
-        
-        # Mostrar início da instalação
-        echo "$base_progress" | dialog --title "Instalação Silenciosa" \
-            --gauge "Preparando: $name ($current_app/$total_apps)" 10 70
-        
-        log_message "INFO" "Instalando $name (ID: $app_id)"
-        
-        # Executar instalação com progresso em tempo real
-        {
-            case $app_id in
-                1) install_pihole_silent "$base_progress" "$step_size" ;;
-                2) install_unbound_silent "$base_progress" "$step_size" ;;
-                3) install_wireguard_silent "$base_progress" "$step_size" ;;
-                4) install_cockpit_silent "$base_progress" "$step_size" ;;
-                5) install_filebrowser_silent "$base_progress" "$step_size" ;;
-                6) install_netdata_silent "$base_progress" "$step_size" ;;
-                7) install_fail2ban_silent "$base_progress" "$step_size" ;;
-                8) install_ufw_silent "$base_progress" "$step_size" ;;
-                9) install_rng_tools_silent "$base_progress" "$step_size" ;;
-                10) install_rclone_silent "$base_progress" "$step_size" ;;
-                11) install_rsync_silent "$base_progress" "$step_size" ;;
-                12) install_minidlna_silent "$base_progress" "$step_size" ;;
-                13) install_cloudflared_silent "$base_progress" "$step_size" ;;
-            esac
-        } 2>&1 | while IFS= read -r line; do
-            # Filtrar apenas logs importantes
-            if [[ "$line" =~ (ERROR|WARN|Instalando|Configurando|Testando) ]]; then
-                log_message "INFO" "$line"
-            fi
-        done
-        
-        # Mostrar conclusão
-        local final_progress=$((current_app * 100 / total_apps))
-        echo "$final_progress" | dialog --title "Instalação Silenciosa" \
-            --gauge "Concluído: $name ($current_app/$total_apps)" 10 70
-        
-        log_message "INFO" "$name instalado com sucesso"
-        sleep 1
+        case $app_id in
+            1) external_scripts+=("pihole|https://install.pi-hole.net") ;;
+            2) apt_packages+=("unbound") ;;
+            3) apt_packages+=("wireguard-tools") ;;
+            4) apt_packages+=("cockpit") ;;
+            5) external_scripts+=("filebrowser|https://raw.githubusercontent.com/filebrowser/get/master/get.sh") ;;
+            6) external_scripts+=("netdata|https://my-netdata.io/kickstart.sh") ;;
+            7) apt_packages+=("fail2ban") ;;
+            8) apt_packages+=("ufw") ;;
+            9) apt_packages+=("rng-tools") ;;
+            10) external_scripts+=("rclone|https://rclone.org/install.sh") ;;
+            11) apt_packages+=("rsync") ;;
+            12) apt_packages+=("minidlna") ;;
+            13) external_scripts+=("cloudflared|https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm.deb") ;;
+            14) apt_packages+=("chrony") ;;
+        esac
     done
-    
-    # Mostrar conclusão final
-    dialog --title "Instalação Concluída" --msgbox "Todos os aplicativos foram instalados com sucesso!\n\n✅ $total_apps aplicativos instalados\n📋 Logs detalhados: $LOG_FILE\n🔧 Configurações: $CONFIG_DIR" 12 70
+
+    (
+    # --- FASE 2: Instalação APT em Lote ---
+    current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Atualizando lista de pacotes..."; echo "XXX"
+    apt-get update -y >/dev/null 2>&1
+
+    if [ ${#apt_packages[@]} -gt 0 ]; then
+        current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Instalando pacotes base (${#apt_packages[@]} pacotes)..."; echo "XXX"
+        apt-get install -y --no-install-recommends ${apt_packages[@]} >/dev/null 2>&1
+        if [ $? -ne 0 ]; then log_message "ERROR" "Falha ao instalar pacotes APT: ${apt_packages[*]}"; exit 1; fi
+    fi
+
+    # --- FASE 3: Instalação e Configuração Individual ---
+    for app_id in "${apps_to_install[@]}"; do
+        local app_name=$(echo "${APPS[$app_id]}" | cut -d'|' -f1)
+        
+        current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Instalando: $app_name..."; echo "XXX"
+        
+        # Instalação
+        case $app_id in
+            1) install_pihole ;;
+            2) install_unbound ;;
+            3) install_wireguard ;;
+            4) install_cockpit ;;
+            5) install_filebrowser ;;
+            6) install_netdata ;;
+            7) install_fail2ban ;;
+            8) install_ufw ;;
+            9) install_rng_tools ;;
+            10) install_rclone ;;
+            11) install_rsync ;;
+            12) install_minidlna ;;
+            13) install_cloudflared ;;
+            14) install_chrony ;;
+        esac
+        if [ $? -ne 0 ]; then log_message "ERROR" "Falha na instalação de $app_name"; exit 1; fi
+
+        current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Configurando: $app_name..."; echo "XXX"
+        
+        # Configuração Pós-Instalação (se necessário)
+        case $app_id in
+            1) setup_logrotate ;; # Configura logrotate para pihole
+        esac
+        
+        # Verificação
+        if ! systemctl is-active --quiet $(get_service_name "$app_id") 2>/dev/null; then
+            log_message "WARN" "Serviço para $app_name não está ativo após instalação."
+        fi
+    done
+
+    ) | dialog "${DIALOG_OPTS[@]}" --title "Instalação em Andamento" --mixedgauge "Progresso da instalação..." 20 70 0
+
+    if [ $? -ne 0 ]; then
+        dialog "${DIALOG_OPTS[@]}" --title "Erro na Instalação" --msgbox "A instalação falhou. Verifique os logs em $LOG_FILE para mais detalhes." 8 60
+        exit 1
+    fi
+
+    dialog "${DIALOG_OPTS[@]}" --title "Instalação Concluída" --infobox "Finalizando e aplicando configurações..." 5 50
+    sleep 2
     
     # CORREÇÃO: Reconfigurar integrações após instalação completa
     reconfigure_service_integrations "${apps_to_install[@]}"
+
+    # MELHORIA: Criar scripts de manutenção documentados
+    create_maintenance_scripts
+    
+    # MELHORIA: Gerar relatório final
+    generate_installation_summary "${apps_to_install[@]}"
     
     # Oferecer menu pós-instalação
     post_installation_menu
+}
+
+# MELHORIA: Função para obter o nome do serviço systemd de um app
+get_service_name() {
+    local app_id="$1"
+    case $app_id in
+        1) echo "pihole-FTL" ;;
+        2) echo "unbound" ;;
+        3) echo "wg-quick@wg0" ;;
+        4) echo "cockpit.socket" ;;
+        5) echo "filebrowser" ;;
+        6) echo "netdata" ;;
+        7) echo "fail2ban" ;;
+        8) echo "ufw" ;;
+        9) echo "rng-tools" ;;
+        12) echo "minidlna" ;;
+        13) echo "cloudflared" ;;
+        14) echo "chrony" ;;
+        *) echo "" ;;
+    esac
 }
 
 # IMPLEMENTAÇÃO: Reconfigurar integrações entre serviços após instalação
@@ -781,12 +833,46 @@ reconfigure_service_integrations() {
     log_message "INFO" "Reconfiguração de integrações concluída"
 }
 
+# MELHORIA: Função segura para baixar e executar scripts externos
+download_and_run_script() {
+    local url="$1"
+    local script_path="/tmp/external_script_$(date +%s).sh"
+
+    log_message "INFO" "Baixando script de: $url"
+    if ! curl -sSL -o "$script_path" "$url"; then
+        log_message "ERROR" "Falha ao baixar o script de $url"
+        rm -f "$script_path"
+        return 1
+    fi
+
+    # Verificação de segurança aprimorada (evita falsos positivos)
+    # Procura por 'rm -rf /' como um comando exato, não como parte de uma variável.
+    # O padrão `\s` garante que haja espaços ao redor, tornando a detecção mais precisa.
+    if grep -qE '\s+rm\s+-rf\s+/\s*' "$script_path"; then
+        log_message "ERROR" "Script contém comando perigoso 'rm -rf /'. Abortando."
+        rm -f "$script_path"
+        return 1
+    fi
+
+    log_message "INFO" "Executando script baixado: $script_path"
+    # Executa o script com bash
+    if ! bash "$script_path"; then
+        log_message "ERROR" "Falha na execução do script de $url"
+        rm -f "$script_path"
+        return 1
+    fi
+
+    log_message "INFO" "Script executado com sucesso."
+    rm -f "$script_path"
+    return 0
+}
+
 # Função para instalação do Pi-hole (baseada em INSTALAÇÃO APPS.md)
 install_pihole() {
     log_message "INFO" "Instalando Pi-hole..."
     
-    # Baixar e executar script de instalação
-    curl -sSL https://install.pi-hole.net | bash
+    # CORREÇÃO: Usar função segura para baixar e executar
+    download_and_run_script "https://install.pi-hole.net"
     
     if [ $? -ne 0 ]; then
         log_message "ERROR" "Falha na instalação do Pi-hole"
@@ -834,6 +920,9 @@ EOF
     # Reiniciar serviço
     systemctl restart pihole-FTL
     systemctl enable pihole-FTL
+
+    # MELHORIA: Configurar logrotate para Pi-hole conforme documentação
+    setup_logrotate
     
     log_message "INFO" "Pi-hole instalado e configurado com sucesso"
 }
@@ -913,13 +1002,28 @@ server:
     root-hints: "/var/lib/unbound/root.hints"
 EOF
     
-    # Baixar root hints com verificação
+    # CORREÇÃO: Baixar root hints com múltiplos fallbacks
     log_message "INFO" "Baixando root hints..."
-    if ! wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root; then
-        log_message "ERROR" "Falha ao baixar root hints"
+    local root_hints_urls=(
+        "https://www.internic.net/domain/named.root"
+        "https://ftp.internic.net/domain/named.root"
+        "https://www.iana.org/domains/root/files/named.root"
+    )
+    local download_success=false
+    for url in "${root_hints_urls[@]}"; do
+        log_message "INFO" "Tentando baixar root hints de: $url"
+        if wget -qO /var/lib/unbound/root.hints "$url"; then
+            log_message "INFO" "Root hints baixado com sucesso de $url"
+            download_success=true
+            break
+        fi
+    done
+
+    if [ "$download_success" = false ]; then
+        log_message "ERROR" "Falha ao baixar root hints de todas as fontes."
         return 1
     fi
-    
+
     # Configurar trust anchor automático com fallback
     log_message "INFO" "Configurando trust anchor..."
     if ! unbound-anchor -a /var/lib/unbound/root.key; then
@@ -938,17 +1042,19 @@ EOF
         return 1
     fi
     
-    # Configurar permissões
+    # CORREÇÃO: Configurar permissões conforme documentação
     chown unbound:unbound /var/lib/unbound/root.key /var/lib/unbound/root.hints
     chmod 644 /var/lib/unbound/root.key /var/lib/unbound/root.hints
+    log_message "INFO" "Permissões aplicadas aos arquivos do Unbound."
     
-    # Verificar configuração
+    # CORREÇÃO: Verificar configuração com unbound-checkconf antes de reiniciar
     log_message "INFO" "Verificando configuração do Unbound..."
     if ! unbound-checkconf; then
         log_message "ERROR" "Erro na configuração do Unbound"
         log_message "ERROR" "Detalhes: $(unbound-checkconf 2>&1)"
         return 1
     fi
+    log_message "INFO" "Configuração do Unbound validada com sucesso."
     
     # CORREÇÃO: Implementar ativação robusta com fallbacks
     if ! activate_unbound_service; then
@@ -1063,12 +1169,26 @@ EOF
     # Etapa 5: Baixar arquivos necessários (80% do progresso)
     update_progress "$current_progress" 100 "Unbound: Baixando arquivos de configuração..."
     
-    if ! run_silent "wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root" "Download root hints"; then
+    # CORREÇÃO: Lógica de download com fallback para o modo silencioso
+    local root_hints_urls=(
+        "https://www.internic.net/domain/named.root"
+        "https://ftp.internic.net/domain/named.root"
+        "https://www.iana.org/domains/root/files/named.root"
+    )
+    local download_success=false
+    for url in "${root_hints_urls[@]}"; do
+        if run_silent "wget -qO /var/lib/unbound/root.hints '$url'" "Download root hints de $url"; then
+            download_success=true
+            break
+        fi
+    done
+    if [ "$download_success" = false ]; then
+        log_message "ERROR" "Falha ao baixar root hints de todas as fontes."
         SILENT_MODE="false"
         return 1
     fi
-    
-    if ! unbound-anchor -a /var/lib/unbound/root.key >/dev/null 2>&1; then
+
+    if ! run_silent "unbound-anchor -a /var/lib/unbound/root.key" "Configurando trust anchor"; then
         if ! run_silent "wget -O /tmp/root.key https://data.iana.org/root-anchors/icannbundle.pem && mv /tmp/root.key /var/lib/unbound/root.key" "Trust anchor manual"; then
             SILENT_MODE="false"
             return 1
@@ -1125,7 +1245,7 @@ install_pihole_silent() {
     current_progress=$((base_progress + step_size / 4))
     
     update_progress "$current_progress" 100 "Pi-hole: Executando instalação..."
-    if ! run_silent "curl -sSL https://install.pi-hole.net | bash" "Instalação do Pi-hole"; then
+    if ! download_and_run_script "https://install.pi-hole.net" >/dev/null 2>&1; then
         SILENT_MODE="false"
         return 1
     fi
@@ -1185,6 +1305,7 @@ install_wireguard_silent() { install_generic_silent "WireGuard" "$1" "$2" "insta
 install_cockpit_silent() { install_generic_silent "Cockpit" "$1" "$2" "install_cockpit"; }
 install_filebrowser_silent() { install_generic_silent "FileBrowser" "$1" "$2" "install_filebrowser"; }
 install_netdata_silent() { install_generic_silent "Netdata" "$1" "$2" "install_netdata"; }
+install_chrony_silent() { install_generic_silent "Chrony" "$1" "$2" "install_chrony"; }
 install_fail2ban_silent() { install_generic_silent "Fail2Ban" "$1" "$2" "install_fail2ban"; }
 install_ufw_silent() { install_generic_silent "UFW" "$1" "$2" "install_ufw"; }
 install_rng_tools_silent() { install_generic_silent "RNG-tools" "$1" "$2" "install_rng_tools"; }
@@ -1472,12 +1593,13 @@ PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACC
 # Exemplo de peer (substituir pelas chaves reais do cliente)
 # [Peer]
 # PublicKey = <CHAVE_PÚBLICA_DO_CLIENTE>
-# AllowedIPs = ${VPN_NETWORK%.*}.2/32
+# AllowedIPs = ${VPN_NETWORK%.*}.2/32 
 EOF
     
-    # Habilitar IP Forwarding
+    # CORREÇÃO: Habilitar IP Forwarding permanentemente
     sysctl -w net.ipv4.ip_forward=1
-    echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+    sed -i '/net.ipv4.ip_forward=1/s/^#//' /etc/sysctl.conf
+    echo 'net.ipv4.ip_forward=1' | tee -a /etc/sysctl.conf >/dev/null
     sysctl -p
     
     # Configurar permissões
@@ -2016,12 +2138,96 @@ EOF
     fi
 }
 
+# IMPLEMENTAÇÃO: Instalação do Chrony (NTP)
+install_chrony() {
+    log_message "INFO" "Instalando Chrony (NTP)..."
+    
+    apt-get install -y chrony
+    if [ $? -ne 0 ]; then
+        log_message "ERROR" "Falha na instalação do Chrony"
+        return 1
+    fi
+
+    # Configurar servidores NTP brasileiros
+    cat > /etc/chrony/chrony.conf << 'EOF'
+# Welcome to the chrony configuration file. See chrony.conf(5) for more
+# information about usuable directives.
+
+# Servidores NTP brasileiros (recomendado)
+pool a.st1.ntp.br iburst
+pool b.st1.ntp.br iburst
+pool c.st1.ntp.br iburst
+pool d.st1.ntp.br iburst
+
+# This directive specify the location of the file containing ID/key pairs for
+# NTP authentication.
+keyfile /etc/chrony/chrony.keys
+
+# This directive specify the file into which chronyd will store the rate
+# information.
+driftfile /var/lib/chrony/chrony.drift
+
+# Uncomment the following line to turn logging on.
+#log tracking measurements statistics
+
+# Log files location.
+logdir /var/log/chrony
+
+# Stop bad estimates affecting the clock.
+maxupdateskew 100.0
+
+# This directive enables kernel synchronisation (every 11 minutes) of the
+# real-time clock. Note that it can’t be used along with the 'rtcfile' directive.
+rtcsync
+
+# Step the clock quickly on start.
+makestep 1 3
+EOF
+
+    systemctl restart chrony
+    systemctl enable chrony
+
+    if systemctl is-active --quiet chrony; then
+        log_message "INFO" "Chrony instalado e configurado com sucesso."
+    else
+        log_message "ERROR" "Falha ao iniciar o serviço Chrony."
+        return 1
+    fi
+}
+
+# IMPLEMENTAÇÃO: Configurar logrotate para Pi-hole
+setup_logrotate() {
+    log_message "INFO" "Configurando logrotate para o Pi-hole..."
+    cat > /etc/logrotate.d/pihole << 'EOF'
+/var/log/pihole.log {
+    daily
+    missingok
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    create 644 pihole pihole
+}
+EOF
+    log_message "INFO" "Logrotate para Pi-hole configurado."
+}
+
 # Função para instalação do Cloudflared (baseada em INSTALAÇÃO APPS.md)
 install_cloudflared() {
     log_message "INFO" "Instalando Cloudflared..."
     
-    # Baixar Cloudflared para ARM
-    wget -O /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm.deb
+    # MELHORIA: Detectar arquitetura para download correto (arm vs arm64)
+    local arch=$(dpkg --print-architecture)
+    local download_url=""
+    if [[ "$arch" == "arm64" ]]; then
+        download_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb"
+        log_message "INFO" "Arquitetura ARM64 detectada. Baixando cloudflared-linux-arm64.deb"
+    else
+        download_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm.deb"
+        log_message "INFO" "Arquitetura ARM (32-bit) detectada. Baixando cloudflared-linux-arm.deb"
+    fi
+
+    wget -O /tmp/cloudflared.deb "$download_url"
     
     if [ $? -ne 0 ]; then
         log_message "ERROR" "Falha no download do Cloudflared"
@@ -2039,8 +2245,7 @@ install_cloudflared() {
     mkdir -p /etc/cloudflared
     cat > /etc/cloudflared/config.yml << 'EOF'
 # Configuração Cloudflared para Boxserver
-tunnel: boxserver-tunnel
-credentials-file: /etc/cloudflared/cert.pem
+# O ID do túnel e o arquivo de credenciais serão preenchidos automaticamente.
 
 # Configurações de performance para ARM
 protocol: quic
@@ -2132,46 +2337,26 @@ cloudflare_login() {
         fi
     fi
     
-    dialog --title "Login Cloudflare - Servidor Headless" --msgbox "ATENÇÃO: Este é um servidor sem interface gráfica.\n\nO comando irá gerar uma URL que você deve:\n1. Copiar da saída do terminal\n2. Abrir em qualquer navegador\n3. Fazer login na sua conta Cloudflare\n4. Selecionar o domínio\n\nPressione ENTER para continuar..." 14 70
-    
-    # Criar diretório se não existir
-    mkdir -p "$HOME/.cloudflared"
-    
-    # Executar login e capturar a saída
-    dialog --title "Executando Login" --infobox "Executando cloudflared tunnel login...\n\nCopie a URL que aparecerá no terminal\ne abra em um navegador." 8 50
-    
-    # Executar login em background e mostrar a URL
-    {
-        echo "==========================================="
-        echo "CLOUDFLARE LOGIN - SERVIDOR HEADLESS"
-        echo "==========================================="
-        echo "Copie a URL abaixo e abra em um navegador:"
-        echo "==========================================="
-        cloudflared tunnel login 2>&1
-        echo "==========================================="
-        echo "Após fazer login no navegador, pressione ENTER"
-        echo "==========================================="
-    } > /tmp/cloudflare_login.log 2>&1 &
-    
-    # Aguardar um pouco para o comando iniciar
-    sleep 3
-    
-    # Mostrar o log em tempo real
-    if [[ -f "/tmp/cloudflare_login.log" ]]; then
-        dialog --title "URL de Login" --textbox "/tmp/cloudflare_login.log" 20 80
+    # MELHORIA: Extrair a URL de login e exibi-la de forma clara
+    local login_url
+    login_url=$(cloudflared tunnel login 2>&1 | grep -o 'https://dash.cloudflare.com/[a-zA-Z0-9?=&-]*')
+
+    if [ -z "$login_url" ]; then
+        dialog --title "Erro de Login" --msgbox "Não foi possível obter a URL de login do Cloudflare.\n\nVerifique sua conexão e tente novamente." 8 60
+        log_message "ERROR" "Falha ao obter a URL de login do Cloudflare."
+        return 1
     fi
-    
-    # Aguardar confirmação do usuário
-    dialog --title "Aguardando Login" --msgbox "Após fazer login no navegador:\n\n1. Selecione seu domínio\n2. Aguarde a confirmação\n3. Pressione ENTER aqui" 10 50
+
+    dialog --title "Login Cloudflare" --msgbox "Abra a seguinte URL em um navegador para fazer login:\n\n\Z1$login_url\Z0\n\nApós autorizar o túnel no navegador, pressione ENTER aqui para continuar." 12 90
     
     # Verificar se o certificado foi criado
     local timeout=60
     local count=0
     while [[ $count -lt $timeout ]]; do
+        # O login bem-sucedido cria o arquivo cert.pem no diretório home do usuário
         if [[ -f "$HOME/.cloudflared/cert.pem" ]]; then
             dialog --title "Login Concluído" --msgbox "Login realizado com sucesso!\n\nCertificado salvo em: ~/.cloudflared/cert.pem" 8 60
             log_message "INFO" "Login no Cloudflare realizado com sucesso"
-            rm -f /tmp/cloudflare_login.log
             return 0
         fi
         sleep 1
@@ -2181,16 +2366,15 @@ cloudflare_login() {
     # Se chegou aqui, o login falhou
     dialog --title "Erro de Login" --msgbox "Falha no login do Cloudflare.\n\nPossíveis causas:\n- Login não foi completado no navegador\n- Domínio não foi selecionado\n- Problemas de conectividade\n\nTente novamente." 12 60
     log_message "ERROR" "Falha no login do Cloudflare - timeout ou erro"
-    rm -f /tmp/cloudflare_login.log
     return 1
 }
 
 # Função para criar/configurar túnel
 cloudflare_create_tunnel() {
     # Verificar se já existe túnel
-    if cloudflared tunnel list | grep -q "boxserver-tunnel"; then
+    if cloudflared tunnel list 2>/dev/null | grep -q "boxserver-tunnel"; then
         if dialog --title "Túnel Existente" --yesno "O túnel 'boxserver-tunnel' já existe.\n\nDeseja reconfigurá-lo?" 8 50; then
-            cloudflared tunnel delete boxserver-tunnel 2>/dev/null
+            cloudflared tunnel delete boxserver-tunnel >/dev/null 2>&1
         else
             return 0
         fi
@@ -2198,26 +2382,31 @@ cloudflare_create_tunnel() {
     
     dialog --title "Criando Túnel" --infobox "Criando túnel 'boxserver-tunnel'..." 5 40
     
-    if cloudflared tunnel create boxserver-tunnel; then
+    if cloudflared tunnel create boxserver-tunnel >/dev/null 2>&1; then
         # Obter UUID do túnel
         local tunnel_id=$(cloudflared tunnel list | grep "boxserver-tunnel" | awk '{print $1}')
         
         if [ -n "$tunnel_id" ]; then
-            # Atualizar config.yml com o ID correto
-            sed -i "s/tunnel: boxserver-tunnel/tunnel: $tunnel_id/g" /etc/cloudflared/config.yml
-            
-            # Copiar certificado para o diretório correto
-            if [ -f "$HOME/.cloudflared/$tunnel_id.json" ]; then
-                cp "$HOME/.cloudflared/$tunnel_id.json" /etc/cloudflared/cert.pem
-                chown cloudflared:cloudflared /etc/cloudflared/cert.pem
-            fi
-            
-            dialog --title "Túnel Criado" --msgbox "Túnel criado com sucesso!\n\nID: $tunnel_id\n\nAgora configure os domínios." 10 50
-            log_message "INFO" "Túnel Cloudflare criado: $tunnel_id"
-            
-            # Oferecer configuração automática
-            if dialog --title "Configuração Automática" --yesno "Deseja configurar automaticamente\nos serviços detectados?" 8 50; then
-                auto_configure_services
+            # CORREÇÃO: Usar a configuração recomendada com o arquivo de credenciais JSON
+            local cred_file="$HOME/.cloudflared/${tunnel_id}.json"
+            if [ -f "$cred_file" ]; then
+                # Atualizar config.yml com o ID e o caminho do arquivo de credenciais
+                sed -i "s/^# O ID do túnel.*/tunnel: $tunnel_id\ncredentials-file: \/etc\/cloudflared\/${tunnel_id}.json/" /etc/cloudflared/config.yml
+                
+                # Copiar arquivo de credenciais para o diretório do serviço
+                cp "$cred_file" "/etc/cloudflared/"
+                chown cloudflared:cloudflared "/etc/cloudflared/${tunnel_id}.json"
+                
+                dialog --title "Túnel Criado" --msgbox "Túnel criado com sucesso!\n\nID: $tunnel_id\n\nAgora configure os domínios." 10 60
+                log_message "INFO" "Túnel Cloudflare criado: $tunnel_id"
+                
+                # Oferecer configuração automática
+                if dialog --title "Configuração Automática" --yesno "Deseja configurar automaticamente\nos serviços detectados?" 8 50; then
+                    auto_configure_services
+                fi
+            else
+                dialog --title "Erro" --msgbox "Arquivo de credenciais do túnel não encontrado:\n$cred_file" 8 60
+                log_message "ERROR" "Arquivo de credenciais do túnel não encontrado: $cred_file"
             fi
         else
             dialog --title "Erro" --msgbox "Erro ao obter ID do túnel." 6 40
@@ -2294,15 +2483,36 @@ configure_custom_domain() {
 update_ingress_rule() {
     local domain="$1"
     local port="$2"
+    local config_file="/etc/cloudflared/config.yml"
     
     # Backup da configuração atual
-    cp /etc/cloudflared/config.yml /etc/cloudflared/config.yml.bak
+    cp "$config_file" "$config_file.bak"
     
-    # Remover regra existente se houver
-    sed -i "/hostname: $domain/,+1d" /etc/cloudflared/config.yml
-    
-    # Adicionar nova regra antes da regra catch-all
-    sed -i "/service: http_status:404/i\  - hostname: $domain\n    service: http://127.0.0.1:$port" /etc/cloudflared/config.yml
+    # MELHORIA: Lógica robusta para adicionar/atualizar regras de ingress
+    # Extrair a seção de ingress, remover a regra antiga, adicionar a nova e juntar tudo
+    local ingress_section=$(sed -n '/^ingress:/,/^[^ ]/p' "$config_file" | grep -v '^ingress:')
+    local other_configs=$(grep -v -E '(^ingress:|^  - hostname:|^    service:)' "$config_file")
+
+    # Remover a regra existente para o mesmo hostname
+    local updated_ingress=""
+    local skip_next=false
+    while IFS= read -r line; do
+        if [[ "$line" == *"hostname: $domain"* ]]; then
+            skip_next=true
+            continue
+        fi
+        if [[ "$skip_next" == true ]]; then
+            skip_next=false
+            continue
+        fi
+        updated_ingress+="$line\n"
+    done <<< "$ingress_section"
+
+    # Adicionar a nova regra e a regra catch-all
+    local new_ingress_section=$(printf "ingress:\n%b  - hostname: %s\n    service: http://127.0.0.1:%s\n  - service: http_status:404" "${updated_ingress}" "$domain" "$port")
+
+    # Recriar o arquivo de configuração
+    echo -e "$other_configs\n$new_ingress_section" > "$config_file"
 }
 
 # Função para mostrar configuração atual
@@ -2327,8 +2537,11 @@ apply_dns_records() {
         
         for domain in $domains; do
             if [ "$domain" != "example.com" ]; then
-                cloudflared tunnel route dns "$tunnel_id" "$domain" 2>/dev/null
-                log_message "INFO" "Registro DNS criado para: $domain"
+                if cloudflared tunnel route dns "$tunnel_id" "$domain" >/dev/null 2>&1; then
+                    log_message "INFO" "Registro DNS criado/verificado para: $domain"
+                else
+                    log_message "ERROR" "Falha ao criar registro DNS para: $domain"
+                fi
             fi
         done
         
@@ -2637,7 +2850,7 @@ validate_tunnel_configuration() {
     
     # Validar arquivo de configuração
     if [ -f "/etc/cloudflared/config.yml" ]; then
-        if cloudflared tunnel --config /etc/cloudflared/config.yml validate &> /dev/null; then
+        if cloudflared tunnel --config /etc/cloudflared/config.yml validate >/dev/null 2>&1; then
             validation_results+="✓ Sintaxe do config.yml: VÁLIDA\n"
         else
             validation_results+="✗ Sintaxe do config.yml: INVÁLIDA\n"
@@ -2649,8 +2862,8 @@ validate_tunnel_configuration() {
     fi
     
     # Validar certificados
-    local tunnel_id=$(grep "tunnel:" /etc/cloudflared/config.yml 2>/dev/null | awk '{print $2}')
-    if [ -n "$tunnel_id" ] && [ -f "/etc/cloudflared/cert.pem" ]; then
+    local cred_file=$(grep "credentials-file:" /etc/cloudflared/config.yml 2>/dev/null | awk '{print $2}')
+    if [ -n "$cred_file" ] && [ -f "$cred_file" ]; then
         validation_results+="✓ Certificado do túnel: PRESENTE\n"
     else
         validation_results+="✗ Certificado do túnel: AUSENTE\n"
@@ -4202,6 +4415,65 @@ toggle_silent_mode() {
     fi
 }
 
+# MELHORIA: Gerar relatório final da instalação
+generate_installation_summary() {
+    local installed_apps=("$@")
+    local summary_file="$LOG_DIR/installation-summary.txt"
+    local summary_dialog="Instalação Concluída!\n\n"
+
+    echo "=== Relatório de Instalação Boxserver ===" > "$summary_file"
+    echo "Data: $(date)" >> "$summary_file"
+    echo "----------------------------------------" >> "$summary_file"
+    summary_dialog+="Serviços instalados:\n"
+
+    for app_id in "${installed_apps[@]}"; do
+        local app_info="${APPS[$app_id]}"
+        IFS='|' read -r name description access <<< "$app_info"
+        
+        local status_icon="✅"
+        if ! systemctl is-active --quiet $(get_service_name "$app_id") 2>/dev/null && [[ -n "$(get_service_name "$app_id")" ]]; then
+            status_icon="⚠️"
+        fi
+
+        echo "$status_icon $name: Instalado" >> "$summary_file"
+        summary_dialog+="$status_icon $name\n"
+    done
+
+    dialog "${DIALOG_OPTS[@]}" --title "Resumo da Instalação" --msgbox "$summary_dialog\nRelatório detalhado em:\n$summary_file" 18 60
+}
+
+# IMPLEMENTAÇÃO: Criar scripts de manutenção documentados
+create_maintenance_scripts() {
+    log_message "INFO" "Criando scripts de manutenção..."
+
+    # Script de limpeza semanal
+    cat > /etc/cron.weekly/cleanup-boxserver << 'EOF'
+#!/bin/bash
+# Script de limpeza automática do Boxserver
+
+# Limpeza de pacotes
+apt-get autoremove --purge -y >/dev/null 2>&1
+apt-get clean >/dev/null 2>&1
+
+# Limpeza de logs do journald (manter últimos 7 dias)
+journalctl --vacuum-time=7d >/dev/null 2>&1
+
+# Limpeza de logs do Pi-hole (manter últimos 30 dias)
+find /var/log -name "pihole*.log*" -mtime +30 -delete 2>/dev/null
+
+# Verificar espaço em disco e saúde do sistema
+df -h > /var/log/boxserver/disk-usage.log
+echo "Entropia: $(cat /proc/sys/kernel/random/entropy_avail)" >> /var/log/boxserver/system-health.log
+
+echo "Limpeza concluída em $(date)" >> /var/log/boxserver/cleanup.log
+EOF
+
+    chmod +x /etc/cron.weekly/cleanup-boxserver
+    log_message "INFO" "Script de limpeza semanal criado em /etc/cron.weekly/cleanup-boxserver"
+
+    # Adicionar aqui a criação do script boxserver-health se desejar
+}
+
 # Função principal
 main() {
     # Verificar se está sendo executado como root
@@ -4225,6 +4497,9 @@ main() {
     
     # Detectar interface de rede inicial
     detect_network_interface
+    
+    # Atualizar o backtitle com o IP detectado
+    BACKTITLE="Boxserver TUI v1.0 | IP: $SERVER_IP | Hardware: RK322x"
     
     # Mostrar tela de boas-vindas
     dialog --title "Bem-vindo" --msgbox "Boxserver TUI Installer v1.0\n\nInstalador automatizado para MXQ-4K\n\nEste assistente irá guiá-lo através da\ninstalação e configuração do seu\nservidor doméstico.\n\nPressione ENTER para continuar..." 12 50
