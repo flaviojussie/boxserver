@@ -7,40 +7,43 @@
 #
 
 # --- Configurações de Segurança ---
-# Configurar modo estrito para detectar erros
-set -euo pipefail
+# Configurar modo estrito para detectar erros (ajustado para compatibilidade)
+set -eu
 
 # Configurar IFS para evitar problemas de parsing
 IFS=$'\n\t'
 
 # Configurar umask para arquivos seguros
-umask 077
+umask 022
 
 # --- Variáveis de Segurança ---
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly TEMP_DIR="$(mktemp -d)"
-readonly LOG_FILE="/tmp/boxserver_install.log"
+readonly LOG_FILE="$HOME/boxserver_install.log"
 
 # --- Funções de Segurança ---
 
 # Função de cleanup para limpeza em caso de erro
 cleanup() {
     local exit_code=$?
-    echo "[$(date)] Executando cleanup..." >> "$LOG_FILE"
+    
+    # Criar arquivo de log se não existir
+    touch "$LOG_FILE" 2>/dev/null || true
+    echo "[$(date)] Executando cleanup..." >> "$LOG_FILE" 2>/dev/null || true
     
     # Remover arquivos temporários
     if [[ -d "$TEMP_DIR" ]]; then
-        rm -rf "$TEMP_DIR"
+        rm -rf "$TEMP_DIR" 2>/dev/null || true
     fi
     
     # Remover arquivos temporários específicos
-    rm -f /tmp/menu_choice
-    rm -f /tmp/pihole_install_script.sh
-    rm -f /tmp/rclone_install_script.sh
+    rm -f /tmp/menu_choice 2>/dev/null || true
+    rm -f /tmp/pihole_install_script.sh 2>/dev/null || true
+    rm -f /tmp/rclone_install_script.sh 2>/dev/null || true
     
     if [[ $exit_code -ne 0 ]]; then
-        echo "[$(date)] Script finalizado com erro (código: $exit_code)" >> "$LOG_FILE"
-        dialog --title "Erro" --msgbox "Ocorreu um erro durante a execução. Verifique o log: $LOG_FILE" 8 60 2>/dev/null || true
+        echo "[$(date)] Script finalizado com erro (código: $exit_code)" >> "$LOG_FILE" 2>/dev/null || true
+        dialog --title "Erro" --msgbox "Ocorreu um erro durante a execução. Verifique o log em: $LOG_FILE" 8 70 2>/dev/null || true
     fi
     
     exit $exit_code
@@ -61,14 +64,23 @@ validate_sudo() {
 # Função para backup seguro de arquivos
 safe_backup() {
     local file="$1"
-    local backup_dir="/tmp/boxserver_backups"
+    local backup_dir="$HOME/boxserver_backups"
+    
+    # Criar arquivo de log se não existir
+    touch "$LOG_FILE" 2>/dev/null || true
     
     if [[ -f "$file" ]]; then
-        mkdir -p "$backup_dir"
-        local backup_file="$backup_dir/$(basename "$file").backup.$(date +%Y%m%d_%H%M%S)"
-        cp "$file" "$backup_file"
-        echo "[$(date)] Backup criado: $backup_file" >> "$LOG_FILE"
-        echo "$backup_file"
+        if mkdir -p "$backup_dir" 2>/dev/null; then
+            local backup_file="$backup_dir/$(basename "$file").backup.$(date +%Y%m%d_%H%M%S)"
+            if cp "$file" "$backup_file" 2>/dev/null; then
+                echo "[$(date)] Backup criado: $backup_file" >> "$LOG_FILE" 2>/dev/null || true
+                echo "$backup_file"
+            else
+                echo "[$(date)] AVISO: Falha ao criar backup de $file" >> "$LOG_FILE" 2>/dev/null || true
+            fi
+        else
+            echo "[$(date)] AVISO: Falha ao criar diretório de backup" >> "$LOG_FILE" 2>/dev/null || true
+        fi
     fi
 }
 
@@ -78,34 +90,39 @@ verify_download() {
     local expected_hash="$2"
     local output_file="$3"
     
-    echo "[$(date)] Baixando: $url" >> "$LOG_FILE"
+    # Criar arquivo de log se não existir
+    touch "$LOG_FILE" 2>/dev/null || true
+    echo "[$(date)] Baixando: $url" >> "$LOG_FILE" 2>/dev/null || true
     
     # Download com verificações de segurança
-    if ! curl -fsSL --max-time 300 --retry 3 "$url" -o "$output_file"; then
-        echo "[$(date)] ERRO: Falha no download de $url" >> "$LOG_FILE"
+    if ! curl -fsSL --max-time 300 --retry 3 "$url" -o "$output_file" 2>/dev/null; then
+        echo "[$(date)] ERRO: Falha no download de $url" >> "$LOG_FILE" 2>/dev/null || true
         return 1
     fi
     
     # Verificar hash se fornecido
     if [[ -n "$expected_hash" ]]; then
         local file_hash
-        file_hash=$(sha256sum "$output_file" | cut -d' ' -f1)
+        file_hash=$(sha256sum "$output_file" 2>/dev/null | cut -d' ' -f1) || {
+            echo "[$(date)] ERRO: Falha ao calcular hash de $output_file" >> "$LOG_FILE" 2>/dev/null || true
+            return 1
+        }
         if [[ "$file_hash" != "$expected_hash" ]]; then
-            echo "[$(date)] ERRO: Hash inválido para $output_file" >> "$LOG_FILE"
-            echo "[$(date)] Esperado: $expected_hash" >> "$LOG_FILE"
-            echo "[$(date)] Obtido: $file_hash" >> "$LOG_FILE"
-            rm -f "$output_file"
+            echo "[$(date)] ERRO: Hash inválido para $output_file" >> "$LOG_FILE" 2>/dev/null || true
+            echo "[$(date)] Esperado: $expected_hash" >> "$LOG_FILE" 2>/dev/null || true
+            echo "[$(date)] Obtido: $file_hash" >> "$LOG_FILE" 2>/dev/null || true
+            rm -f "$output_file" 2>/dev/null || true
             return 1
         fi
     fi
     
     # Verificar se o arquivo não está vazio
     if [[ ! -s "$output_file" ]]; then
-        echo "[$(date)] ERRO: Arquivo baixado está vazio: $output_file" >> "$LOG_FILE"
+        echo "[$(date)] ERRO: Arquivo baixado está vazio: $output_file" >> "$LOG_FILE" 2>/dev/null || true
         return 1
     fi
     
-    echo "[$(date)] Download verificado com sucesso: $output_file" >> "$LOG_FILE"
+    echo "[$(date)] Download verificado com sucesso: $output_file" >> "$LOG_FILE" 2>/dev/null || true
     return 0
 }
 
@@ -114,21 +131,27 @@ safe_execute_script() {
     local script_file="$1"
     local script_args="${2:-}"
     
+    # Criar arquivo de log se não existir
+    touch "$LOG_FILE" 2>/dev/null || true
+    
     # Verificar se o arquivo existe e é legível
     if [[ ! -f "$script_file" || ! -r "$script_file" ]]; then
-        echo "[$(date)] ERRO: Script não encontrado ou não legível: $script_file" >> "$LOG_FILE"
+        echo "[$(date)] ERRO: Script não encontrado ou não legível: $script_file" >> "$LOG_FILE" 2>/dev/null || true
         return 1
     fi
     
     # Verificar se o script não contém comandos perigosos
-    if grep -qE '(rm -rf /|mkfs|fdisk|dd if=|> /dev/)' "$script_file"; then
-        echo "[$(date)] ERRO: Script contém comandos perigosos: $script_file" >> "$LOG_FILE"
+    if grep -qE '(rm -rf /|mkfs|fdisk|dd if=|> /dev/)' "$script_file" 2>/dev/null; then
+        echo "[$(date)] ERRO: Script contém comandos perigosos: $script_file" >> "$LOG_FILE" 2>/dev/null || true
         return 1
     fi
     
     # Executar o script com permissões limitadas
-    echo "[$(date)] Executando script: $script_file $script_args" >> "$LOG_FILE"
-    bash "$script_file" $script_args
+    echo "[$(date)] Executando script: $script_file $script_args" >> "$LOG_FILE" 2>/dev/null || true
+    bash "$script_file" $script_args 2>&1 | tee -a "$LOG_FILE" || {
+        echo "[$(date)] ERRO: Falha na execução do script: $script_file" >> "$LOG_FILE" 2>/dev/null || true
+        return 1
+    }
 }
 
 # --- Variáveis Globais ---
@@ -175,7 +198,7 @@ show_main_menu() {
 
 # Executa as verificações iniciais
 run_initial_checks() {
-    local log_file="/tmp/boxserver_checks.log"
+    local log_file="$HOME/boxserver_checks.log"
     echo "[$(date)] Iniciando verificações do sistema" > "$log_file"
     
     dialog --infobox "Executando verificações iniciais..." 4 40
@@ -374,7 +397,7 @@ run_unbound_installation() {
     fi
     
     dialog --title "Instalação do Unbound" --infobox "Instalando Unbound..." 5 40
-    sudo apt install unbound -y > /tmp/unbound_install.log 2>&1
+    sudo apt install unbound -y > "$HOME/unbound_install.log" 2>&1
 
     dialog --title "Configuração do Unbound" --yesno "Deseja criar o arquivo de configuração para o Pi-hole agora? (Recomendado)" 10 60
     if [ $? -eq 0 ]; then
@@ -416,13 +439,13 @@ run_unbound_installation() {
     fi
 
     dialog --title "Configurar Trust Anchor" --infobox "Baixando root hints e configurando trust anchor..." 5 60
-    sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root > /tmp/unbound_setup.log 2>&1
-    sudo unbound-anchor -a /var/lib/unbound/root.key >> /tmp/unbound_setup.log 2>&1
+    sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root > "$HOME/unbound_setup.log" 2>&1
+    sudo unbound-anchor -a /var/lib/unbound/root.key >> "$HOME/unbound_setup.log" 2>&1
 
     if [ $? -ne 0 ]; then
         dialog --infobox "Método principal falhou. Usando método manual para trust anchor..." 5 70
-        sudo wget -O /tmp/root.key https://data.iana.org/root-anchors/icannbundle.pem >> /tmp/unbound_setup.log 2>&1
-        sudo mv /tmp/root.key /var/lib/unbound/root.key
+        sudo wget -O "$HOME/root.key" https://data.iana.org/root-anchors/icannbundle.pem >> "$HOME/unbound_setup.log" 2>&1
+        sudo mv "$HOME/root.key" /var/lib/unbound/root.key
     fi
 
     sudo chown unbound:unbound /var/lib/unbound/root.key /var/lib/unbound/root.hints
@@ -495,11 +518,11 @@ run_configure_pihole_unbound() {
     
     # Reiniciar serviços
     sudo systemctl restart pihole-FTL
-    sudo pihole restartdns > /tmp/pihole_restart.log 2>&1
+    sudo pihole restartdns > "$HOME/pihole_restart.log" 2>&1
     
     # Executar reconfiguração do Pi-hole para garantir persistência
     dialog --infobox "Executando reconfiguração do Pi-hole..." 4 50
-    echo -e "\n\n\n\n\n\n\n\n\n\n" | sudo pihole -r > /tmp/pihole_reconfig.log 2>&1
+    echo -e "\n\n\n\n\n\n\n\n\n\n" | sudo pihole -r > "$HOME/pihole_reconfig.log" 2>&1
     
     # Verificar se a configuração foi aplicada corretamente
     sleep 3
@@ -522,7 +545,7 @@ run_configure_pihole_unbound() {
     if [ -n "$test_result" ]; then
         dialog --title "Sucesso" --msgbox "Pi-hole foi configurado para usar o Unbound com sucesso!\n\nTeste de DNS: $test_result" 10 60
     else
-        dialog --title "Aviso" --msgbox "Configuração aplicada, mas o teste de DNS falhou. Verifique os logs em /tmp/pihole_restart.log" 10 60
+        dialog --title "Aviso" --msgbox "Configuração aplicada, mas o teste de DNS falhou. Verifique os logs em $HOME/pihole_restart.log" 10 70
     fi
 }
 
@@ -553,8 +576,8 @@ run_wireguard_installation() {
     
     # Instalar WireGuard
     dialog --infobox "Instalando WireGuard..." 4 30
-    sudo apt-get update > /tmp/wg_install.log 2>&1
-    sudo apt-get install wireguard wireguard-tools qrencode -y >> /tmp/wg_install.log 2>&1
+    sudo apt-get update > "$HOME/wg_install.log" 2>&1
+    sudo apt-get install wireguard wireguard-tools qrencode -y >> "$HOME/wg_install.log" 2>&1
     
     # Gerar chaves do servidor
     dialog --infobox "Gerando chaves do servidor..." 4 35
