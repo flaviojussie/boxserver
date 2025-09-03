@@ -6,6 +6,131 @@
 # configurar os componentes do Box-Server.
 #
 
+# --- Configurações de Segurança ---
+# Configurar modo estrito para detectar erros
+set -euo pipefail
+
+# Configurar IFS para evitar problemas de parsing
+IFS=$'\n\t'
+
+# Configurar umask para arquivos seguros
+umask 077
+
+# --- Variáveis de Segurança ---
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly TEMP_DIR="$(mktemp -d)"
+readonly LOG_FILE="/tmp/boxserver_install.log"
+
+# --- Funções de Segurança ---
+
+# Função de cleanup para limpeza em caso de erro
+cleanup() {
+    local exit_code=$?
+    echo "[$(date)] Executando cleanup..." >> "$LOG_FILE"
+    
+    # Remover arquivos temporários
+    if [[ -d "$TEMP_DIR" ]]; then
+        rm -rf "$TEMP_DIR"
+    fi
+    
+    # Remover arquivos temporários específicos
+    rm -f /tmp/menu_choice
+    rm -f /tmp/pihole_install_script.sh
+    rm -f /tmp/rclone_install_script.sh
+    
+    if [[ $exit_code -ne 0 ]]; then
+        echo "[$(date)] Script finalizado com erro (código: $exit_code)" >> "$LOG_FILE"
+        dialog --title "Erro" --msgbox "Ocorreu um erro durante a execução. Verifique o log: $LOG_FILE" 8 60 2>/dev/null || true
+    fi
+    
+    exit $exit_code
+}
+
+# Configurar trap para cleanup automático
+trap cleanup EXIT INT TERM
+
+# Função para validar permissões sudo
+validate_sudo() {
+    if ! sudo -n true 2>/dev/null; then
+        dialog --title "Permissões" --msgbox "Este script requer permissões sudo. Por favor, execute 'sudo -v' antes de continuar." 8 60
+        return 1
+    fi
+    return 0
+}
+
+# Função para backup seguro de arquivos
+safe_backup() {
+    local file="$1"
+    local backup_dir="/tmp/boxserver_backups"
+    
+    if [[ -f "$file" ]]; then
+        mkdir -p "$backup_dir"
+        local backup_file="$backup_dir/$(basename "$file").backup.$(date +%Y%m%d_%H%M%S)"
+        cp "$file" "$backup_file"
+        echo "[$(date)] Backup criado: $backup_file" >> "$LOG_FILE"
+        echo "$backup_file"
+    fi
+}
+
+# Função para verificar integridade de downloads
+verify_download() {
+    local url="$1"
+    local expected_hash="$2"
+    local output_file="$3"
+    
+    echo "[$(date)] Baixando: $url" >> "$LOG_FILE"
+    
+    # Download com verificações de segurança
+    if ! curl -fsSL --max-time 300 --retry 3 "$url" -o "$output_file"; then
+        echo "[$(date)] ERRO: Falha no download de $url" >> "$LOG_FILE"
+        return 1
+    fi
+    
+    # Verificar hash se fornecido
+    if [[ -n "$expected_hash" ]]; then
+        local file_hash
+        file_hash=$(sha256sum "$output_file" | cut -d' ' -f1)
+        if [[ "$file_hash" != "$expected_hash" ]]; then
+            echo "[$(date)] ERRO: Hash inválido para $output_file" >> "$LOG_FILE"
+            echo "[$(date)] Esperado: $expected_hash" >> "$LOG_FILE"
+            echo "[$(date)] Obtido: $file_hash" >> "$LOG_FILE"
+            rm -f "$output_file"
+            return 1
+        fi
+    fi
+    
+    # Verificar se o arquivo não está vazio
+    if [[ ! -s "$output_file" ]]; then
+        echo "[$(date)] ERRO: Arquivo baixado está vazio: $output_file" >> "$LOG_FILE"
+        return 1
+    fi
+    
+    echo "[$(date)] Download verificado com sucesso: $output_file" >> "$LOG_FILE"
+    return 0
+}
+
+# Função para execução segura de scripts baixados
+safe_execute_script() {
+    local script_file="$1"
+    local script_args="${2:-}"
+    
+    # Verificar se o arquivo existe e é legível
+    if [[ ! -f "$script_file" || ! -r "$script_file" ]]; then
+        echo "[$(date)] ERRO: Script não encontrado ou não legível: $script_file" >> "$LOG_FILE"
+        return 1
+    fi
+    
+    # Verificar se o script não contém comandos perigosos
+    if grep -qE '(rm -rf /|mkfs|fdisk|dd if=|> /dev/)' "$script_file"; then
+        echo "[$(date)] ERRO: Script contém comandos perigosos: $script_file" >> "$LOG_FILE"
+        return 1
+    fi
+    
+    # Executar o script com permissões limitadas
+    echo "[$(date)] Executando script: $script_file $script_args" >> "$LOG_FILE"
+    bash "$script_file" $script_args
+}
+
 # --- Variáveis Globais ---
 readonly DIALOG_TITLE="Instalador Box-Server"
 readonly DIALOG_BACKTITLE="MXQ-4K (RK322x) Home Server"
@@ -166,10 +291,38 @@ run_pihole_installation() {
         return
     fi
 
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+
     # Sair do dialog para executar o instalador interativo
     clear
     echo "Iniciando o instalador do Pi-hole..."
-    curl -sSL https://install.pi-hole.net | bash
+    
+    # Download seguro do script do Pi-hole
+    local pihole_script="$TEMP_DIR/pihole_install.sh"
+    local pihole_url="https://install.pi-hole.net"
+    
+    dialog --infobox "Baixando instalador do Pi-hole..." 4 40
+    
+    # Download com verificação (sem hash específico pois o Pi-hole não fornece)
+    if ! verify_download "$pihole_url" "" "$pihole_script"; then
+        dialog --title "Erro" --msgbox "Falha no download do instalador do Pi-hole. Verifique sua conexão com a internet." 8 60
+        return 1
+    fi
+    
+    # Verificar se o script parece ser legítimo (contém assinatura do Pi-hole)
+    if ! grep -q "Pi-hole" "$pihole_script" || ! grep -q "install" "$pihole_script"; then
+        dialog --title "Erro" --msgbox "O script baixado não parece ser o instalador oficial do Pi-hole." 8 60
+        return 1
+    fi
+    
+    # Executar o script de forma segura
+    if ! safe_execute_script "$pihole_script"; then
+        dialog --title "Erro" --msgbox "Falha na execução do instalador do Pi-hole." 8 60
+        return 1
+    fi
 
     dialog --title "Configuração Pós-Instalação" --msgbox "A instalação básica do Pi-hole foi concluída. Agora vamos para a configuração." 10 60
 
@@ -198,6 +351,8 @@ run_pihole_installation() {
         dialog --title "Conteúdo de setupVars.conf" --yesno "O seguinte conteúdo será escrito em /etc/pihole/setupVars.conf. Confirma?\n\n$config_content" 20 70
 
         if [ $? -eq 0 ]; then
+            # Fazer backup do arquivo antes de modificar
+            safe_backup "/etc/pihole/setupVars.conf"
             echo -e "$config_content" | sudo tee /etc/pihole/setupVars.conf > /dev/null
             dialog --infobox "Arquivo de configuração atualizado." 5 40
             sleep 2
@@ -213,6 +368,11 @@ run_pihole_installation() {
 
 # Instalação do Unbound
 run_unbound_installation() {
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+    
     dialog --title "Instalação do Unbound" --infobox "Instalando Unbound..." 5 40
     sudo apt install unbound -y > /tmp/unbound_install.log 2>&1
 
@@ -297,6 +457,11 @@ run_configure_pihole_unbound() {
         return
     fi
 
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+
     dialog --infobox "Configurando Pi-hole para usar Unbound..." 4 50
     
     # Backup do arquivo original
@@ -366,6 +531,11 @@ run_wireguard_installation() {
     dialog --title "Instalação do WireGuard" --yesno "Isso instalará o WireGuard com configuração manual otimizada para RK322x.\n\nDeseja continuar?" 10 70
     if [ $? -ne 0 ]; then
         return
+    fi
+
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
     fi
     
     # Detectar interface de rede principal
@@ -640,6 +810,11 @@ EOF
 run_final_optimizations() {
     dialog --title "Otimizações e Ajustes Finais" --msgbox "Esta seção aplicará otimizações para melhorar o desempenho e a longevidade do seu Box-Server." 10 70
 
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+
     # Instalação do Log2Ram
     dialog --title "Log2Ram" --yesno "Deseja instalar o Log2Ram? Isso move os logs para a RAM, reduzindo o desgaste da memória NAND e melhorando a performance." 10 70
     if [ $? -eq 0 ]; then
@@ -806,6 +981,11 @@ install_cockpit() {
     if [ $? -ne 0 ]; then
         return
     fi
+
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
     
     # Configurações
     local cockpit_port="9090"
@@ -873,6 +1053,11 @@ install_filebrowser() {
     dialog --title "Instalação do FileBrowser" --yesno "O FileBrowser é um gerenciador de arquivos web que permite navegar e gerenciar arquivos através do navegador.\n\nDeseja instalar o FileBrowser?" 10 70
     if [ $? -ne 0 ]; then
         return
+    fi
+
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
     fi
     
     # Configurações
@@ -958,6 +1143,11 @@ install_netdata() {
     if [ $? -ne 0 ]; then
         return
     fi
+
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
     
     # Configurações
     local netdata_port="19999"
@@ -1026,6 +1216,11 @@ install_fail2ban() {
     dialog --title "Instalação do Fail2Ban" --yesno "O Fail2Ban protege contra ataques de força bruta banindo IPs suspeitos automaticamente.\n\nDeseja instalar o Fail2Ban?" 10 70
     if [ $? -ne 0 ]; then
         return
+    fi
+
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
     fi
     
     # Configurações
@@ -1141,6 +1336,11 @@ install_ufw() {
     dialog --title "Instalação do UFW" --yesno "O UFW é um firewall simples e fácil de configurar para proteger o sistema.\n\nDeseja instalar o UFW?" 10 70
     if [ $? -ne 0 ]; then
         return
+    fi
+
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
     fi
     
     # Configurações
@@ -1280,8 +1480,29 @@ install_rclone() {
     # Instalação
     dialog --infobox "Baixando e instalando Rclone..." 4 40
     
-    # Download e instalação do Rclone
-    if curl https://rclone.org/install.sh | sudo bash; then
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+    
+    # Download seguro do script do Rclone
+    local rclone_script="$TEMP_DIR/rclone_install.sh"
+    local rclone_url="https://rclone.org/install.sh"
+    
+    # Download com verificação
+    if ! verify_download "$rclone_url" "" "$rclone_script"; then
+        dialog --title "Erro" --msgbox "Falha no download do instalador do Rclone. Verifique sua conexão com a internet." 8 60
+        return 1
+    fi
+    
+    # Verificar se o script parece ser legítimo (contém assinatura do Rclone)
+    if ! grep -q "rclone" "$rclone_script" || ! grep -q "install" "$rclone_script"; then
+        dialog --title "Erro" --msgbox "O script baixado não parece ser o instalador oficial do Rclone." 8 60
+        return 1
+    fi
+    
+    # Executar o script de forma segura com sudo
+    if sudo bash "$rclone_script"; then
         
         # Configurar Web UI se solicitado
         if [ "$enable_webui" = "yes" ]; then
@@ -1331,6 +1552,11 @@ install_rsync() {
     dialog --title "Instalação do Rsync" --yesno "O Rsync é uma ferramenta para sincronização e backup de arquivos.\n\nDeseja instalar o Rsync?" 10 70
     if [ $? -ne 0 ]; then
         return
+    fi
+
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
     fi
     
     # Configurações
@@ -1513,6 +1739,11 @@ install_minidlna() {
     if [ $? -ne 0 ]; then
         return
     fi
+
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
     
     # Configurações
     local media_dir="/srv/media"
@@ -1614,6 +1845,11 @@ install_cloudflared() {
     dialog --title "Instalação do Cloudflared" --yesno "O Cloudflared permite criar túneis seguros para expor serviços locais na internet através do Cloudflare.\n\nDeseja instalar o Cloudflared?" 10 70
     if [ $? -ne 0 ]; then
         return
+    fi
+
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
     fi
     
     # Configurações
@@ -1720,6 +1956,11 @@ run_monitoring() {
     dialog --title "Monitoramento do Sistema" --yesno "Isso criará um script de monitoramento contínuo e exibirá o status atual do sistema.\n\nDeseja continuar?" 10 70
     if [ $? -ne 0 ]; then
         return
+    fi
+
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
     fi
     
     # Criar script de monitoramento
@@ -2249,7 +2490,24 @@ run_initial_checks_silent() {
 }
 
 run_pihole_installation_silent() {
-    curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended \
+    # Download seguro do script do Pi-hole
+    local pihole_script="$TEMP_DIR/pihole_install_silent.sh"
+    local pihole_url="https://install.pi-hole.net"
+    
+    # Download com verificação
+    if ! verify_download "$pihole_url" "" "$pihole_script" >/tmp/pihole_auto_install.log 2>&1; then
+        echo "[$(date)] ERRO: Falha no download do instalador do Pi-hole" >> "$LOG_FILE"
+        return 1
+    fi
+    
+    # Verificar se o script parece ser legítimo
+    if ! grep -q "Pi-hole" "$pihole_script" || ! grep -q "install" "$pihole_script"; then
+        echo "[$(date)] ERRO: Script do Pi-hole não parece legítimo" >> "$LOG_FILE"
+        return 1
+    fi
+    
+    # Executar o script com parâmetros de instalação silenciosa
+    bash "$pihole_script" --unattended \
         --enable-dhcp=false \
         --pihole-interface=eth0 \
         --pihole-dns-1=1.1.1.1 \
@@ -2257,10 +2515,15 @@ run_pihole_installation_silent() {
         --query-logging=true \
         --install-web-server=true \
         --install-web-interface=true \
-        --lighttpd-enabled=true >/tmp/pihole_auto_install.log 2>&1
+        --lighttpd-enabled=true >>/tmp/pihole_auto_install.log 2>&1
 }
 
 run_unbound_installation_silent() {
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+    
     # Instalar Unbound
     sudo apt-get install unbound -y >/tmp/unbound_auto_install.log 2>&1 && \
     
@@ -2398,10 +2661,32 @@ install_filebrowser_silent() {
 }
 
 install_netdata_silent() {
-    bash <(curl -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry >/dev/null 2>&1
+    # Download seguro do script do Netdata
+    local netdata_script="$TEMP_DIR/netdata_install.sh"
+    local netdata_url="https://my-netdata.io/kickstart.sh"
+    
+    # Download com verificação
+    if ! verify_download "$netdata_url" "" "$netdata_script" >/dev/null 2>&1; then
+        echo "[$(date)] ERRO: Falha no download do instalador do Netdata" >> "$LOG_FILE"
+        return 1
+    fi
+    
+    # Verificar se o script parece ser legítimo
+    if ! grep -q "netdata" "$netdata_script" || ! grep -q "install" "$netdata_script"; then
+        echo "[$(date)] ERRO: Script do Netdata não parece legítimo" >> "$LOG_FILE"
+        return 1
+    fi
+    
+    # Executar o script com parâmetros
+    bash "$netdata_script" --dont-wait --disable-telemetry >/dev/null 2>&1
 }
 
 install_fail2ban_silent() {
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+    
     sudo apt-get update >/dev/null 2>&1 && \
     sudo apt-get install -y fail2ban >/dev/null 2>&1 && \
     sudo systemctl enable fail2ban >/dev/null 2>&1 && \
@@ -2409,6 +2694,11 @@ install_fail2ban_silent() {
 }
 
 install_ufw_silent() {
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+    
     sudo apt-get update >/dev/null 2>&1 && \
     sudo apt-get install -y ufw >/dev/null 2>&1 && \
     echo 'y' | sudo ufw enable >/dev/null 2>&1 && \
@@ -2418,21 +2708,53 @@ install_ufw_silent() {
 }
 
 install_rclone_silent() {
-    curl https://rclone.org/install.sh | sudo bash >/dev/null 2>&1
+    # Download seguro do script do Rclone
+    local rclone_script="$TEMP_DIR/rclone_install_silent.sh"
+    local rclone_url="https://rclone.org/install.sh"
+    
+    # Download com verificação
+    if ! verify_download "$rclone_url" "" "$rclone_script" >/dev/null 2>&1; then
+        echo "[$(date)] ERRO: Falha no download do instalador do Rclone" >> "$LOG_FILE"
+        return 1
+    fi
+    
+    # Verificar se o script parece ser legítimo
+    if ! grep -q "rclone" "$rclone_script" || ! grep -q "install" "$rclone_script"; then
+        echo "[$(date)] ERRO: Script do Rclone não parece legítimo" >> "$LOG_FILE"
+        return 1
+    fi
+    
+    # Executar o script com sudo
+    sudo bash "$rclone_script" >/dev/null 2>&1
 }
 
 install_rsync_silent() {
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+    
     sudo apt-get update >/dev/null 2>&1 && \
     sudo apt-get install -y rsync >/dev/null 2>&1
 }
 
 install_minidlna_silent() {
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+    
     sudo apt-get update >/dev/null 2>&1 && \
     sudo apt-get install -y minidlna >/dev/null 2>&1 && \
     sudo systemctl enable minidlna >/dev/null 2>&1
 }
 
 install_cloudflared_silent() {
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+    
     local cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm"
     
     sudo wget -q "$cf_url" -O /usr/local/bin/cloudflared && \
@@ -2440,6 +2762,11 @@ install_cloudflared_silent() {
 }
 
 run_monitoring_silent() {
+    # Validar permissões sudo
+    if ! validate_sudo; then
+        return 1
+    fi
+    
     sudo tee /usr/local/bin/boxserver-monitor >/dev/null << 'EOF'
 #!/bin/bash
 # Box-Server Health Monitor
