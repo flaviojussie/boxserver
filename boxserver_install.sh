@@ -426,7 +426,11 @@ EOF
 install_unbound() {
     log_message "INFO" "Instalando Unbound..."
     
+    # Parar serviço se já estiver rodando
+    systemctl stop unbound 2>/dev/null || true
+    
     # Instalar Unbound
+    apt update
     apt install unbound -y
     
     if [ $? -ne 0 ]; then
@@ -434,8 +438,22 @@ install_unbound() {
         return 1
     fi
     
-    # Criar configuração otimizada para ARM RK322x
+    # Verificar se usuário unbound existe
+    if ! id "unbound" &>/dev/null; then
+        log_message "ERROR" "Usuário unbound não foi criado durante a instalação"
+        return 1
+    fi
+    
+    # Criar diretórios necessários
     mkdir -p /etc/unbound/unbound.conf.d
+    mkdir -p /var/lib/unbound
+    
+    # Backup da configuração original se existir
+    if [ -f "/etc/unbound/unbound.conf" ]; then
+        cp /etc/unbound/unbound.conf /etc/unbound/unbound.conf.backup
+    fi
+    
+    # Criar configuração otimizada para ARM RK322x
     cat > /etc/unbound/unbound.conf.d/pi-hole.conf << 'EOF'
 server:
     verbosity: 1
@@ -473,15 +491,29 @@ server:
     root-hints: "/var/lib/unbound/root.hints"
 EOF
     
-    # Baixar root hints
-    wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
+    # Baixar root hints com verificação
+    log_message "INFO" "Baixando root hints..."
+    if ! wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root; then
+        log_message "ERROR" "Falha ao baixar root hints"
+        return 1
+    fi
     
-    # Configurar trust anchor automático
-    unbound-anchor -a /var/lib/unbound/root.key
-    if [ $? -ne 0 ]; then
-        log_message "WARN" "Usando método manual para trust anchor"
-        wget -O /tmp/root.key https://data.iana.org/root-anchors/icannbundle.pem
-        mv /tmp/root.key /var/lib/unbound/root.key
+    # Configurar trust anchor automático com fallback
+    log_message "INFO" "Configurando trust anchor..."
+    if ! unbound-anchor -a /var/lib/unbound/root.key; then
+        log_message "WARN" "Falha no trust anchor automático, usando método manual"
+        if wget -O /tmp/root.key https://data.iana.org/root-anchors/icannbundle.pem; then
+            mv /tmp/root.key /var/lib/unbound/root.key
+        else
+            log_message "ERROR" "Falha ao obter trust anchor manual"
+            return 1
+        fi
+    fi
+    
+    # Verificar se arquivos foram criados
+    if [ ! -f "/var/lib/unbound/root.key" ] || [ ! -f "/var/lib/unbound/root.hints" ]; then
+        log_message "ERROR" "Arquivos de configuração do Unbound não foram criados"
+        return 1
     fi
     
     # Configurar permissões
@@ -489,22 +521,55 @@ EOF
     chmod 644 /var/lib/unbound/root.key /var/lib/unbound/root.hints
     
     # Verificar configuração
-    unbound-checkconf
-    if [ $? -ne 0 ]; then
+    log_message "INFO" "Verificando configuração do Unbound..."
+    if ! unbound-checkconf; then
         log_message "ERROR" "Erro na configuração do Unbound"
+        log_message "ERROR" "Detalhes: $(unbound-checkconf 2>&1)"
         return 1
     fi
     
-    # Iniciar e habilitar serviço
-    systemctl restart unbound
+    # Habilitar serviço primeiro
     systemctl enable unbound
+    if [ $? -ne 0 ]; then
+        log_message "ERROR" "Falha ao habilitar serviço Unbound"
+        return 1
+    fi
     
-    # Testar DNS
-    sleep 3
-    if dig @127.0.0.1 -p 5335 google.com +short >/dev/null 2>&1; then
+    # Iniciar serviço
+    systemctl start unbound
+    if [ $? -ne 0 ]; then
+        log_message "ERROR" "Falha ao iniciar serviço Unbound"
+        log_message "ERROR" "Status: $(systemctl status unbound --no-pager -l)"
+        return 1
+    fi
+    
+    # Aguardar inicialização
+    sleep 5
+    
+    # Verificar se serviço está ativo
+    if ! systemctl is-active --quiet unbound; then
+        log_message "ERROR" "Serviço Unbound não está ativo"
+        log_message "ERROR" "Logs: $(journalctl -u unbound --no-pager -n 10)"
+        return 1
+    fi
+    
+    # Testar DNS com timeout e múltiplas tentativas
+    log_message "INFO" "Testando DNS do Unbound..."
+    local test_success=false
+    for i in {1..3}; do
+        if timeout 10 dig @127.0.0.1 -p 5335 google.com +short >/dev/null 2>&1; then
+            test_success=true
+            break
+        fi
+        log_message "WARN" "Tentativa $i de teste DNS falhou, aguardando..."
+        sleep 2
+    done
+    
+    if [ "$test_success" = true ]; then
         log_message "INFO" "Unbound instalado e testado com sucesso"
     else
-        log_message "WARN" "Unbound instalado mas teste de DNS falhou"
+        log_message "WARN" "Unbound instalado mas teste de DNS falhou após 3 tentativas"
+        log_message "WARN" "Verifique logs: journalctl -u unbound"
     fi
 }
 
@@ -1133,6 +1198,558 @@ EOF
     
     # Limpeza
     rm -f /tmp/cloudflared.deb
+    
+    # Oferecer configuração interativa
+    if dialog --title "Configuração do Cloudflare" --yesno "Deseja configurar o túnel Cloudflare agora?\n\nIsso incluirá:\n- Login no Cloudflare\n- Criação do túnel\n- Configuração de domínios\n- Testes de conectividade" 12 60; then
+        configure_cloudflare_tunnel
+    fi
+}
+
+# Menu principal de configuração do Cloudflare
+configure_cloudflare_tunnel() {
+    while true; do
+        local choice=$(dialog --title "Configuração Cloudflare Tunnel" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Fazer login no Cloudflare" \
+            "2" "Criar/Configurar túnel" \
+            "3" "Configurar domínios e serviços" \
+            "4" "Testar conectividade do túnel" \
+            "5" "Ver status do túnel" \
+            "6" "Validar configuração completa" \
+            "7" "Editar configuração avançada" \
+            "8" "Voltar" \
+            3>&1 1>&2 2>&3)
+        
+        case $choice in
+            1) cloudflare_login ;;
+            2) cloudflare_create_tunnel ;;
+            3) cloudflare_configure_domains ;;
+            4) cloudflare_test_tunnel ;;
+            5) cloudflare_tunnel_status ;;
+            6) validate_tunnel_configuration ;;
+            7) cloudflare_advanced_config ;;
+            8|"") break ;;
+        esac
+    done
+}
+
+# Função para login no Cloudflare
+cloudflare_login() {
+    dialog --title "Login Cloudflare" --msgbox "Você será redirecionado para o navegador para fazer login.\n\nApós o login, volte ao terminal e pressione ENTER." 8 60
+    
+    # Executar login
+    if cloudflared tunnel login; then
+        dialog --title "Login Concluído" --msgbox "Login realizado com sucesso!\n\nO certificado foi salvo em ~/.cloudflared/" 8 50
+        log_message "INFO" "Login no Cloudflare realizado com sucesso"
+    else
+        dialog --title "Erro de Login" --msgbox "Falha no login do Cloudflare.\n\nVerifique sua conexão e tente novamente." 8 50
+        log_message "ERROR" "Falha no login do Cloudflare"
+    fi
+}
+
+# Função para criar/configurar túnel
+cloudflare_create_tunnel() {
+    # Verificar se já existe túnel
+    if cloudflared tunnel list | grep -q "boxserver-tunnel"; then
+        if dialog --title "Túnel Existente" --yesno "O túnel 'boxserver-tunnel' já existe.\n\nDeseja reconfigurá-lo?" 8 50; then
+            cloudflared tunnel delete boxserver-tunnel 2>/dev/null
+        else
+            return 0
+        fi
+    fi
+    
+    dialog --title "Criando Túnel" --infobox "Criando túnel 'boxserver-tunnel'..." 5 40
+    
+    if cloudflared tunnel create boxserver-tunnel; then
+        # Obter UUID do túnel
+        local tunnel_id=$(cloudflared tunnel list | grep "boxserver-tunnel" | awk '{print $1}')
+        
+        if [ -n "$tunnel_id" ]; then
+            # Atualizar config.yml com o ID correto
+            sed -i "s/tunnel: boxserver-tunnel/tunnel: $tunnel_id/g" /etc/cloudflared/config.yml
+            
+            # Copiar certificado para o diretório correto
+            if [ -f "$HOME/.cloudflared/$tunnel_id.json" ]; then
+                cp "$HOME/.cloudflared/$tunnel_id.json" /etc/cloudflared/cert.pem
+                chown cloudflared:cloudflared /etc/cloudflared/cert.pem
+            fi
+            
+            dialog --title "Túnel Criado" --msgbox "Túnel criado com sucesso!\n\nID: $tunnel_id\n\nAgora configure os domínios." 10 50
+            log_message "INFO" "Túnel Cloudflare criado: $tunnel_id"
+            
+            # Oferecer configuração automática
+            if dialog --title "Configuração Automática" --yesno "Deseja configurar automaticamente\nos serviços detectados?" 8 50; then
+                auto_configure_services
+            fi
+        else
+            dialog --title "Erro" --msgbox "Erro ao obter ID do túnel." 6 40
+            log_message "ERROR" "Erro ao obter ID do túnel Cloudflare"
+        fi
+    else
+        dialog --title "Erro" --msgbox "Falha na criação do túnel.\n\nVerifique se fez login corretamente." 8 50
+        log_message "ERROR" "Falha na criação do túnel Cloudflare"
+    fi
+}
+
+# Função para configurar domínios e serviços
+cloudflare_configure_domains() {
+    # Verificar se o túnel existe
+    if ! cloudflared tunnel list | grep -q "boxserver-tunnel"; then
+        dialog --title "Erro" --msgbox "Túnel não encontrado.\n\nCrie o túnel primeiro." 8 40
+        return 1
+    fi
+    
+    while true; do
+        local choice=$(dialog --title "Configurar Domínios" --menu "Escolha um serviço para configurar:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Pi-hole (DNS/Admin)" \
+            "2" "Cockpit (Gerenciamento)" \
+            "3" "FileBrowser (Arquivos)" \
+            "4" "WireGuard (VPN Admin)" \
+            "5" "Adicionar domínio customizado" \
+            "6" "Ver configuração atual" \
+            "7" "Aplicar configurações DNS" \
+            "8" "Voltar" \
+            3>&1 1>&2 2>&3)
+        
+        case $choice in
+            1) configure_service_domain "Pi-hole" "pihole" "80" ;;
+            2) configure_service_domain "Cockpit" "cockpit" "9090" ;;
+            3) configure_service_domain "FileBrowser" "files" "8080" ;;
+            4) configure_service_domain "WireGuard" "vpn" "51820" ;;
+            5) configure_custom_domain ;;
+            6) show_current_config ;;
+            7) apply_dns_records ;;
+            8|"") break ;;
+        esac
+    done
+}
+
+# Função para configurar domínio de um serviço específico
+configure_service_domain() {
+    local service_name="$1"
+    local subdomain="$2"
+    local port="$3"
+    
+    local domain=$(dialog --title "Domínio $service_name" --inputbox "Digite o domínio completo para $service_name:\n\nExemplo: $subdomain.seudominio.com" 10 60 "$subdomain.example.com" 3>&1 1>&2 2>&3)
+    
+    if [ -n "$domain" ]; then
+        # Atualizar config.yml
+        update_ingress_rule "$domain" "$port"
+        dialog --title "Configurado" --msgbox "Domínio configurado:\n\n$service_name: $domain\nPorta: $port\n\nLembre-se de aplicar as configurações DNS." 10 50
+        log_message "INFO" "Domínio configurado: $domain -> $port"
+    fi
+}
+
+# Função para configurar domínio customizado
+configure_custom_domain() {
+    local domain=$(dialog --title "Domínio Customizado" --inputbox "Digite o domínio:" 8 50 3>&1 1>&2 2>&3)
+    local port=$(dialog --title "Porta do Serviço" --inputbox "Digite a porta do serviço:" 8 50 3>&1 1>&2 2>&3)
+    
+    if [ -n "$domain" ] && [ -n "$port" ]; then
+        update_ingress_rule "$domain" "$port"
+        dialog --title "Configurado" --msgbox "Domínio customizado configurado:\n\n$domain -> porta $port" 8 50
+        log_message "INFO" "Domínio customizado: $domain -> $port"
+    fi
+}
+
+# Função para atualizar regras de ingress
+update_ingress_rule() {
+    local domain="$1"
+    local port="$2"
+    
+    # Backup da configuração atual
+    cp /etc/cloudflared/config.yml /etc/cloudflared/config.yml.bak
+    
+    # Remover regra existente se houver
+    sed -i "/hostname: $domain/,+1d" /etc/cloudflared/config.yml
+    
+    # Adicionar nova regra antes da regra catch-all
+    sed -i "/service: http_status:404/i\  - hostname: $domain\n    service: http://127.0.0.1:$port" /etc/cloudflared/config.yml
+}
+
+# Função para mostrar configuração atual
+show_current_config() {
+    if [ -f "/etc/cloudflared/config.yml" ]; then
+        dialog --title "Configuração Atual" --textbox "/etc/cloudflared/config.yml" 20 80
+    else
+        dialog --title "Erro" --msgbox "Arquivo de configuração não encontrado." 6 40
+    fi
+}
+
+# Função para aplicar registros DNS
+apply_dns_records() {
+    dialog --title "Aplicar DNS" --infobox "Aplicando configurações DNS..." 5 40
+    
+    # Obter ID do túnel
+    local tunnel_id=$(cloudflared tunnel list | grep "boxserver-tunnel" | awk '{print $1}')
+    
+    if [ -n "$tunnel_id" ]; then
+        # Extrair domínios do config.yml e criar registros DNS
+        local domains=$(grep "hostname:" /etc/cloudflared/config.yml | awk '{print $3}')
+        
+        for domain in $domains; do
+            if [ "$domain" != "example.com" ]; then
+                cloudflared tunnel route dns "$tunnel_id" "$domain" 2>/dev/null
+                log_message "INFO" "Registro DNS criado para: $domain"
+            fi
+        done
+        
+        dialog --title "DNS Aplicado" --msgbox "Registros DNS criados com sucesso!\n\nOs domínios podem levar alguns minutos\npara propagar." 8 50
+    else
+        dialog --title "Erro" --msgbox "ID do túnel não encontrado." 6 40
+    fi
+}
+
+# Função para testar conectividade do túnel
+cloudflare_test_tunnel() {
+    dialog --title "Testando Túnel" --infobox "Executando testes de conectividade..." 5 40
+    
+    local test_results="Resultados dos Testes:\n\n"
+    
+    # Verificar se o serviço está rodando
+    if systemctl is-active --quiet cloudflared; then
+        test_results+="✓ Serviço Cloudflared: ATIVO\n"
+    else
+        test_results+="✗ Serviço Cloudflared: INATIVO\n"
+    fi
+    
+    # Verificar conectividade com Cloudflare
+    if ping -c 1 1.1.1.1 &> /dev/null; then
+        test_results+="✓ Conectividade Cloudflare: OK\n"
+    else
+        test_results+="✗ Conectividade Cloudflare: FALHOU\n"
+    fi
+    
+    # Verificar configuração
+    if cloudflared tunnel --config /etc/cloudflared/config.yml validate &> /dev/null; then
+        test_results+="✓ Configuração: VÁLIDA\n"
+    else
+        test_results+="✗ Configuração: INVÁLIDA\n"
+    fi
+    
+    # Verificar túnel
+    if cloudflared tunnel list | grep -q "boxserver-tunnel"; then
+        test_results+="✓ Túnel: ENCONTRADO\n"
+    else
+        test_results+="✗ Túnel: NÃO ENCONTRADO\n"
+    fi
+    
+    dialog --title "Resultados dos Testes" --msgbox "$test_results" 12 50
+}
+
+# Função para ver status do túnel
+cloudflare_tunnel_status() {
+    local status_info="Status do Cloudflare Tunnel:\n\n"
+    
+    # Status do serviço
+    if systemctl is-active --quiet cloudflared; then
+        status_info+="✓ Serviço: ATIVO\n"
+        local uptime=$(systemctl show cloudflared --property=ActiveEnterTimestamp --value)
+        status_info+="  Uptime: $(date -d "$uptime" '+%d/%m %H:%M')\n\n"
+    else
+        status_info+="✗ Serviço: INATIVO\n\n"
+    fi
+    
+    # Listar túneis
+    status_info+="Túneis Configurados:\n"
+    local tunnels=$(cloudflared tunnel list 2>/dev/null | grep -v "ID" | head -5)
+    if [ -n "$tunnels" ]; then
+        status_info+="$tunnels\n\n"
+    else
+        status_info+="Nenhum túnel encontrado\n\n"
+    fi
+    
+    # Métricas (se disponível)
+    if curl -s http://127.0.0.1:8080/metrics &> /dev/null; then
+        status_info+="✓ Métricas: Disponíveis em :8080\n"
+    else
+        status_info+="✗ Métricas: Indisponíveis\n"
+    fi
+    
+    dialog --title "Status do Túnel" --msgbox "$status_info" 15 60
+}
+
+# Função para configuração avançada
+cloudflare_advanced_config() {
+    while true; do
+        local choice=$(dialog --title "Configuração Avançada" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Editar config.yml manualmente" \
+            "2" "Configurar protocolo (QUIC/HTTP2)" \
+            "3" "Configurar métricas" \
+            "4" "Gerenciar certificados" \
+            "5" "Reiniciar serviço" \
+            "6" "Ver logs do serviço" \
+            "7" "Voltar" \
+            3>&1 1>&2 2>&3)
+        
+        case $choice in
+            1) edit_config_manually ;;
+            2) configure_protocol ;;
+            3) configure_metrics ;;
+            4) manage_certificates ;;
+            5) restart_cloudflared_service ;;
+            6) show_cloudflared_logs ;;
+            7|"") break ;;
+        esac
+    done
+}
+
+# Função para editar configuração manualmente
+edit_config_manually() {
+    if [ -f "/etc/cloudflared/config.yml" ]; then
+        # Backup antes de editar
+        cp /etc/cloudflared/config.yml /etc/cloudflared/config.yml.backup
+        
+        # Editar com nano
+        nano /etc/cloudflared/config.yml
+        
+        # Validar configuração
+        if cloudflared tunnel --config /etc/cloudflared/config.yml validate &> /dev/null; then
+            dialog --title "Configuração Válida" --msgbox "Configuração salva e validada com sucesso!" 6 50
+            log_message "INFO" "Configuração Cloudflare editada manualmente"
+        else
+            dialog --title "Erro de Configuração" --yesno "A configuração contém erros.\n\nDeseja restaurar o backup?" 8 50
+            if [ $? -eq 0 ]; then
+                mv /etc/cloudflared/config.yml.backup /etc/cloudflared/config.yml
+                dialog --title "Restaurado" --msgbox "Backup restaurado com sucesso." 6 40
+            fi
+        fi
+    else
+        dialog --title "Erro" --msgbox "Arquivo de configuração não encontrado." 6 40
+    fi
+}
+
+# Função para configurar protocolo
+configure_protocol() {
+    local protocol=$(dialog --title "Protocolo" --menu "Escolha o protocolo:" 10 50 3 \
+        "quic" "QUIC (Recomendado para ARM)" \
+        "http2" "HTTP/2 (Compatibilidade)" \
+        "auto" "Automático" \
+        3>&1 1>&2 2>&3)
+    
+    if [ -n "$protocol" ]; then
+        sed -i "s/protocol: .*/protocol: $protocol/g" /etc/cloudflared/config.yml
+        dialog --title "Protocolo Configurado" --msgbox "Protocolo alterado para: $protocol\n\nReinicie o serviço para aplicar." 8 50
+        log_message "INFO" "Protocolo Cloudflare alterado para: $protocol"
+    fi
+}
+
+# Função para configurar métricas
+configure_metrics() {
+    local metrics_addr=$(dialog --title "Métricas" --inputbox "Digite o endereço para métricas:\n\nFormato: IP:PORTA" 10 50 "127.0.0.1:8080" 3>&1 1>&2 2>&3)
+    
+    if [ -n "$metrics_addr" ]; then
+        sed -i "s/metrics: .*/metrics: $metrics_addr/g" /etc/cloudflared/config.yml
+        dialog --title "Métricas Configuradas" --msgbox "Métricas configuradas para: $metrics_addr\n\nAcesse: http://$metrics_addr/metrics" 8 60
+        log_message "INFO" "Métricas Cloudflare configuradas: $metrics_addr"
+    fi
+}
+
+# Função para gerenciar certificados
+manage_certificates() {
+    local cert_info="Informações dos Certificados:\n\n"
+    
+    if [ -f "/etc/cloudflared/cert.pem" ]; then
+        cert_info+="✓ Certificado do túnel: PRESENTE\n"
+        cert_info+="  Local: /etc/cloudflared/cert.pem\n\n"
+    else
+        cert_info+="✗ Certificado do túnel: AUSENTE\n\n"
+    fi
+    
+    if [ -d "$HOME/.cloudflared" ]; then
+        local cert_count=$(ls -1 "$HOME/.cloudflared"/*.pem 2>/dev/null | wc -l)
+        cert_info+="Certificados de login: $cert_count\n"
+        cert_info+="Local: $HOME/.cloudflared/\n\n"
+    fi
+    
+    cert_info+="Opções:\n"
+    cert_info+="- Renovar: cloudflared tunnel login\n"
+    cert_info+="- Verificar: cloudflared tunnel list"
+    
+    dialog --title "Gerenciar Certificados" --msgbox "$cert_info" 15 60
+}
+
+# Função para reiniciar serviço
+restart_cloudflared_service() {
+    dialog --title "Reiniciando Serviço" --infobox "Reiniciando Cloudflared..." 5 30
+    
+    systemctl restart cloudflared
+    sleep 2
+    
+    if systemctl is-active --quiet cloudflared; then
+        dialog --title "Serviço Reiniciado" --msgbox "Cloudflared reiniciado com sucesso!" 6 40
+        log_message "INFO" "Serviço Cloudflared reiniciado"
+    else
+        dialog --title "Erro" --msgbox "Falha ao reiniciar o serviço.\n\nVerifique os logs." 8 40
+        log_message "ERROR" "Falha ao reiniciar Cloudflared"
+    fi
+}
+
+# Função para mostrar logs
+show_cloudflared_logs() {
+    dialog --title "Logs do Cloudflared" --msgbox "Os logs serão exibidos em uma nova janela.\n\nPressione 'q' para sair da visualização." 8 50
+    
+    # Mostrar logs em tempo real
+    journalctl -u cloudflared -f --no-pager
+}
+
+# Função para configuração automática de serviços
+auto_configure_services() {
+    dialog --title "Configuração Automática" --infobox "Detectando serviços instalados..." 5 40
+    
+    local detected_services=""
+    local config_applied=false
+    
+    # Detectar Pi-hole
+    if systemctl is-active --quiet pihole-FTL; then
+        detected_services+="✓ Pi-hole (porta 80)\n"
+        if dialog --title "Pi-hole Detectado" --yesno "Configurar Pi-hole no subdomínio 'pihole'?\n\nExemplo: pihole.seudominio.com" 8 50; then
+            local domain=$(dialog --title "Domínio Pi-hole" --inputbox "Digite o domínio completo:" 8 50 "pihole.example.com" 3>&1 1>&2 2>&3)
+            if [ -n "$domain" ]; then
+                update_ingress_rule "$domain" "80"
+                config_applied=true
+                log_message "INFO" "Auto-configurado Pi-hole: $domain"
+            fi
+        fi
+    fi
+    
+    # Detectar Cockpit
+    if systemctl is-active --quiet cockpit; then
+        detected_services+="✓ Cockpit (porta 9090)\n"
+        if dialog --title "Cockpit Detectado" --yesno "Configurar Cockpit no subdomínio 'admin'?\n\nExemplo: admin.seudominio.com" 8 50; then
+            local domain=$(dialog --title "Domínio Cockpit" --inputbox "Digite o domínio completo:" 8 50 "admin.example.com" 3>&1 1>&2 2>&3)
+            if [ -n "$domain" ]; then
+                update_ingress_rule "$domain" "9090"
+                config_applied=true
+                log_message "INFO" "Auto-configurado Cockpit: $domain"
+            fi
+        fi
+    fi
+    
+    # Detectar WireGuard
+    if systemctl is-active --quiet wg-quick@wg0; then
+        detected_services+="✓ WireGuard (porta 51820)\n"
+        if dialog --title "WireGuard Detectado" --yesno "Configurar interface web WireGuard?\n\nExemplo: vpn.seudominio.com" 8 50; then
+            local domain=$(dialog --title "Domínio WireGuard" --inputbox "Digite o domínio completo:" 8 50 "vpn.example.com" 3>&1 1>&2 2>&3)
+            if [ -n "$domain" ]; then
+                update_ingress_rule "$domain" "51820"
+                config_applied=true
+                log_message "INFO" "Auto-configurado WireGuard: $domain"
+            fi
+        fi
+    fi
+    
+    # Detectar outros serviços comuns
+    detect_additional_services
+    
+    if [ "$config_applied" = true ]; then
+        dialog --title "Configuração Concluída" --msgbox "Serviços configurados automaticamente!\n\nLembre-se de aplicar os registros DNS\nno menu de configuração de domínios." 10 50
+        
+        # Oferecer aplicação automática de DNS
+        if dialog --title "Aplicar DNS" --yesno "Deseja aplicar os registros DNS\nautomaticamente agora?" 8 50; then
+            apply_dns_records
+        fi
+    else
+        dialog --title "Nenhum Serviço" --msgbox "Nenhum serviço foi configurado\nautomaticamente.\n\nUse o menu manual para\nconfigurar domínios customizados." 10 50
+    fi
+}
+
+# Função para detectar serviços adicionais
+detect_additional_services() {
+    # Detectar FileBrowser (porta comum 8080)
+    if netstat -tlnp 2>/dev/null | grep -q ":8080"; then
+        if dialog --title "Serviço na Porta 8080" --yesno "Detectado serviço na porta 8080.\n\nConfigurar como FileBrowser?" 8 50; then
+            local domain=$(dialog --title "Domínio Arquivos" --inputbox "Digite o domínio completo:" 8 50 "files.example.com" 3>&1 1>&2 2>&3)
+            if [ -n "$domain" ]; then
+                update_ingress_rule "$domain" "8080"
+                log_message "INFO" "Auto-configurado FileBrowser: $domain"
+            fi
+        fi
+    fi
+    
+    # Detectar Portainer (porta comum 9000)
+    if netstat -tlnp 2>/dev/null | grep -q ":9000"; then
+        if dialog --title "Serviço na Porta 9000" --yesno "Detectado serviço na porta 9000.\n\nConfigurar como Portainer?" 8 50; then
+            local domain=$(dialog --title "Domínio Portainer" --inputbox "Digite o domínio completo:" 8 50 "docker.example.com" 3>&1 1>&2 2>&3)
+            if [ -n "$domain" ]; then
+                update_ingress_rule "$domain" "9000"
+                log_message "INFO" "Auto-configurado Portainer: $domain"
+            fi
+        fi
+    fi
+    
+    # Detectar Grafana (porta comum 3000)
+    if netstat -tlnp 2>/dev/null | grep -q ":3000"; then
+        if dialog --title "Serviço na Porta 3000" --yesno "Detectado serviço na porta 3000.\n\nConfigurar como Grafana?" 8 50; then
+            local domain=$(dialog --title "Domínio Grafana" --inputbox "Digite o domínio completo:" 8 50 "monitor.example.com" 3>&1 1>&2 2>&3)
+            if [ -n "$domain" ]; then
+                update_ingress_rule "$domain" "3000"
+                log_message "INFO" "Auto-configurado Grafana: $domain"
+            fi
+        fi
+    fi
+}
+
+# Função para validação completa da configuração
+validate_tunnel_configuration() {
+    dialog --title "Validando Configuração" --infobox "Executando validação completa..." 5 40
+    
+    local validation_results="Validação da Configuração:\n\n"
+    local errors_found=false
+    
+    # Validar arquivo de configuração
+    if [ -f "/etc/cloudflared/config.yml" ]; then
+        if cloudflared tunnel --config /etc/cloudflared/config.yml validate &> /dev/null; then
+            validation_results+="✓ Sintaxe do config.yml: VÁLIDA\n"
+        else
+            validation_results+="✗ Sintaxe do config.yml: INVÁLIDA\n"
+            errors_found=true
+        fi
+    else
+        validation_results+="✗ Arquivo config.yml: NÃO ENCONTRADO\n"
+        errors_found=true
+    fi
+    
+    # Validar certificados
+    local tunnel_id=$(grep "tunnel:" /etc/cloudflared/config.yml 2>/dev/null | awk '{print $2}')
+    if [ -n "$tunnel_id" ] && [ -f "/etc/cloudflared/cert.pem" ]; then
+        validation_results+="✓ Certificado do túnel: PRESENTE\n"
+    else
+        validation_results+="✗ Certificado do túnel: AUSENTE\n"
+        errors_found=true
+    fi
+    
+    # Validar conectividade
+    if ping -c 1 1.1.1.1 &> /dev/null; then
+        validation_results+="✓ Conectividade internet: OK\n"
+    else
+        validation_results+="✗ Conectividade internet: FALHOU\n"
+        errors_found=true
+    fi
+    
+    # Validar domínios configurados
+    local domain_count=$(grep -c "hostname:" /etc/cloudflared/config.yml 2>/dev/null || echo "0")
+    if [ "$domain_count" -gt 0 ]; then
+        validation_results+="✓ Domínios configurados: $domain_count\n"
+    else
+        validation_results+="⚠ Domínios configurados: NENHUM\n"
+    fi
+    
+    # Validar serviço
+    if systemctl is-enabled --quiet cloudflared; then
+        validation_results+="✓ Serviço habilitado: SIM\n"
+    else
+        validation_results+="⚠ Serviço habilitado: NÃO\n"
+    fi
+    
+    if [ "$errors_found" = true ]; then
+        validation_results+="\n❌ CONFIGURAÇÃO COM ERROS\n\nCorreja os problemas antes de iniciar."
+        dialog --title "Validação Falhou" --msgbox "$validation_results" 15 60
+        return 1
+    else
+        validation_results+="\n✅ CONFIGURAÇÃO VÁLIDA\n\nTúnel pronto para uso!"
+        dialog --title "Validação Bem-sucedida" --msgbox "$validation_results" 15 60
+        return 0
+    fi
 }
 
 # Menu pós-instalação
@@ -1142,22 +1759,727 @@ post_installation_menu() {
             "1" "Executar testes do sistema" \
             "2" "Ver status dos serviços" \
             "3" "Ver logs de instalação" \
-            "4" "Configurar clientes VPN" \
-            "5" "Backup das configurações" \
-            "6" "Sair" \
+            "4" "Configurar WireGuard VPN" \
+            "5" "Configurar túnel Cloudflare" \
+            "6" "Configurar Pi-hole + Unbound" \
+            "7" "Configurar Fail2Ban" \
+            "8" "Configurar outros serviços" \
+            "9" "Backup das configurações" \
+            "10" "Sair" \
             3>&1 1>&2 2>&3)
         
         case $choice in
             1) run_system_tests ;;
             2) show_services_status ;;
             3) show_installation_logs ;;
-            4) configure_vpn_clients ;;
-            5) backup_configurations ;;
-            6|"")
+            4) configure_wireguard_vpn ;;
+            5) configure_cloudflare_tunnel ;;
+            6) configure_pihole_unbound ;;
+            7) configure_fail2ban ;;
+            8) configure_other_services ;;
+            9) backup_configurations ;;
+            10|"")
                 break
                 ;;
         esac
     done
+}
+
+# Configuração do WireGuard VPN
+configure_wireguard_vpn() {
+    while true; do
+        local choice=$(dialog --title "Configuração WireGuard VPN" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Verificar status do WireGuard" \
+            "2" "Gerar novo cliente" \
+            "3" "Listar clientes existentes" \
+            "4" "Remover cliente" \
+            "5" "Regenerar chaves do servidor" \
+            "6" "Configurar interface de rede" \
+            "7" "Testar conectividade VPN" \
+            "8" "Exportar configuração cliente" \
+            "9" "Configurações avançadas" \
+            "10" "Voltar" \
+            3>&1 1>&2 2>&3)
+        
+        case $choice in
+            1) check_wireguard_status ;;
+            2) generate_wireguard_client ;;
+            3) list_wireguard_clients ;;
+            4) remove_wireguard_client ;;
+            5) regenerate_server_keys ;;
+            6) configure_network_interface ;;
+            7) test_vpn_connectivity ;;
+            8) export_client_config ;;
+            9) wireguard_advanced_settings ;;
+            10|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# Verificar status do WireGuard
+check_wireguard_status() {
+    local status_info="Status do WireGuard:\n\n"
+    
+    # Verificar se o serviço está rodando
+    if systemctl is-active --quiet wg-quick@wg0; then
+        status_info+="✓ Serviço: ATIVO\n"
+    else
+        status_info+="✗ Serviço: INATIVO\n"
+    fi
+    
+    # Verificar interface
+    if ip link show wg0 &>/dev/null; then
+        status_info+="✓ Interface wg0: CONFIGURADA\n"
+        local wg_info=$(wg show wg0 2>/dev/null)
+        if [[ -n "$wg_info" ]]; then
+            status_info+="\nInformações da interface:\n$wg_info\n"
+        fi
+    else
+        status_info+="✗ Interface wg0: NÃO ENCONTRADA\n"
+    fi
+    
+    # Verificar IP forwarding
+    if [[ $(cat /proc/sys/net/ipv4/ip_forward) == "1" ]]; then
+        status_info+="✓ IP Forwarding: HABILITADO\n"
+    else
+        status_info+="✗ IP Forwarding: DESABILITADO\n"
+    fi
+    
+    # Verificar regras de firewall
+    if iptables -t nat -L POSTROUTING | grep -q "MASQUERADE"; then
+        status_info+="✓ NAT/Masquerade: CONFIGURADO\n"
+    else
+        status_info+="✗ NAT/Masquerade: NÃO CONFIGURADO\n"
+    fi
+    
+    dialog --title "Status WireGuard" --msgbox "$status_info" 20 70
+}
+
+# Gerar novo cliente WireGuard
+generate_wireguard_client() {
+    local client_name=$(dialog --title "Novo Cliente" --inputbox "Nome do cliente:" 8 40 3>&1 1>&2 2>&3)
+    
+    if [[ -z "$client_name" ]]; then
+        dialog --title "Erro" --msgbox "Nome do cliente é obrigatório!" 6 40
+        return 1
+    fi
+    
+    # Verificar se cliente já existe
+    if [[ -f "/etc/wireguard/clients/${client_name}.conf" ]]; then
+        dialog --title "Erro" --msgbox "Cliente '$client_name' já existe!" 6 40
+        return 1
+    fi
+    
+    dialog --title "Gerando Cliente" --infobox "Criando configuração para $client_name..." 5 50
+    
+    # Criar diretório de clientes se não existir
+    mkdir -p /etc/wireguard/clients
+    
+    # Gerar chaves do cliente
+    local client_private_key=$(wg genkey)
+    local client_public_key=$(echo "$client_private_key" | wg pubkey)
+    
+    # Obter próximo IP disponível
+    local client_ip=$(get_next_client_ip)
+    
+    # Obter configurações do servidor
+    local server_public_key=$(grep "PublicKey" /etc/wireguard/wg0.conf | head -1 | cut -d'=' -f2 | tr -d ' ' || echo "")
+    local server_endpoint=$(get_server_endpoint)
+    local server_port=$(grep "ListenPort" /etc/wireguard/wg0.conf | cut -d'=' -f2 | tr -d ' ' || echo "51820")
+    
+    # Criar configuração do cliente
+    cat > "/etc/wireguard/clients/${client_name}.conf" << EOF
+[Interface]
+PrivateKey = $client_private_key
+Address = $client_ip/24
+DNS = 10.8.0.1
+
+[Peer]
+PublicKey = $server_public_key
+Endpoint = $server_endpoint:$server_port
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+EOF
+    
+    # Adicionar peer ao servidor
+    wg set wg0 peer "$client_public_key" allowed-ips "$client_ip/32"
+    
+    # Salvar configuração no arquivo do servidor
+    echo "" >> /etc/wireguard/wg0.conf
+    echo "# Cliente: $client_name" >> /etc/wireguard/wg0.conf
+    echo "[Peer]" >> /etc/wireguard/wg0.conf
+    echo "PublicKey = $client_public_key" >> /etc/wireguard/wg0.conf
+    echo "AllowedIPs = $client_ip/32" >> /etc/wireguard/wg0.conf
+    
+    # Gerar QR Code se qrencode estiver disponível
+    local qr_file="/etc/wireguard/clients/${client_name}.png"
+    if command -v qrencode &>/dev/null; then
+        qrencode -t png -o "$qr_file" < "/etc/wireguard/clients/${client_name}.conf"
+    fi
+    
+    dialog --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: /etc/wireguard/clients/${client_name}.conf" 10 60
+}
+
+# Obter próximo IP disponível para cliente
+get_next_client_ip() {
+    local base_ip="10.8.0"
+    local start_ip=2
+    
+    for i in $(seq $start_ip 254); do
+        local test_ip="${base_ip}.${i}"
+        if ! grep -q "$test_ip" /etc/wireguard/wg0.conf /etc/wireguard/clients/*.conf 2>/dev/null; then
+            echo "$test_ip"
+            return 0
+        fi
+    done
+    
+    echo "${base_ip}.254"  # Fallback
+}
+
+# Obter endpoint do servidor
+get_server_endpoint() {
+    # Tentar obter IP público
+    local public_ip=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "")
+    
+    if [[ -n "$public_ip" ]]; then
+        echo "$public_ip"
+    else
+        # Fallback para IP local
+        local local_ip=$(ip route get 8.8.8.8 | awk '{print $7; exit}')
+        echo "${local_ip:-localhost}"
+    fi
+}
+
+# Listar clientes existentes
+list_wireguard_clients() {
+    local clients_info="Clientes WireGuard:\n\n"
+    
+    if [[ ! -d "/etc/wireguard/clients" ]] || [[ -z "$(ls -A /etc/wireguard/clients 2>/dev/null)" ]]; then
+        clients_info+="Nenhum cliente configurado.\n"
+    else
+        for client_file in /etc/wireguard/clients/*.conf; do
+            if [[ -f "$client_file" ]]; then
+                local client_name=$(basename "$client_file" .conf)
+                local client_ip=$(grep "Address" "$client_file" | cut -d'=' -f2 | tr -d ' ' | cut -d'/' -f1)
+                local client_key=$(grep "PrivateKey" "$client_file" | cut -d'=' -f2 | tr -d ' ')
+                local public_key=$(echo "$client_key" | wg pubkey 2>/dev/null || echo "N/A")
+                
+                clients_info+="Nome: $client_name\n"
+                clients_info+="IP: $client_ip\n"
+                clients_info+="Chave Pública: ${public_key:0:20}...\n\n"
+            fi
+        done
+    fi
+    
+    dialog --title "Clientes WireGuard" --msgbox "$clients_info" 20 70
+}
+
+# Remover cliente WireGuard
+remove_wireguard_client() {
+    if [[ ! -d "/etc/wireguard/clients" ]] || [[ -z "$(ls -A /etc/wireguard/clients 2>/dev/null)" ]]; then
+        dialog --title "Erro" --msgbox "Nenhum cliente encontrado para remover." 6 50
+        return 1
+    fi
+    
+    # Criar lista de clientes
+    local client_list=()
+    for client_file in /etc/wireguard/clients/*.conf; do
+        if [[ -f "$client_file" ]]; then
+            local client_name=$(basename "$client_file" .conf)
+            client_list+=("$client_name" "")
+        fi
+    done
+    
+    local client_to_remove=$(dialog --title "Remover Cliente" --menu "Selecione o cliente para remover:" 15 50 8 "${client_list[@]}" 3>&1 1>&2 2>&3)
+    
+    if [[ -z "$client_to_remove" ]]; then
+        return 0
+    fi
+    
+    # Confirmar remoção
+    if dialog --title "Confirmar Remoção" --yesno "Tem certeza que deseja remover o cliente '$client_to_remove'?" 7 50; then
+        # Obter chave pública do cliente
+        local client_private_key=$(grep "PrivateKey" "/etc/wireguard/clients/${client_to_remove}.conf" | cut -d'=' -f2 | tr -d ' ')
+        local client_public_key=$(echo "$client_private_key" | wg pubkey 2>/dev/null)
+        
+        # Remover peer do servidor ativo
+        if [[ -n "$client_public_key" ]]; then
+            wg set wg0 peer "$client_public_key" remove 2>/dev/null
+        fi
+        
+        # Remover do arquivo de configuração do servidor
+        if [[ -n "$client_public_key" ]]; then
+            sed -i "/# Cliente: $client_to_remove/,/^$/d" /etc/wireguard/wg0.conf
+        fi
+        
+        # Remover arquivos do cliente
+        rm -f "/etc/wireguard/clients/${client_to_remove}.conf"
+        rm -f "/etc/wireguard/clients/${client_to_remove}.png"
+        
+        dialog --title "Cliente Removido" --msgbox "Cliente '$client_to_remove' removido com sucesso!" 6 50
+    fi
+}
+
+# Regenerar chaves do servidor
+regenerate_server_keys() {
+    if dialog --title "Regenerar Chaves" --yesno "ATENÇÃO: Regenerar as chaves do servidor invalidará TODOS os clientes existentes.\n\nDeseja continuar?" 10 60; then
+        dialog --title "Regenerando Chaves" --infobox "Gerando novas chaves do servidor..." 5 40
+        
+        # Parar o serviço
+        systemctl stop wg-quick@wg0 2>/dev/null
+        
+        # Gerar novas chaves
+        local new_private_key=$(wg genkey)
+        local new_public_key=$(echo "$new_private_key" | wg pubkey)
+        
+        # Backup da configuração atual
+        cp /etc/wireguard/wg0.conf "/etc/wireguard/wg0.conf.backup.$(date +%Y%m%d_%H%M%S)"
+        
+        # Atualizar configuração do servidor
+        sed -i "s/^PrivateKey = .*/PrivateKey = $new_private_key/" /etc/wireguard/wg0.conf
+        
+        # Remover todos os peers (clientes ficam inválidos)
+        sed -i '/^\[Peer\]/,/^$/d' /etc/wireguard/wg0.conf
+        sed -i '/^# Cliente:/d' /etc/wireguard/wg0.conf
+        
+        # Remover configurações de clientes
+        rm -rf /etc/wireguard/clients/*
+        
+        # Reiniciar o serviço
+        systemctl start wg-quick@wg0
+        
+        dialog --title "Chaves Regeneradas" --msgbox "Chaves do servidor regeneradas com sucesso!\n\nNova chave pública: ${new_public_key:0:30}...\n\nTodos os clientes precisam ser recriados." 12 70
+    fi
+}
+
+# Configurar interface de rede
+configure_network_interface() {
+    local current_interface=$(ip route | grep default | awk '{print $5}' | head -1)
+    local new_interface=$(dialog --title "Interface de Rede" --inputbox "Interface de rede para WireGuard:" 8 50 "$current_interface" 3>&1 1>&2 2>&3)
+    
+    if [[ -z "$new_interface" ]]; then
+        return 0
+    fi
+    
+    # Verificar se a interface existe
+    if ! ip link show "$new_interface" &>/dev/null; then
+        dialog --title "Erro" --msgbox "Interface '$new_interface' não encontrada!" 6 50
+        return 1
+    fi
+    
+    dialog --title "Configurando Interface" --infobox "Atualizando configuração de rede..." 5 50
+    
+    # Atualizar regras de firewall
+    # Remover regras antigas
+    iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o "$current_interface" -j MASQUERADE 2>/dev/null
+    
+    # Adicionar novas regras
+    iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o "$new_interface" -j MASQUERADE
+    
+    # Salvar regras se iptables-persistent estiver disponível
+    if command -v iptables-save &>/dev/null; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null
+    fi
+    
+    dialog --title "Interface Configurada" --msgbox "Interface de rede atualizada para: $new_interface" 6 60
+}
+
+# Testar conectividade VPN
+test_vpn_connectivity() {
+    dialog --title "Testando Conectividade" --infobox "Executando testes de conectividade..." 5 50
+    
+    local test_results="Testes de Conectividade VPN:\n\n"
+    
+    # Teste 1: Interface WireGuard
+    if ip link show wg0 &>/dev/null; then
+        test_results+="✓ Interface wg0: ATIVA\n"
+    else
+        test_results+="✗ Interface wg0: INATIVA\n"
+    fi
+    
+    # Teste 2: Serviço WireGuard
+    if systemctl is-active --quiet wg-quick@wg0; then
+        test_results+="✓ Serviço WireGuard: RODANDO\n"
+    else
+        test_results+="✗ Serviço WireGuard: PARADO\n"
+    fi
+    
+    # Teste 3: Porta de escuta
+    local wg_port=$(grep "ListenPort" /etc/wireguard/wg0.conf | cut -d'=' -f2 | tr -d ' ' || echo "51820")
+    if ss -ulnp | grep -q ":$wg_port"; then
+        test_results+="✓ Porta $wg_port: ESCUTANDO\n"
+    else
+        test_results+="✗ Porta $wg_port: NÃO ESCUTANDO\n"
+    fi
+    
+    # Teste 4: IP Forwarding
+    if [[ $(cat /proc/sys/net/ipv4/ip_forward) == "1" ]]; then
+        test_results+="✓ IP Forwarding: HABILITADO\n"
+    else
+        test_results+="✗ IP Forwarding: DESABILITADO\n"
+    fi
+    
+    # Teste 5: Regras NAT
+    if iptables -t nat -L POSTROUTING | grep -q "MASQUERADE"; then
+        test_results+="✓ Regras NAT: CONFIGURADAS\n"
+    else
+        test_results+="✗ Regras NAT: NÃO CONFIGURADAS\n"
+    fi
+    
+    # Teste 6: Conectividade externa
+    if ping -c 1 8.8.8.8 &>/dev/null; then
+        test_results+="✓ Conectividade Externa: OK\n"
+    else
+        test_results+="✗ Conectividade Externa: FALHOU\n"
+    fi
+    
+    dialog --title "Resultados dos Testes" --msgbox "$test_results" 18 60
+}
+
+# Exportar configuração de cliente
+export_client_config() {
+    if [[ ! -d "/etc/wireguard/clients" ]] || [[ -z "$(ls -A /etc/wireguard/clients 2>/dev/null)" ]]; then
+        dialog --title "Erro" --msgbox "Nenhum cliente encontrado para exportar." 6 50
+        return 1
+    fi
+    
+    # Criar lista de clientes
+    local client_list=()
+    for client_file in /etc/wireguard/clients/*.conf; do
+        if [[ -f "$client_file" ]]; then
+            local client_name=$(basename "$client_file" .conf)
+            client_list+=("$client_name" "")
+        fi
+    done
+    
+    local client_to_export=$(dialog --title "Exportar Cliente" --menu "Selecione o cliente para exportar:" 15 50 8 "${client_list[@]}" 3>&1 1>&2 2>&3)
+    
+    if [[ -z "$client_to_export" ]]; then
+        return 0
+    fi
+    
+    local export_path=$(dialog --title "Local de Exportação" --inputbox "Caminho para exportar:" 8 60 "/tmp/${client_to_export}.conf" 3>&1 1>&2 2>&3)
+    
+    if [[ -z "$export_path" ]]; then
+        return 0
+    fi
+    
+    # Copiar arquivo de configuração
+    if cp "/etc/wireguard/clients/${client_to_export}.conf" "$export_path"; then
+        dialog --title "Exportação Concluída" --msgbox "Configuração do cliente '$client_to_export' exportada para:\n$export_path" 8 70
+    else
+        dialog --title "Erro" --msgbox "Falha ao exportar configuração!" 6 40
+    fi
+}
+
+# Configurações avançadas do WireGuard
+wireguard_advanced_settings() {
+    while true; do
+        local choice=$(dialog --title "Configurações Avançadas" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Alterar porta do servidor" \
+            "2" "Configurar DNS personalizado" \
+            "3" "Alterar rede VPN" \
+            "4" "Configurar Keep-Alive" \
+            "5" "Backup/Restore configurações" \
+            "6" "Logs e diagnósticos" \
+            "7" "Voltar" \
+            3>&1 1>&2 2>&3)
+        
+        case $choice in
+            1) change_wireguard_port ;;
+            2) configure_custom_dns ;;
+            3) change_vpn_network ;;
+            4) configure_keepalive ;;
+            5) backup_restore_configs ;;
+            6) wireguard_diagnostics ;;
+            7|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# Alterar porta do WireGuard
+change_wireguard_port() {
+    local current_port=$(grep "ListenPort" /etc/wireguard/wg0.conf | cut -d'=' -f2 | tr -d ' ' || echo "51820")
+    local new_port=$(dialog --title "Alterar Porta" --inputbox "Nova porta para WireGuard:" 8 40 "$current_port" 3>&1 1>&2 2>&3)
+    
+    if [[ -z "$new_port" ]] || [[ "$new_port" == "$current_port" ]]; then
+        return 0
+    fi
+    
+    # Validar porta
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [[ "$new_port" -lt 1024 ]] || [[ "$new_port" -gt 65535 ]]; then
+        dialog --title "Erro" --msgbox "Porta inválida! Use um número entre 1024 e 65535." 6 50
+        return 1
+    fi
+    
+    # Verificar se a porta está em uso
+    if ss -ulnp | grep -q ":$new_port"; then
+        dialog --title "Erro" --msgbox "Porta $new_port já está em uso!" 6 40
+        return 1
+    fi
+    
+    dialog --title "Alterando Porta" --infobox "Atualizando configuração..." 5 40
+    
+    # Parar o serviço
+    systemctl stop wg-quick@wg0
+    
+    # Atualizar configuração do servidor
+    sed -i "s/^ListenPort = .*/ListenPort = $new_port/" /etc/wireguard/wg0.conf
+    
+    # Atualizar configurações dos clientes
+    for client_file in /etc/wireguard/clients/*.conf; do
+        if [[ -f "$client_file" ]]; then
+            local server_endpoint=$(grep "Endpoint" "$client_file" | cut -d'=' -f2 | tr -d ' ' | cut -d':' -f1)
+            sed -i "s/^Endpoint = .*/Endpoint = $server_endpoint:$new_port/" "$client_file"
+        fi
+    done
+    
+    # Reiniciar o serviço
+    systemctl start wg-quick@wg0
+    
+    dialog --title "Porta Alterada" --msgbox "Porta do WireGuard alterada para: $new_port\n\nTodos os clientes foram atualizados automaticamente." 8 60
+}
+
+# Configuração Pi-hole + Unbound
+configure_pihole_unbound() {
+    while true; do
+        local choice=$(dialog --title "Configuração Pi-hole + Unbound" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Verificar status dos serviços" \
+            "2" "Configurar integração Pi-hole/Unbound" \
+            "3" "Gerenciar listas de bloqueio" \
+            "4" "Configurar DNS upstream" \
+            "5" "Testar resolução DNS" \
+            "6" "Configurar whitelist/blacklist" \
+            "7" "Backup/Restore configurações" \
+            "8" "Logs e estatísticas" \
+            "9" "Configurações avançadas" \
+            "10" "Voltar" \
+            3>&1 1>&2 2>&3)
+        
+        case $choice in
+            1) check_dns_services_status ;;
+            2) configure_pihole_unbound_integration ;;
+            3) manage_blocklists ;;
+            4) configure_upstream_dns ;;
+            5) test_dns_resolution ;;
+            6) manage_whitelist_blacklist ;;
+            7) backup_restore_dns_configs ;;
+            8) show_dns_logs_stats ;;
+            9) dns_advanced_settings ;;
+            10|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# Verificar status dos serviços DNS
+check_dns_services_status() {
+    local status_info="Status dos Serviços DNS:\n\n"
+    
+    # Verificar Pi-hole
+    if systemctl is-active --quiet pihole-FTL; then
+        status_info+="✓ Pi-hole FTL: ATIVO\n"
+    else
+        status_info+="✗ Pi-hole FTL: INATIVO\n"
+    fi
+    
+    # Verificar Unbound
+    if systemctl is-active --quiet unbound; then
+        status_info+="✓ Unbound: ATIVO\n"
+    else
+        status_info+="✗ Unbound: INATIVO\n"
+    fi
+    
+    # Verificar porta Pi-hole (53)
+    if ss -ulnp | grep -q ":53.*pihole"; then
+        status_info+="✓ Pi-hole porta 53: ESCUTANDO\n"
+    else
+        status_info+="✗ Pi-hole porta 53: NÃO ESCUTANDO\n"
+    fi
+    
+    # Verificar porta Unbound (5335)
+    if ss -ulnp | grep -q ":5335.*unbound"; then
+        status_info+="✓ Unbound porta 5335: ESCUTANDO\n"
+    else
+        status_info+="✗ Unbound porta 5335: NÃO ESCUTANDO\n"
+    fi
+    
+    # Verificar configuração DNS do sistema
+    local system_dns=$(grep "nameserver" /etc/resolv.conf | head -1 | awk '{print $2}')
+    if [[ "$system_dns" == "127.0.0.1" ]]; then
+        status_info+="✓ DNS do sistema: CONFIGURADO (127.0.0.1)\n"
+    else
+        status_info+="✗ DNS do sistema: NÃO CONFIGURADO ($system_dns)\n"
+    fi
+    
+    # Verificar trust anchor do Unbound
+    if [[ -f "/var/lib/unbound/root.key" ]]; then
+        status_info+="✓ Trust Anchor DNSSEC: CONFIGURADO\n"
+    else
+        status_info+="✗ Trust Anchor DNSSEC: NÃO CONFIGURADO\n"
+    fi
+    
+    dialog --title "Status DNS" --msgbox "$status_info" 18 70
+}
+
+# Configurar integração Pi-hole/Unbound
+configure_pihole_unbound_integration() {
+    dialog --title "Configurando Integração" --infobox "Configurando integração Pi-hole + Unbound..." 5 60
+    
+    # Verificar se os serviços estão instalados
+    if ! command -v pihole &>/dev/null; then
+        dialog --title "Erro" --msgbox "Pi-hole não está instalado!" 6 40
+        return 1
+    fi
+    
+    if ! command -v unbound &>/dev/null; then
+        dialog --title "Erro" --msgbox "Unbound não está instalado!" 6 40
+        return 1
+    fi
+    
+    # Configurar Unbound para Pi-hole
+    cat > /etc/unbound/unbound.conf.d/pi-hole.conf << 'EOF'
+server:
+    # Porta para escutar (diferente da 53 usada pelo Pi-hole)
+    port: 5335
+    
+    # Interfaces de escuta
+    interface: 127.0.0.1
+    
+    # Não fazer cache de TTL zero
+    cache-min-ttl: 0
+    
+    # Servir dados expirados
+    serve-expired: yes
+    
+    # Prefetch de registros populares
+    prefetch: yes
+    
+    # Número de threads
+    num-threads: 2
+    
+    # Configurações de segurança
+    hide-identity: yes
+    hide-version: yes
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    use-caps-for-id: no
+    
+    # Cache settings otimizadas para ARM
+    rrset-cache-size: 32m
+    msg-cache-size: 16m
+    
+    # Configurações de rede
+    edns-buffer-size: 1232
+    
+    # Logs
+    verbosity: 1
+    
+    # Root hints
+    root-hints: "/var/lib/unbound/root.hints"
+    
+    # Trust anchor para DNSSEC
+    auto-trust-anchor-file: "/var/lib/unbound/root.key"
+EOF
+    
+    # Baixar root hints se não existir
+    if [[ ! -f "/var/lib/unbound/root.hints" ]]; then
+        curl -s https://www.internic.net/domain/named.cache -o /var/lib/unbound/root.hints
+        chown unbound:unbound /var/lib/unbound/root.hints
+    fi
+    
+    # Configurar trust anchor se não existir
+    if [[ ! -f "/var/lib/unbound/root.key" ]]; then
+        unbound-anchor -a /var/lib/unbound/root.key
+        chown unbound:unbound /var/lib/unbound/root.key
+    fi
+    
+    # Configurar Pi-hole para usar Unbound
+    echo "127.0.0.1#5335" > /etc/pihole/setupVars.conf.tmp
+    if [[ -f "/etc/pihole/setupVars.conf" ]]; then
+        # Backup da configuração atual
+        cp /etc/pihole/setupVars.conf /etc/pihole/setupVars.conf.backup
+        
+        # Atualizar DNS upstream
+        sed -i 's/^PIHOLE_DNS_.*$/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
+        
+        # Remover DNS secundário se existir
+        sed -i '/^PIHOLE_DNS_2=/d' /etc/pihole/setupVars.conf
+    fi
+    
+    # Reiniciar serviços
+    systemctl restart unbound
+    sleep 2
+    systemctl restart pihole-FTL
+    
+    # Verificar se a integração funcionou
+    sleep 3
+    if systemctl is-active --quiet unbound && systemctl is-active --quiet pihole-FTL; then
+        dialog --title "Integração Configurada" --msgbox "Integração Pi-hole + Unbound configurada com sucesso!\n\nUnbound: porta 5335\nPi-hole: porta 53 (usando Unbound como upstream)" 10 70
+    else
+        dialog --title "Erro" --msgbox "Falha na configuração da integração!\nVerifique os logs dos serviços." 8 50
+    fi
+}
+
+# Gerenciar listas de bloqueio
+manage_blocklists() {
+    while true; do
+        local choice=$(dialog --title "Gerenciar Listas de Bloqueio" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Ver listas ativas" \
+            "2" "Adicionar lista personalizada" \
+            "3" "Remover lista" \
+            "4" "Atualizar todas as listas" \
+            "5" "Listas recomendadas" \
+            "6" "Estatísticas de bloqueio" \
+            "7" "Voltar" \
+            3>&1 1>&2 2>&3)
+        
+        case $choice in
+            1) show_active_blocklists ;;
+            2) add_custom_blocklist ;;
+            3) remove_blocklist ;;
+            4) update_all_blocklists ;;
+            5) recommended_blocklists ;;
+            6) show_blocking_stats ;;
+            7|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# Mostrar listas de bloqueio ativas
+show_active_blocklists() {
+    local blocklists_info="Listas de Bloqueio Ativas:\n\n"
+    
+    if [[ -f "/etc/pihole/adlists.list" ]]; then
+        local count=1
+        while IFS= read -r line; do
+            if [[ -n "$line" && ! "$line" =~ ^# ]]; then
+                blocklists_info+="$count. ${line:0:60}...\n"
+                ((count++))
+            fi
+        done < /etc/pihole/adlists.list
+        
+        if [[ $count -eq 1 ]]; then
+            blocklists_info+="Nenhuma lista ativa encontrada.\n"
+        fi
+    else
+        blocklists_info+="Arquivo de listas não encontrado.\n"
+    fi
+    
+    # Mostrar estatísticas
+    if command -v pihole &>/dev/null; then
+        local blocked_domains=$(pihole -q -exact | wc -l 2>/dev/null || echo "N/A")
+        blocklists_info+="\nTotal de domínios bloqueados: $blocked_domains\n"
+    fi
+    
+    dialog --title "Listas de Bloqueio" --msgbox "$blocklists_info" 20 80
 }
 
 # Função para executar testes do sistema
