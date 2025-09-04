@@ -37,19 +37,21 @@ cleanup_on_exit() {
     log_message "INFO" "Realizando limpeza de recursos..."
     # Remover arquivos temporários, se existirem
     rm -rf "/tmp/boxserver_*" 2>/dev/null || true
-    # Limpar tela e mostrar mensagem
-    clear
-    echo "Instalação interrompida ou concluída."
+    # Registrar o código de saída
+    local exit_code=$?
+    log_message "INFO" "Script finalizado com código de saída: $exit_code"
+    # Não mostrar mensagem na tela para evitar confusão
+    # A limpeza é feita silenciosamente
 }
 
 # Configurações globais de limpeza e tratamento de sinais
 trap 'cleanup_on_exit' EXIT
 trap 'error_exit $LINENO $?' ERR
-trap 'error_exit $LINENO 130 "Interrupção pelo usuário"' INT
-trap 'error_exit $LINENO 143 "Terminação solicitada"' TERM
+trap 'error_exit $LINENO 130 "Interrupção pelo usuário (SIGINT)"' INT
+trap 'error_exit $LINENO 143 "Terminação solicitada (SIGTERM)"' TERM
 trap 'error_exit $LINENO 129 "Sinal SIGHUP recebido"' HUP
 trap 'error_exit $LINENO 131 "Sinal SIGQUIT recebido"' QUIT
-trap 'error_exit $LINENO 141 "PIPE quebrado"' PIPE
+trap 'error_exit $LINENO 141 "PIPE quebrado (SIGPIPE)"' PIPE
 
 # Cores para output
 RED='\033[0;31m'
@@ -6413,16 +6415,83 @@ install_script_globally() {
         
         if cp "$0" "$install_path" && chmod +x "$install_path"; then
             dialog "${DIALOG_OPTS[@]}" --title "Instalação Concluída" --msgbox "Script instalado com sucesso!\n\nAgora você pode executá-lo a qualquer momento digitando:\n\nboxserver" 10 60
-            log_message "INFO" "Script instalado globalmente. Reiniciando a partir do novo local."
+            log_message "INFO" "Script instalado globalmente."
             
-            # Reiniciar o script a partir do novo local para continuar a execução
-            exec "$install_path"
+            # Verificar se já estamos executando do local correto
+            local current_path=""
+            if command -v realpath &>/dev/null; then
+                current_path=$(realpath "$0" 2>/dev/null)
+            else
+                current_path="$0"
+            fi
+            
+            if [[ -n "$current_path" && "$current_path" != "$install_path" ]]; then
+                log_message "INFO" "Reiniciando a partir do novo local: $install_path"
+                
+                # Verificar se o arquivo existe e é executável
+                if [[ -f "$install_path" && -x "$install_path" ]]; then
+                    # Verificar se o sistema de arquivos permite execução
+                    local fs_type=$(df "$install_path" 2>/dev/null | tail -1 | awk '{print $1}' | cut -d'/' -f3)
+                    if [[ -n "$fs_type" ]]; then
+                        local mount_opts=$(mount | grep "$fs_type" | head -1)
+                        if [[ -n "$mount_opts" && ! "$mount_opts" =~ "noexec" ]]; then
+                            # Reiniciar o script a partir do novo local para continuar a execução
+                            if exec "$install_path" "$@"; then
+                                log_message "INFO" "Script reiniciado com sucesso do novo local"
+                            else
+                                log_message "WARN" "Falha ao reiniciar script do novo local, continuando com o atual"
+                            fi
+                        else
+                            log_message "WARN" "Sistema de arquivos montado com 'noexec', não é possível reiniciar"
+                        fi
+                    else
+                        # Tentar reiniciar mesmo assim
+                        if exec "$install_path" "$@"; then
+                            log_message "INFO" "Script reiniciado com sucesso do novo local"
+                        else
+                            log_message "WARN" "Falha ao reiniciar script do novo local, continuando com o atual"
+                        fi
+                    fi
+                else
+                    log_message "ERROR" "Arquivo $install_path não existe ou não é executável"
+                fi
+            else
+                log_message "INFO" "Já estamos executando do local correto, continuando normalmente"
+            fi
         else
             dialog --title "Erro de Instalação" --msgbox "Falha ao instalar o script em $install_path.\n\nVerifique as permissões e tente novamente." 8 60
             log_message "ERROR" "Falha ao copiar ou dar permissão de execução para $install_path."
         fi
     else
         log_message "INFO" "Usuário optou por não instalar o script globalmente."
+    fi
+}
+
+# Função para verificar e instalar dialog se necessário
+check_dialog() {
+    log_message "INFO" "Verificando disponibilidade do dialog..."
+    
+    # Verificar se dialog está instalado
+    if ! command -v dialog &>/dev/null; then
+        log_message "WARN" "Dialog não encontrado, tentando instalar..."
+        
+        # Atualizar lista de pacotes
+        if ! apt-get update >/dev/null 2>&1; then
+            log_message "ERROR" "Falha ao atualizar lista de pacotes"
+            echo "Falha ao atualizar lista de pacotes. Verifique sua conexão de internet."
+            exit 1
+        fi
+        
+        # Instalar dialog
+        if ! apt-get install -y dialog >/dev/null 2>&1; then
+            log_message "ERROR" "Falha ao instalar dialog"
+            echo "Falha ao instalar dialog. Tente instalar manualmente com: apt-get install dialog"
+            exit 1
+        fi
+        
+        log_message "INFO" "Dialog instalado com sucesso"
+    else
+        log_message "INFO" "Dialog já está instalado"
     fi
 }
 
@@ -6460,8 +6529,14 @@ main() {
     BACKTITLE="Boxserver TUI v1.0 | IP: $SERVER_IP | Hardware: RK322x"
 
     # MELHORIA: Oferecer auto-instalação se o script não for o comando global
-    local script_path=$(realpath "$0")
-    if [[ "$script_path" != "/usr/local/bin/boxserver" ]]; then
+    local script_path=""
+    if command -v realpath &>/dev/null; then
+        script_path=$(realpath "$0" 2>/dev/null)
+    else
+        script_path="$0"
+    fi
+    
+    if [[ -n "$script_path" && "$script_path" != "/usr/local/bin/boxserver" ]]; then
         install_script_globally
     fi
     
@@ -6469,8 +6544,19 @@ main() {
     dialog "${DIALOG_OPTS[@]}" --title "Bem-vindo" --msgbox "Boxserver TUI Installer v1.0\n\nInstalador automatizado para MXQ-4K\n\nEste assistente irá guiá-lo através da\ninstalação e configuração do seu\nservidor doméstico.\n\nPressione ENTER para continuar..." 12 50
     
     # Iniciar menu principal
+    log_message "INFO" "Iniciando menu principal"
     main_menu
+    local menu_result=$?
+    log_message "INFO" "Menu principal encerrado com código: $menu_result"
+    
+    # Mensagem final
+    clear
+    echo "Obrigado por usar o Boxserver TUI Installer!"
+    echo "Para acessar novamente, execute: boxserver"
+    log_message "INFO" "Script concluído normalmente"
 }
 
 # Executar função principal
+log_message "INFO" "Iniciando execução do script principal"
 main "$@"
+log_message "INFO" "Script principal concluído normalmente"
