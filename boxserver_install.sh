@@ -934,7 +934,7 @@ reconfigure_service_integrations() {
                     enable_nginx_proxy "$other_app_id"
                 fi
             done
-            systemctl reload nginx
+            systemctl restart nginx
         fi
     done
 
@@ -1623,11 +1623,16 @@ EOF
 install_netdata() {
     log_message "INFO" "Instalando Netdata..."
     
-    # Instalar dependências
-    apt install curl libuv1-dev liblz4-dev libjudy-dev libssl-dev libelf-dev -y
+    # MELHORIA: Garantir um ambiente limpo antes da instalação
+    log_message "INFO" "Removendo instalações antigas do Netdata, se existirem..."
+    systemctl stop netdata 2>/dev/null
+    userdel netdata 2>/dev/null
+    rm -rf /etc/netdata /var/lib/netdata /var/cache/netdata /var/log/netdata
+    # MELHORIA: Instalar todas as dependências de compilação necessárias para o Netdata
+    apt install -y build-essential cmake git autoconf automake curl libuv1-dev liblz4-dev libjudy-dev libssl-dev libelf-dev uuid-dev zlib1g-dev
     
-    # Baixar e instalar Netdata
-    bash <(curl -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry
+    # Baixar e instalar Netdata com otimizações
+    bash <(curl -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry --no-updates
     
     if [ $? -ne 0 ]; then
         log_message "ERROR" "Falha na instalação do Netdata"
@@ -1650,11 +1655,6 @@ install_netdata() {
 [web]
     web files owner = root
     web files group = netdata
-    # Habilitar API para o dashboard
-    allow connections from = localhost *
-    allow dashboard from = localhost *
-    allow badges from = *
-    bind to = *
     
 [plugins]
     # Desabilitar plugins pesados
@@ -1681,7 +1681,7 @@ EOF
     
     # Verificar se está funcionando
     sleep 5
-    if systemctl is-active --quiet netdata; then
+    if systemctl is-active --quiet netdata && pgrep netdata >/dev/null; then
         log_message "INFO" "Netdata instalado com sucesso na porta 19999"
         log_message "INFO" "Acesse via: http://$SERVER_IP:19999"
     else
@@ -2265,10 +2265,10 @@ install_cloudflared() {
     apt-get install -f -y  # Corrigir dependências se necessário
     
     # Criar usuário para cloudflared
-    useradd -r -s /bin/false cloudflared
+    useradd -r -s /bin/false -d /var/lib/cloudflared cloudflared 2>/dev/null || true
     
     # Criar configuração básica
-    mkdir -p /etc/cloudflared
+    mkdir -p /etc/cloudflared /var/lib/cloudflared
     cat > /etc/cloudflared/config.yml << 'EOF'
 # Configuração Cloudflared para Boxserver
 # O ID do túnel e o arquivo de credenciais serão preenchidos automaticamente.
@@ -2295,14 +2295,14 @@ EOF
     # Criar serviço systemd
     cat > /etc/systemd/system/cloudflared.service << 'EOF'
 [Unit]
-Description=Cloudflare Tunnel
-After=network.target
+Description=Cloudflare Tunnel Agent
+After=network-online.target
 
 [Service]
 Type=simple
 User=cloudflared
 Group=cloudflared
-ExecStart=/usr/local/bin/cloudflared tunnel --config /etc/cloudflared/config.yml run
+ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/config.yml run
 Restart=on-failure
 RestartSec=5s
 
@@ -2310,6 +2310,7 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
     
+    chown -R cloudflared:cloudflared /etc/cloudflared /var/lib/cloudflared
     systemctl daemon-reload
     
     log_message "INFO" "Cloudflared instalado com sucesso"
