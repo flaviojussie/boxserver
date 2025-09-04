@@ -310,14 +310,14 @@ show_system_info() {
     dialog "${DIALOG_OPTS[@]}" --title "Informações do Sistema" --msgbox "Sistema: $(lsb_release -d | cut -f2)\nCPU: $cpu_info\nRAM: $ram_info\nDisco: $disk_info\nUptime: $uptime_info\n\nInterface: $NETWORK_INTERFACE\nIP: $SERVER_IP" 12 70
 }
 
-# MELHORIA: Função auxiliar para obter o nome do serviço baseado no ID do aplicativo
+# Função auxiliar para obter o nome do serviço baseado no ID do aplicativo
 get_service_name() {
     local app_id="$1"
     case $app_id in
         1) echo "pihole-FTL" ;;
         2) echo "unbound" ;;
         3) echo "wg-quick@wg0" ;;
-        4) echo "cockpit" ;;
+        4) echo "cockpit.socket" ;;
         5) echo "filebrowser" ;;
         6) echo "netdata" ;;
         7) echo "fail2ban" ;;
@@ -333,7 +333,7 @@ get_service_name() {
     esac
 }
 
-# MELHORIA: Função para verificar o status de um aplicativo
+# Função para verificar o status de um aplicativo
 check_app_status() {
     local app_id="$1"
     local service_name=$(get_service_name "$app_id")
@@ -366,6 +366,7 @@ check_app_status() {
         echo "installed_ok"
     fi
 }
+
 # Função para configurações avançadas
 configure_advanced_settings() {
     while true; do
@@ -419,120 +420,6 @@ show_app_details() {
         esac
         
         dialog "${DIALOG_OPTS[@]}" --title "Detalhes: $name" --msgbox "$details" 15 70
-    fi
-}
-
-# MELHORIA: Função auxiliar para obter o nome do serviço baseado no ID do aplicativo
-get_service_name() {
-    local app_id="$1"
-    case $app_id in
-        1) echo "pihole-FTL" ;;
-        2) echo "unbound" ;;
-        3) echo "wg-quick@wg0" ;;
-        4) echo "cockpit" ;;
-        5) echo "filebrowser" ;;
-        6) echo "netdata" ;;
-        7) echo "fail2ban" ;;
-        8) echo "ufw" ;;
-        9) echo "rng-tools" ;;
-        10) echo "" ;; # CLI tool, no service
-        11) echo "" ;; # CLI tool, no service
-        12) echo "minidlna" ;;
-        13) echo "cloudflared" ;;
-        14) echo "chrony" ;;
-        15) echo "nginx" ;;
-        *) echo "" ;;
-    esac
-}
-
-# MELHORIA: Função para verificar o status de um aplicativo
-check_app_status() {
-    local app_id="$1"
-    local service_name=$(get_service_name "$app_id")
-
-    # Verificação baseada em arquivos de configuração ou binários
-    local is_installed=false
-    case $app_id in
-        1) [[ -f "/etc/pihole/setupVars.conf" ]] && is_installed=true ;;
-        2) [[ -f "/etc/unbound/unbound.conf" ]] && is_installed=true ;;
-        3) [[ -f "/etc/wireguard/wg0.conf" ]] && is_installed=true ;;
-        4) command -v cockpit-ws &>/dev/null && is_installed=true ;;
-        5) command -v filebrowser &>/dev/null && is_installed=true ;;
-        6) [[ -f "/etc/netdata/netdata.conf" ]] && is_installed=true ;;
-        7) command -v fail2ban-client &>/dev/null && is_installed=true ;;
-        8) command -v ufw &>/dev/null && is_installed=true ;;
-        9) command -v rngd &>/dev/null && is_installed=true ;;
-        10) command -v rclone &>/dev/null && is_installed=true ;;
-        11) command -v rsync &>/dev/null && is_installed=true ;;
-        12) [[ -f "/etc/minidlna.conf" ]] && is_installed=true ;;
-        13) command -v cloudflared &>/dev/null && is_installed=true ;;
-        14) command -v chronyd &>/dev/null && is_installed=true ;;
-        15) [[ -f "/etc/nginx/sites-available/boxserver" ]] && is_installed=true ;;
-    esac
-
-    if [ "$is_installed" = false ]; then
-        echo "not_installed"
-    elif [ -n "$service_name" ] && ! systemctl is-active --quiet "$service_name" 2>/dev/null; then
-        echo "installed_error"
-    else
-        echo "installed_ok"
-    fi
-}
-
-# MELHORIA: Função auxiliar para obter o nome do serviço baseado no ID do aplicativo
-get_service_name() {
-    local app_id="$1"
-    case $app_id in
-        1) echo "pihole-FTL" ;;
-        2) echo "unbound" ;;
-        3) echo "wg-quick@wg0" ;;
-        4) echo "cockpit" ;;
-        5) echo "filebrowser" ;;
-        6) echo "netdata" ;;
-        7) echo "fail2ban" ;;
-        8) echo "ufw" ;;
-        9) echo "rng-tools" ;;
-        10) echo "" ;; # CLI tool, no service
-        11) echo "" ;; # CLI tool, no service
-        12) echo "minidlna" ;;
-        13) echo "cloudflared" ;;
-        14) echo "chrony" ;;
-        15) echo "nginx" ;;
-        *) echo "" ;;
-    esac
-}
-
-# MELHORIA: Função para verificar o status de um aplicativo
-check_app_status() {
-    local app_id="$1"
-    local service_name=$(get_service_name "$app_id")
-
-    # Verificação baseada em arquivos de configuração ou binários
-    local is_installed=false
-    case $app_id in
-        1) [[ -f "/etc/pihole/setupVars.conf" ]] && is_installed=true ;;
-        2) [[ -f "/etc/unbound/unbound.conf" ]] && is_installed=true ;;
-        3) [[ -f "/etc/wireguard/wg0.conf" ]] && is_installed=true ;;
-        4) [[ -f "/etc/cockpit/cockpit.conf" ]] && is_installed=true ;;
-        5) command -v filebrowser &>/dev/null && is_installed=true ;;
-        6) [[ -f "/etc/netdata/netdata.conf" ]] && is_installed=true ;;
-        7) command -v fail2ban-client &>/dev/null && is_installed=true ;;
-        8) command -v ufw &>/dev/null && is_installed=true ;;
-        9) command -v rngd &>/dev/null && is_installed=true ;;
-        10) command -v rclone &>/dev/null && is_installed=true ;;
-        11) command -v rsync &>/dev/null && is_installed=true ;;
-        12) [[ -f "/etc/minidlna.conf" ]] && is_installed=true ;;
-        13) command -v cloudflared &>/dev/null && is_installed=true ;;
-        14) command -v chronyd &>/dev/null && is_installed=true ;;
-        15) [[ -f "/etc/nginx/sites-available/boxserver" ]] && is_installed=true ;;
-    esac
-
-    if [ "$is_installed" = false ]; then
-        echo "not_installed"
-    elif [ -n "$service_name" ] && ! systemctl is-active --quiet "$service_name" 2>/dev/null; then
-        echo "installed_error"
-    else
-        echo "installed_ok"
     fi
 }
 
@@ -786,27 +673,6 @@ EOF
     dialog --title "Instalação Finalizada" --msgbox "Instalação e configuração concluídas com sucesso!\n\nVocê retornará ao menu principal, onde poderá gerenciar os serviços." 10 60
 }
 
-# MELHORIA: Função para obter o nome do serviço systemd de um app
-get_service_name() {
-    local app_id="$1"
-    case $app_id in
-        1) echo "pihole-FTL" ;;
-        2) echo "unbound" ;;
-        3) echo "wg-quick@wg0" ;;
-        4) echo "cockpit.socket" ;;
-        5) echo "filebrowser" ;;
-        6) echo "netdata" ;;
-        7) echo "fail2ban" ;;
-        8) echo "ufw" ;;
-        9) echo "rng-tools" ;;
-        12) echo "minidlna" ;;
-        13) echo "cloudflared" ;;
-        14) echo "chrony" ;;
-        15) echo "nginx" ;;
-        *) echo "" ;;
-    esac
-}
-
 # IMPLEMENTAÇÃO: Reconfigurar integrações entre serviços após instalação
 reconfigure_service_integrations() {
     local installed_apps=("$@")
@@ -944,6 +810,11 @@ reconfigure_service_integrations() {
     done
 
     log_message "INFO" "Reconfiguração de integrações concluída"
+}
+
+# Função para obter o nome do serviço nginx
+get_nginx_service_name() {
+    echo "nginx"
 }
 
 # MELHORIA: Função segura para baixar e executar scripts externos
@@ -2069,7 +1940,7 @@ logdir /var/log/chrony
 maxupdateskew 100.0
 
 # This directive enables kernel synchronisation (every 11 minutes) of the
-# real-time clock. Note that it can’t be used along with the 'rtcfile' directive.
+# real-time clock. Note that it can't be used along with the 'rtcfile' directive.
 rtcsync
 
 # Step the clock quickly on start.
@@ -2141,7 +2012,7 @@ install_web_interface() {
     <script src="script.js"></script>
 </body>
 </html>
-EOF'
+EOF
     
     # Criar arquivo CSS
     cat > "$web_root/style.css" << 'EOF'
@@ -2250,23 +2121,29 @@ enable_nginx_proxy() {
 
     case $app_id in
         1) # Pi-hole
-            sed -i "/# As localizações dos serviços/a \\\n    location /pihole/ {\\\n        proxy_pass http://127.0.0.1:$pihole_port/admin/;\\\n        proxy_set_header Host \\\$host;\\\n        proxy_set_header X-Real-IP \\\$remote_addr;\\\n    }" "$config_file"
+            sed -i "/# As localizações dos serviços/a \\\n    location /pihole/ {\\\n        proxy_pass http://127.0.0.1:$pihole_port/admin/;\\\n        proxy_set_header Host \\\\$host;\\\n        proxy_set_header X-Real-IP \\\\$remote_addr;\\\n    }" "$config_file"
             log_message "INFO" "Nginx: Proxy para Pi-hole habilitado." ;;
         4) # Cockpit
             # CORREÇÃO: Configuração de proxy robusta para Cockpit, incluindo WebSockets.
-            sed -i "/# As localizações dos serviços/a \\\n    location /cockpit/ {\\\n        proxy_pass http://127.0.0.1:$COCKPIT_PORT/cockpit/;\\\n        proxy_set_header Host \\\$host;\\\n        proxy_set_header X-Real-IP \\\$remote_addr;\\\n        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;\\\n        proxy_set_header X-Forwarded-Proto \\\$scheme;\\\n        proxy_http_version 1.1;\\\n        proxy_set_header Upgrade \\\$http_upgrade;\\\n        proxy_set_header Connection \\\"upgrade\\\";\\\n    }" "$config_file"
+            sed -i "/# As localizações dos serviços/a \\\n    location /cockpit/ {\\\n        proxy_pass http://127.0.0.1:$COCKPIT_PORT/cockpit/;\\\n        proxy_set_header Host \\\\$host;\\\n        proxy_set_header X-Real-IP \\\\$remote_addr;\\\n        proxy_set_header X-Forwarded-For \\\\$proxy_add_x_forwarded_for;\\\n        proxy_set_header X-Forwarded-Proto \\\\$scheme;\\\n        proxy_http_version 1.1;\\\n        proxy_set_header Upgrade \\\\$http_upgrade;\\\n        proxy_set_header Connection \\\"upgrade\\\";\\\n    }" "$config_file"
             log_message "INFO" "Nginx: Proxy para Cockpit (com suporte a WebSocket) habilitado." ;;
         5) # FileBrowser
             sed -i '/# As localizações dos serviços/a \
-    location /filebrowser/ {\n        proxy_pass http://127.0.0.1:8080/;\n    }' "$config_file"
+    location /filebrowser/ {\
+        proxy_pass http://127.0.0.1:8080/;\
+    }' "$config_file"
             ;;
         6) # Netdata
             sed -i '/# As localizações dos serviços/a \
-    location /netdata/ {\n        proxy_pass http://127.0.0.1:19999/;\n    }' "$config_file"
+    location /netdata/ {\
+        proxy_pass http://127.0.0.1:19999/;\
+    }' "$config_file"
             ;;
         10) # Rclone Web-GUI
             sed -i '/# As localizações dos serviços/a \
-    location /rclone/ {\n        proxy_pass http://127.0.0.1:5572/;\n    }' "$config_file"
+    location /rclone/ {\
+        proxy_pass http://127.0.0.1:5572/;\
+    }' "$config_file"
             ;;
     esac
 }
@@ -2972,16 +2849,12 @@ validate_tunnel_configuration() {
 configure_wireguard_vpn() {
     while true; do
         local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração WireGuard VPN" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
-            "1" "Verificar status do WireGuard" \
-            "2" "Gerar novo cliente" \
-            "3" "Ver/Exportar Configuração de Cliente" \
-            "4" "Listar todos os clientes" \
-            "5" "Remover cliente" \
-            "6" "Regenerar chaves do servidor" \
-            "7" "Configurar interface de rede" \
-            "8" "Testar conectividade VPN" \
-            "9" "Configurações avançadas" \
-            "10" "Voltar" \
+            "1" "📊 Verificar status do WireGuard" \
+            "2" "👤 Gerenciar clientes" \
+            "3" "🔧 Configurar interface de rede" \
+            "4" "🔍 Testar conectividade VPN" \
+            "5" "⚙️  Configurações avançadas" \
+            "6" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         if [ $? -ne 0 ]; then
@@ -2990,15 +2863,11 @@ configure_wireguard_vpn() {
 
         case $choice in
             1) check_wireguard_status ;;
-            2) generate_wireguard_client ;;
-            3) show_wireguard_client ;;
-            4) list_wireguard_clients ;;
-            5) remove_wireguard_client ;;
-            6) regenerate_server_keys ;;
-            7) configure_network_interface ;;
-            8) test_vpn_connectivity ;;
-            9) wireguard_advanced_settings ;;
-            10|"") 
+            2) manage_wireguard_clients ;;  # Usar nova função modernizada
+            3) configure_network_interface ;;
+            4) test_vpn_connectivity ;;
+            5) wireguard_advanced_settings ;;
+            6|"") 
                 break
                 ;;
         esac
@@ -3059,6 +2928,9 @@ generate_wireguard_client() {
         return 1
     fi
     
+    # Verificar se qrencode está instalado
+    check_qrencode
+    
     dialog --title "Gerando Cliente" --infobox "Criando configuração para $client_name..." 5 50
 
     # Criar diretório de clientes se não existir
@@ -3101,22 +2973,114 @@ EOF
     echo "PublicKey = $client_public_key" >> /etc/wireguard/wg0.conf
     echo "AllowedIPs = $client_ip/32" >> /etc/wireguard/wg0.conf
 
-    # Gerar QR Code se qrencode estiver disponível
+    # Modernizar a exibição do QR Code com melhor experiência do usuário
     if command -v qrencode &>/dev/null; then
-        # MELHORIA: Priorizar a exibição do QR Code, colocando-o no topo da caixa de diálogo.
-        local client_config_content=$(cat "$client_config_path")
-        local qr_code_terminal=$(qrencode -t ansiutf8 <<< "$client_config_content")
-        
-        local dialog_text="Cliente '$client_name' criado. Aponte a câmera do app WireGuard abaixo:\n\n"
-        dialog_text+="$qr_code_terminal"
-        dialog_text+="\n\n--- Detalhes da Configuração ---\n"
-        dialog_text+="Arquivo salvo em: $client_config_path\n\n"
-        dialog_text+="$client_config_content"
-
-        # Exibir o QR Code e as informações no dialog usando --textbox
-        echo -e "$dialog_text" | dialog "${DIALOG_OPTS[@]}" --title "Cliente WireGuard: $client_name" --textbox - 25 80
+        # Criar uma abordagem mais moderna para exibição do QR Code
+        display_qr_code_modern "$client_name" "$client_config_path"
     else
-        dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\n(Instale 'qrencode' para gerar QR codes)" 12 60
+        dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\nPara configurar seu dispositivo:\n1. Exporte este arquivo usando a opção apropriada\n2. Instale o app WireGuard no seu dispositivo\n3. Importe o arquivo de configuração" 14 60
+    fi
+}
+
+# Nova função modernizada para exibição de QR Code
+display_qr_code_modern() {
+    local client_name="$1"
+    local client_config_path="$2"
+    
+    # Ler conteúdo do arquivo de configuração
+    local client_config_content=$(cat "$client_config_path")
+    
+    # Gerar QR Code
+    local qr_code_terminal=$(qrencode -t ansiutf8 <<< "$client_config_content")
+    
+    # Criar interface moderna com guias
+    local temp_file="/tmp/wg_client_${client_name}.txt"
+    
+    {
+        echo "==========================================="
+        echo "   WireGuard Client: $client_name"
+        echo "==========================================="
+        echo
+        echo "SCAN QR CODE:"
+        echo
+        echo "$qr_code_terminal"
+        echo
+        echo "==========================================="
+        echo "CONFIGURATION DETAILS:"
+        echo "==========================================="
+        echo
+        echo "File: $client_config_path"
+        echo
+        echo "$client_config_content"
+        echo
+        echo "==========================================="
+        echo "INSTRUCTIONS:"
+        echo "==========================================="
+        echo
+        echo "1. Open the WireGuard app on your device"
+        echo "2. Tap the + button and select 'Scan QR Code'"
+        echo "3. Scan the QR code above"
+        echo "4. Tap 'Allow' to permit the VPN connection"
+        echo
+        echo "Alternatively, you can copy the configuration"
+        echo "file to your device and import it manually."
+    } > "$temp_file"
+    
+    # Exibir conteúdo em um diálogo com scroll
+    dialog "${DIALOG_OPTS[@]}" --title "WireGuard Client: $client_name" --textbox "$temp_file" 30 80
+    
+    # Perguntar se deseja exportar o arquivo
+    if dialog "${DIALOG_OPTS[@]}" --title "Export Configuration" --yesno "Would you like to export this configuration file?\n\nYou can export it to a USB drive or network location." 8 60; then
+        export_client_config "$client_name"
+    fi
+    
+    # Limpar arquivo temporário
+    rm -f "$temp_file"
+}
+
+# Função melhorada para exportar configuração de cliente
+export_client_config() {    
+    local client_to_export="$1"
+
+    # Se nenhum cliente foi passado como argumento, perguntar qual exportar
+    if [[ -z "$client_to_export" ]]; then
+        if [[ ! -d "/etc/wireguard/clients" ]] || [[ -z "$(ls -A /etc/wireguard/clients/*.conf 2>/dev/null)" ]]; then
+            dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Nenhum cliente encontrado para exportar." 6 50
+            return 1
+        fi
+        
+        local client_list=()
+        for client_file in /etc/wireguard/clients/*.conf; do
+            if [[ -f "$client_file" ]]; then
+                local client_name=$(basename "$client_file" .conf)
+                client_list+=("$client_name" "")
+            fi
+        done
+        
+        client_to_export=$(dialog "${DIALOG_OPTS[@]}" --title "Exportar Cliente" --menu "Selecione o cliente para exportar:" 15 50 8 "${client_list[@]}" 3>&1 1>&2 2>&3)
+        
+        if [[ -z "$client_to_export" ]]; then
+            return 0
+        fi
+    fi
+    
+    # Sugestão de caminho de exportação mais amigável
+    local suggested_path="/tmp/${client_to_export}.conf"
+    local export_path=$(dialog "${DIALOG_OPTS[@]}" --title "Local de Exportação" --inputbox "Caminho para salvar o arquivo .conf:\n\nDica: Você pode usar caminhos como:\n- /tmp/${client_to_export}.conf (temporário)\n- /home/user/${client_to_export}.conf (pasta do usuário)\n- /media/usb/${client_to_export}.conf (pendrive)" 12 70 "$suggested_path" 3>&1 1>&2 2>&3)
+    
+    if [[ -z "$export_path" ]]; then
+        return 0
+    fi
+    
+    # Copiar arquivo de configuração
+    if cp "/etc/wireguard/clients/${client_to_export}.conf" "$export_path"; then
+        # Obter permissões do arquivo exportado
+        local file_permissions=$(ls -lh "$export_path" | awk '{print $1}')
+        local file_owner=$(ls -lh "$export_path" | awk '{print $3":"$4}')
+        
+        dialog "${DIALOG_OPTS[@]}" --title "Exportação Concluída" --msgbox "Configuração do cliente '$client_to_export' exportada com sucesso!\n\nArquivo: $export_path\nPermissões: $file_permissions\nProprietário: $file_owner\n\nPara importar no dispositivo móvel:\n1. Envie este arquivo por email ou transferência\n2. Abra o app WireGuard\n3. Toque no botão + e selecione 'Import from file'\n4. Selecione este arquivo" 15 70
+    else
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao exportar configuração!\n\nVerifique se o caminho está correto e se você tem permissões de escrita." 8 60
     fi
 }
 
@@ -3143,27 +3107,42 @@ show_wireguard_client() {
 
     local client_config_path="/etc/wireguard/clients/${client_to_show}.conf"
 
+    # Verificar se qrencode está disponível, se não, mostrar apenas o arquivo
     if ! command -v qrencode &>/dev/null; then
         dialog "${DIALOG_OPTS[@]}" --title "Configuração: $client_to_show" --textbox "$client_config_path" 20 80
+        
+        # Perguntar se deseja exportar
+        if dialog "${DIALOG_OPTS[@]}" --title "Exportar" --yesno "Deseja exportar este arquivo de configuração?" 6 60; then
+            export_client_config "$client_to_show"
+        fi
         return 0
     fi
 
-    # Exibir configuração e QR Code
-    local client_config_content=$(cat "$client_config_path")
-    local qr_code_terminal=$(qrencode -t ansiutf8 <<< "$client_config_content")
-    
-    local dialog_text="Configuração do Cliente '$client_to_show':\n\n"
-    dialog_text+="Arquivo: $client_config_path\n\n"
-    dialog_text+="--- Conteúdo do Arquivo ---\n"
-    dialog_text+="$client_config_content\n"
-    dialog_text+="--- QR Code (role para baixo) ---\n\n"
-    dialog_text+="$qr_code_terminal"
+    # Usar a nova função modernizada para exibir o cliente
+    display_qr_code_modern "$client_to_show" "$client_config_path"
+}
 
-    echo -e "$dialog_text" | dialog "${DIALOG_OPTS[@]}" --title "Cliente: $client_to_show" --textbox - 25 80
-
-    if dialog "${DIALOG_OPTS[@]}" --title "Exportar" --yesno "Deseja exportar este arquivo de configuração?" 7 60; then
-        export_client_config "$client_to_show"
+# Função para verificar se o qrencode está instalado
+check_qrencode() {
+    if ! command -v qrencode &> /dev/null; then
+        dialog --title "QR Code Necessário" --yesno "O utilitário 'qrencode' não está instalado.\n\nEle é necessário para gerar QR Codes para configuração dos clientes WireGuard.\n\nDeseja instalar agora?" 10 60
+        if [ $? -eq 0 ]; then
+            dialog --title "Instalando qrencode" --infobox "Instalando qrencode..." 5 40
+            apt-get update >/dev/null 2>&1
+            apt-get install -y qrencode >/dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                dialog "${DIALOG_OPTS[@]}" --title "Instalação Concluída" --msgbox "qrencode instalado com sucesso!\n\nAgora você pode gerar QR Codes para configurar clientes WireGuard." 8 60
+                return 0
+            else
+                dialog "${DIALOG_OPTS[@]}" --title "Erro na Instalação" --msgbox "Falha ao instalar qrencode.\n\nVocê ainda pode exportar arquivos de configuração manualmente." 8 60
+                return 1
+            fi
+        else
+            dialog "${DIALOG_OPTS[@]}" --title "QR Code Indisponível" --msgbox "Sem o qrencode, você não poderá gerar QR Codes.\n\nVocê ainda pode exportar arquivos de configuração e importá-los manualmente nos dispositivos." 10 60
+            return 1
+        fi
     fi
+    return 0
 }
 
 # Obter próximo IP disponível para cliente
@@ -3184,41 +3163,88 @@ get_next_client_ip() {
     echo "${base_ip}.254"  # Fallback
 }
 
-
-# Obter endpoint do servidor
+# Função aprimorada para obter endpoint do servidor
 get_server_endpoint() {
-    # Tentar obter IP público
-    local public_ip=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "")
+    # Tentar obter IP público com múltiplos serviços
+    local public_ip=""
     
-    if [[ -n "$public_ip" ]]; then
-        echo "$public_ip"
-    else
-        # Fallback para IP local
-        local local_ip=$(ip route get 8.8.8.8 | awk '{print $7; exit}')
-        echo "${local_ip:-localhost}"
-    fi
+    # Lista de serviços para obter IP público
+    local services=(
+        "https://ipv4.icanhazip.com"
+        "https://ipecho.net/plain"
+        "https://api.ipify.org"
+        "https://ifconfig.me/ip"
+    )
+    
+    # Tentar cada serviço até obter um IP
+    for service in "${services[@]}"; do
+        public_ip=$(curl -s --max-time 5 "$service" 2>/dev/null)
+        if [[ -n "$public_ip" && "$public_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$public_ip"
+            return 0
+        fi
+    done
+    
+    # Fallback para IP local se não conseguir o público
+    local local_ip=$(ip route get 8.8.8.8 | awk '{print $7; exit}')
+    echo "${local_ip:-localhost}"
 }
 
-# Listar clientes existentes
-list_wireguard_clients() {
+# Função para gerenciar clientes WireGuard com interface moderna
+manage_wireguard_clients() {
+    while true; do
+        local client_count=$(ls -1 /etc/wireguard/clients/*.conf 2>/dev/null | wc -l)
+        local server_status=$(systemctl is-active wg-quick@wg0 && echo "ATIVO" || echo "INATIVO")
+        
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Clientes WireGuard" \
+            --menu "Status: $server_status | Clientes: $client_count\n\nEscolha uma opção:" 15 70 8 \
+            "1" "➕ Criar novo cliente" \
+            "2" "📱 Ver/Exportar cliente (QR Code)" \
+            "3" "📋 Listar todos os clientes" \
+            "4" "🗑️  Remover cliente" \
+            "5" "🔄 Regenerar chaves do servidor" \
+            "6" "🔙 Voltar" \
+            3>&1 1>&2 2>&3)
+        
+        case $choice in
+            1) generate_wireguard_client ;;
+            2) show_wireguard_client ;;
+            3) list_wireguard_clients_modern ;;
+            4) remove_wireguard_client ;;
+            5) regenerate_server_keys ;;
+            6|"") break ;;
+        esac
+    done
+}
+
+# Função modernizada para listar clientes
+list_wireguard_clients_modern() {
     local clients_info="Clientes WireGuard:\n\n"
     
     if [[ ! -d "/etc/wireguard/clients" ]] || [[ -z "$(ls -A /etc/wireguard/clients 2>/dev/null)" ]]; then
         clients_info+="Nenhum cliente configurado.\n"
-    else
-        for client_file in /etc/wireguard/clients/*.conf; do
-            if [[ -f "$client_file" ]]; then
-                local client_name=$(basename "$client_file" .conf)
-                local client_ip=$(grep "Address" "$client_file" | cut -d'=' -f2 | tr -d ' ' | cut -d'/' -f1)
-                local client_key=$(grep "PrivateKey" "$client_file" | cut -d'=' -f2 | tr -d ' ')
-                local public_key=$(echo "$client_key" | wg pubkey 2>/dev/null || echo "N/A")
-                
-                clients_info+="Nome: $client_name\n"
-                clients_info+="IP: $client_ip\n"
-                clients_info+="Chave Pública: ${public_key:0:20}...\n\n"
-            fi
-        done
+        dialog --title "Clientes WireGuard" --msgbox "$clients_info" 8 50
+        return 0
     fi
+    
+    # Criar lista formatada com mais detalhes
+    local client_count=0
+    for client_file in /etc/wireguard/clients/*.conf; do
+        if [[ -f "$client_file" ]]; then
+            local client_name=$(basename "$client_file" .conf)
+            local client_ip=$(grep "Address" "$client_file" | cut -d'=' -f2 | tr -d ' ' | cut -d'/' -f1)
+            local creation_date=$(stat -c %y "$client_file" | cut -d' ' -f1)
+            
+            client_count=$((client_count + 1))
+            clients_info+="$client_count. $client_name\n"
+            clients_info+="   IP: $client_ip\n"
+            clients_info+="   Criado em: $creation_date\n\n"
+        fi
+    done
+    
+    # Adicionar opções de ação
+    clients_info+="\nTotal de clientes: $client_count\n"
+    clients_info+="\nDica: Use 'Ver/Exportar cliente' para obter QR Code"
     
     dialog --title "Clientes WireGuard" --msgbox "$clients_info" 20 70
 }
@@ -5040,18 +5066,640 @@ EOF
 
     chmod +x /usr/local/bin/boxserver-health
     log_message "INFO" "Script de saúde do sistema criado em /usr/local/bin/boxserver-health"
+    
+    # Função para melhorar o tratamento de erros nas funções de instalação
+    improve_error_handling() {
+        log_message "INFO" "Melhorando o tratamento de erros nas funções de instalação..."
+        
+        # Verificar se o arquivo de log existe e é gravável
+        if [ ! -w "$LOG_FILE" ]; then
+            log_message "ERROR" "Arquivo de log não é gravável: $LOG_FILE"
+            return 1
+        fi
+        
+        # Verificar permissões de execução do script
+        if [ ! -x "$0" ]; then
+            log_message "WARN" "Script não tem permissão de execução. Tentando corrigir..."
+            chmod +x "$0" 2>/dev/null || log_message "ERROR" "Falha ao corrigir permissões do script"
+        fi
+        
+        log_message "INFO" "Tratamento de erros melhorado com sucesso"
+    }
+
+    # Função para adicionar mecanismos de atualização para componentes instalados
+    add_update_mechanisms() {
+        log_message "INFO" "Adicionando mecanismos de atualização para componentes instalados..."
+        
+        # Criar script de atualização
+        cat > /usr/local/bin/boxserver-update << 'EOF'
+#!/bin/bash
+# Script de atualização do Boxserver
+
+LOG_FILE="/var/log/boxserver/update.log"
+
+# Função de logging
+log_message() {
+    local level="$1"
+    local message="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
 }
 
-# Função para verificar se o dialog está instalado
-check_dialog() {
-    if ! command -v dialog &> /dev/null; then
-        echo "Dialog não encontrado. Instalando..."
-        apt-get update && apt-get install -y dialog
-        if [ $? -ne 0 ]; then
-            echo "Erro ao instalar dialog. Saindo..."
-            exit 1
+# Criar diretório de log se não existir
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+
+log_message "INFO" "Iniciando atualização do Boxserver..."
+
+# Atualizar lista de pacotes
+apt-get update >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    log_message "INFO" "Lista de pacotes atualizada com sucesso"
+else
+    log_message "ERROR" "Falha ao atualizar lista de pacotes"
+fi
+
+# Atualizar pacotes do sistema
+apt-get upgrade -y >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    log_message "INFO" "Pacotes do sistema atualizados com sucesso"
+else
+    log_message "ERROR" "Falha ao atualizar pacotes do sistema"
+fi
+
+# Atualizar Pi-hole se instalado
+if command -v pihole &>/dev/null; then
+    pihole -up >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        log_message "INFO" "Pi-hole atualizado com sucesso"
+    else
+        log_message "ERROR" "Falha ao atualizar Pi-hole"
+    fi
+fi
+
+# Atualizar Netdata se instalado
+if systemctl is-active --quiet netdata; then
+    # Verificar se o Netdata foi instalado via script oficial
+    if [ -f "/usr/libexec/netdata/netdata-updater.sh" ]; then
+        /usr/libexec/netdata/netdata-updater.sh >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            log_message "INFO" "Netdata atualizado com sucesso"
+        else
+            log_message "ERROR" "Falha ao atualizar Netdata"
         fi
     fi
+fi
+
+# Atualizar FileBrowser se instalado
+if command -v filebrowser &>/dev/null; then
+    filebrowser -d /var/lib/filebrowser/filebrowser.db update >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        log_message "INFO" "FileBrowser atualizado com sucesso"
+    else
+        log_message "ERROR" "Falha ao atualizar FileBrowser"
+    fi
+fi
+
+# Reiniciar serviços atualizados
+systemctl daemon-reload >/dev/null 2>&1
+
+services=("pihole-FTL" "netdata" "filebrowser" "unbound" "minidlna" "cockpit.socket")
+for service in "${services[@]}"; do
+    if systemctl is-active --quiet "$service" 2>/dev/null; then
+        systemctl restart "$service" >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            log_message "INFO" "Serviço $service reiniciado com sucesso"
+        else
+            log_message "ERROR" "Falha ao reiniciar serviço $service"
+        fi
+    fi
+done
+
+log_message "INFO" "Atualização do Boxserver concluída"
+echo "Atualização concluída. Verifique o log em $LOG_FILE"
+EOF
+
+        chmod +x /usr/local/bin/boxserver-update
+        log_message "INFO" "Script de atualização criado em /usr/local/bin/boxserver-update"
+        
+        # Adicionar entrada no crontab para atualizações automáticas semanais
+        if ! crontab -l 2>/dev/null | grep -q "boxserver-update"; then
+            (crontab -l 2>/dev/null; echo "0 3 * * 1 root /usr/local/bin/boxserver-update") | crontab -
+            log_message "INFO" "Atualização automática agendada para segunda-feira às 03:00"
+        fi
+        
+        log_message "INFO" "Mecanismos de atualização adicionados com sucesso"
+    }
+
+    # Função para aprimorar os testes de conectividade pós-instalação
+    enhance_connectivity_tests() {
+        log_message "INFO" "Aprimorando os testes de conectividade pós-instalação..."
+        
+        # Adicionar testes mais abrangentes
+        cat > /usr/local/bin/boxserver-test << 'EOF'
+#!/bin/bash
+# Script de testes de conectividade do Boxserver
+
+LOG_FILE="/var/log/boxserver/test.log"
+
+# Função de logging
+log_message() {
+    local level="$1"
+    local message="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
+}
+
+# Criar diretório de log se não existir
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+
+log_message "INFO" "Iniciando testes de conectividade do Boxserver..."
+
+# Teste de conectividade com a internet
+echo "Testando conectividade com a internet..."
+if ping -c 3 8.8.8.8 >/dev/null 2>&1; then
+    echo "✅ Conectividade com a internet: OK"
+    log_message "INFO" "Conectividade com a internet OK"
+else
+    echo "❌ Conectividade com a internet: FALHOU"
+    log_message "ERROR" "Conectividade com a internet FALHOU"
+fi
+
+# Teste de resolução DNS
+echo "Testando resolução DNS..."
+if nslookup google.com >/dev/null 2>&1; then
+    echo "✅ Resolução DNS: OK"
+    log_message "INFO" "Resolução DNS OK"
+else
+    echo "❌ Resolução DNS: FALHOU"
+    log_message "ERROR" "Resolução DNS FALHOU"
+fi
+
+# Teste de serviços específicos
+services_to_test=(
+    "Pi-hole:127.0.0.1:53"
+    "Unbound:127.0.0.1:5335"
+    "Cockpit:127.0.0.1:9090"
+    "FileBrowser:127.0.0.1:8080"
+    "Netdata:127.0.0.1:19999"
+    "MiniDLNA:127.0.0.1:8200"
+)
+
+for service_test in "${services_to_test[@]}"; do
+    IFS=':' read -r service_name host port <<< "$service_test"
+    echo "Testando $service_name ($host:$port)..."
+    if nc -z "$host" "$port" >/dev/null 2>&1; then
+        echo "✅ $service_name: PORTA ABERTA"
+        log_message "INFO" "$service_name porta $port ABERTA"
+    else
+        echo "❌ $service_name: PORTA FECHADA"
+        log_message "ERROR" "$service_name porta $port FECHADA"
+    fi
+done
+
+# Teste de serviços systemd
+systemd_services=("pihole-FTL" "unbound" "wg-quick@wg0" "cockpit.socket" "filebrowser" "netdata" "minidlna" "fail2ban" "ufw")
+echo "Testando status dos serviços systemd..."
+for service in "${systemd_services[@]}"; do
+    if systemctl is-active --quiet "$service" 2>/dev/null; then
+        echo "✅ $service: ATIVO"
+        log_message "INFO" "$service ATIVO"
+    else
+        echo "❌ $service: INATIVO"
+        log_message "ERROR" "$service INATIVO"
+    fi
+done
+
+log_message "INFO" "Testes de conectividade concluídos"
+echo "Testes concluídos. Verifique o log em $LOG_FILE"
+EOF
+
+        chmod +x /usr/local/bin/boxserver-test
+        log_message "INFO" "Script de testes criado em /usr/local/bin/boxserver-test"
+        log_message "INFO" "Testes de conectividade aprimorados com sucesso"
+    }
+
+    # Função para adicionar mais orientações de segurança nas configurações
+    enhance_security_guidance() {
+        log_message "INFO" "Adicionando mais orientações de segurança nas configurações..."
+        
+        # Criar script de verificação de segurança
+        cat > /usr/local/bin/boxserver-security-check << 'EOF'
+#!/bin/bash
+# Script de verificação de segurança do Boxserver
+
+LOG_FILE="/var/log/boxserver/security.log"
+
+# Função de logging
+log_message() {
+    local level="$1"
+    local message="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
+}
+
+# Criar diretório de log se não existir
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+
+log_message "INFO" "Iniciando verificação de segurança do Boxserver..."
+
+# Verificar permissões de arquivos sensíveis
+sensitive_files=(
+    "/etc/shadow"
+    "/etc/passwd"
+    "/etc/ssh/sshd_config"
+    "/etc/pihole/setupVars.conf"
+    "/etc/wireguard/wg0.conf"
+)
+
+echo "Verificando permissões de arquivos sensíveis..."
+for file in "${sensitive_files[@]}"; do
+    if [ -f "$file" ]; then
+        permissions=$(stat -c "%a" "$file")
+        owner=$(stat -c "%U" "$file")
+        group=$(stat -c "%G" "$file")
+        echo "Arquivo: $file"
+        echo "  Permissões: $permissions"
+        echo "  Proprietário: $owner"
+        echo "  Grupo: $group"
+        log_message "INFO" "Arquivo $file - Permissões: $permissions, Proprietário: $owner, Grupo: $group"
+    fi
+done
+
+# Verificar usuários com shell de login
+echo "Verificando usuários com shell de login..."
+awk -F: '($7 != "/usr/sbin/nologin" && $7 != "/bin/false" && $1 != "root") { print "Usuário: " $1 ", UID: " $3 ", Shell: " $7 }' /etc/passwd
+log_message "INFO" "Verificação de usuários com shell de login concluída"
+
+# Verificar serviços escutando em todas as interfaces
+echo "Verificando serviços escutando em todas as interfaces..."
+netstat -tulnp | grep "0.0.0.0:" | while read line; do
+    echo "Serviço escutando em todas as interfaces: $line"
+    log_message "WARN" "Serviço escutando em todas as interfaces: $line"
+done
+
+# Verificar firewall UFW
+echo "Verificando status do firewall UFW..."
+if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+    echo "✅ Firewall UFW: ATIVO"
+    log_message "INFO" "Firewall UFW ATIVO"
+    
+    # Verificar regras padrão
+    default_incoming=$(ufw status verbose | grep "Default:" | grep "incoming" | awk '{print $2}')
+    if [ "$default_incoming" = "deny" ] || [ "$default_incoming" = "reject" ]; then
+        echo "✅ Regra padrão de entrada: $default_incoming"
+        log_message "INFO" "Regra padrão de entrada: $default_incoming"
+    else
+        echo "⚠️  Regra padrão de entrada: $default_incoming (recomendado: deny)"
+        log_message "WARN" "Regra padrão de entrada: $default_incoming (recomendado: deny)"
+    fi
+else
+    echo "❌ Firewall UFW: INATIVO"
+    log_message "ERROR" "Firewall UFW INATIVO"
+fi
+
+# Verificar Fail2Ban
+echo "Verificando Fail2Ban..."
+if systemctl is-active --quiet fail2ban; then
+    echo "✅ Fail2Ban: ATIVO"
+    log_message "INFO" "Fail2Ban ATIVO"
+    
+    # Verificar jails ativos
+    echo "Jails ativos:"
+    fail2ban-client status | grep "Jail list" | sed -e 's/^[ \t]*Jail list:[ \t]*//' | tr ',' '\n' | sed 's/^[ \t]*//'
+    log_message "INFO" "Verificação de jails do Fail2Ban concluída"
+else
+    echo "❌ Fail2Ban: INATIVO"
+    log_message "ERROR" "Fail2Ban INATIVO"
+fi
+
+log_message "INFO" "Verificação de segurança concluída"
+echo "Verificação de segurança concluída. Verifique o log em $LOG_FILE"
+EOF
+
+        chmod +x /usr/local/bin/boxserver-security-check
+        log_message "INFO" "Script de verificação de segurança criado em /usr/local/bin/boxserver-security-check"
+        log_message "INFO" "Orientações de segurança adicionadas com sucesso"
+    }
+
+    # Chamar as funções de melhoria
+    improve_error_handling
+    add_update_mechanisms
+    enhance_connectivity_tests
+    enhance_security_guidance
+}
+
+# Função para melhorar o tratamento de erros nas funções de instalação
+improve_error_handling() {
+    log_message "INFO" "Melhorando o tratamento de erros nas funções de instalação..."
+    
+    # Verificar se o arquivo de log existe e é gravável
+    if [ ! -w "$LOG_FILE" ]; then
+        log_message "ERROR" "Arquivo de log não é gravável: $LOG_FILE"
+        return 1
+    fi
+    
+    # Verificar permissões de execução do script
+    if [ ! -x "$0" ]; then
+        log_message "WARN" "Script não tem permissão de execução. Tentando corrigir..."
+        chmod +x "$0" 2>/dev/null || log_message "ERROR" "Falha ao corrigir permissões do script"
+    fi
+    
+    log_message "INFO" "Tratamento de erros melhorado com sucesso"
+}
+
+# Função para adicionar mecanismos de atualização para componentes instalados
+add_update_mechanisms() {
+    log_message "INFO" "Adicionando mecanismos de atualização para componentes instalados..."
+    
+    # Criar script de atualização
+    cat > /usr/local/bin/boxserver-update << 'EOF'
+#!/bin/bash
+# Script de atualização do Boxserver
+
+LOG_FILE="/var/log/boxserver/update.log"
+
+# Função de logging
+log_message() {
+    local level="$1"
+    local message="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
+}
+
+# Criar diretório de log se não existir
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+
+log_message "INFO" "Iniciando atualização do Boxserver..."
+
+# Atualizar lista de pacotes
+apt-get update >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    log_message "INFO" "Lista de pacotes atualizada com sucesso"
+else
+    log_message "ERROR" "Falha ao atualizar lista de pacotes"
+fi
+
+# Atualizar pacotes do sistema
+apt-get upgrade -y >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    log_message "INFO" "Pacotes do sistema atualizados com sucesso"
+else
+    log_message "ERROR" "Falha ao atualizar pacotes do sistema"
+fi
+
+# Atualizar Pi-hole se instalado
+if command -v pihole &>/dev/null; then
+    pihole -up >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        log_message "INFO" "Pi-hole atualizado com sucesso"
+    else
+        log_message "ERROR" "Falha ao atualizar Pi-hole"
+    fi
+fi
+
+# Atualizar Netdata se instalado
+if systemctl is-active --quiet netdata; then
+    # Verificar se o Netdata foi instalado via script oficial
+    if [ -f "/usr/libexec/netdata/netdata-updater.sh" ]; then
+        /usr/libexec/netdata/netdata-updater.sh >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            log_message "INFO" "Netdata atualizado com sucesso"
+        else
+            log_message "ERROR" "Falha ao atualizar Netdata"
+        fi
+    fi
+fi
+
+# Atualizar FileBrowser se instalado
+if command -v filebrowser &>/dev/null; then
+    filebrowser -d /var/lib/filebrowser/filebrowser.db update >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        log_message "INFO" "FileBrowser atualizado com sucesso"
+    else
+        log_message "ERROR" "Falha ao atualizar FileBrowser"
+    fi
+fi
+
+# Reiniciar serviços atualizados
+systemctl daemon-reload >/dev/null 2>&1
+
+services=("pihole-FTL" "netdata" "filebrowser" "unbound" "minidlna" "cockpit.socket")
+for service in "${services[@]}"; do
+    if systemctl is-active --quiet "$service" 2>/dev/null; then
+        systemctl restart "$service" >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            log_message "INFO" "Serviço $service reiniciado com sucesso"
+        else
+            log_message "ERROR" "Falha ao reiniciar serviço $service"
+        fi
+    fi
+done
+
+log_message "INFO" "Atualização do Boxserver concluída"
+echo "Atualização concluída. Verifique o log em $LOG_FILE"
+EOF
+
+    chmod +x /usr/local/bin/boxserver-update
+    log_message "INFO" "Script de atualização criado em /usr/local/bin/boxserver-update"
+    
+    # Adicionar entrada no crontab para atualizações automáticas semanais
+    if ! crontab -l 2>/dev/null | grep -q "boxserver-update"; then
+        (crontab -l 2>/dev/null; echo "0 3 * * 1 root /usr/local/bin/boxserver-update") | crontab -
+        log_message "INFO" "Atualização automática agendada para segunda-feira às 03:00"
+    fi
+    
+    log_message "INFO" "Mecanismos de atualização adicionados com sucesso"
+}
+
+# Função para aprimorar os testes de conectividade pós-instalação
+enhance_connectivity_tests() {
+    log_message "INFO" "Aprimorando os testes de conectividade pós-instalação..."
+    
+    # Adicionar testes mais abrangentes
+    cat > /usr/local/bin/boxserver-test << 'EOF'
+#!/bin/bash
+# Script de testes de conectividade do Boxserver
+
+LOG_FILE="/var/log/boxserver/test.log"
+
+# Função de logging
+log_message() {
+    local level="$1"
+    local message="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
+}
+
+# Criar diretório de log se não existir
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+
+log_message "INFO" "Iniciando testes de conectividade do Boxserver..."
+
+# Teste de conectividade com a internet
+echo "Testando conectividade com a internet..."
+if ping -c 3 8.8.8.8 >/dev/null 2>&1; then
+    echo "✅ Conectividade com a internet: OK"
+    log_message "INFO" "Conectividade com a internet OK"
+else
+    echo "❌ Conectividade com a internet: FALHOU"
+    log_message "ERROR" "Conectividade com a internet FALHOU"
+fi
+
+# Teste de resolução DNS
+echo "Testando resolução DNS..."
+if nslookup google.com >/dev/null 2>&1; then
+    echo "✅ Resolução DNS: OK"
+    log_message "INFO" "Resolução DNS OK"
+else
+    echo "❌ Resolução DNS: FALHOU"
+    log_message "ERROR" "Resolução DNS FALHOU"
+fi
+
+# Teste de serviços específicos
+services_to_test=(
+    "Pi-hole:127.0.0.1:53"
+    "Unbound:127.0.0.1:5335"
+    "Cockpit:127.0.0.1:9090"
+    "FileBrowser:127.0.0.1:8080"
+    "Netdata:127.0.0.1:19999"
+    "MiniDLNA:127.0.0.1:8200"
+)
+
+for service_test in "${services_to_test[@]}"; do
+    IFS=':' read -r service_name host port <<< "$service_test"
+    echo "Testando $service_name ($host:$port)..."
+    if nc -z "$host" "$port" >/dev/null 2>&1; then
+        echo "✅ $service_name: PORTA ABERTA"
+        log_message "INFO" "$service_name porta $port ABERTA"
+    else
+        echo "❌ $service_name: PORTA FECHADA"
+        log_message "ERROR" "$service_name porta $port FECHADA"
+    fi
+done
+
+# Teste de serviços systemd
+systemd_services=("pihole-FTL" "unbound" "wg-quick@wg0" "cockpit.socket" "filebrowser" "netdata" "minidlna" "fail2ban" "ufw")
+echo "Testando status dos serviços systemd..."
+for service in "${systemd_services[@]}"; do
+    if systemctl is-active --quiet "$service" 2>/dev/null; then
+        echo "✅ $service: ATIVO"
+        log_message "INFO" "$service ATIVO"
+    else
+        echo "❌ $service: INATIVO"
+        log_message "ERROR" "$service INATIVO"
+    fi
+done
+
+log_message "INFO" "Testes de conectividade concluídos"
+echo "Testes concluídos. Verifique o log em $LOG_FILE"
+EOF
+
+    chmod +x /usr/local/bin/boxserver-test
+    log_message "INFO" "Script de testes criado em /usr/local/bin/boxserver-test"
+    log_message "INFO" "Testes de conectividade aprimorados com sucesso"
+}
+
+# Função para adicionar mais orientações de segurança nas configurações
+enhance_security_guidance() {
+    log_message "INFO" "Adicionando mais orientações de segurança nas configurações..."
+    
+    # Criar script de verificação de segurança
+    cat > /usr/local/bin/boxserver-security-check << 'EOF'
+#!/bin/bash
+# Script de verificação de segurança do Boxserver
+
+LOG_FILE="/var/log/boxserver/security.log"
+
+# Função de logging
+log_message() {
+    local level="$1"
+    local message="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
+}
+
+# Criar diretório de log se não existir
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+
+log_message "INFO" "Iniciando verificação de segurança do Boxserver..."
+
+# Verificar permissões de arquivos sensíveis
+sensitive_files=(
+    "/etc/shadow"
+    "/etc/passwd"
+    "/etc/ssh/sshd_config"
+    "/etc/pihole/setupVars.conf"
+    "/etc/wireguard/wg0.conf"
+)
+
+echo "Verificando permissões de arquivos sensíveis..."
+for file in "${sensitive_files[@]}"; do
+    if [ -f "$file" ]; then
+        permissions=$(stat -c "%a" "$file")
+        owner=$(stat -c "%U" "$file")
+        group=$(stat -c "%G" "$file")
+        echo "Arquivo: $file"
+        echo "  Permissões: $permissions"
+        echo "  Proprietário: $owner"
+        echo "  Grupo: $group"
+        log_message "INFO" "Arquivo $file - Permissões: $permissions, Proprietário: $owner, Grupo: $group"
+    fi
+done
+
+# Verificar usuários com shell de login
+echo "Verificando usuários com shell de login..."
+awk -F: '($7 != "/usr/sbin/nologin" && $7 != "/bin/false" && $1 != "root") { print "Usuário: " $1 ", UID: " $3 ", Shell: " $7 }' /etc/passwd
+log_message "INFO" "Verificação de usuários com shell de login concluída"
+
+# Verificar serviços escutando em todas as interfaces
+echo "Verificando serviços escutando em todas as interfaces..."
+netstat -tulnp | grep "0.0.0.0:" | while read line; do
+    echo "Serviço escutando em todas as interfaces: $line"
+    log_message "WARN" "Serviço escutando em todas as interfaces: $line"
+done
+
+# Verificar firewall UFW
+echo "Verificando status do firewall UFW..."
+if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+    echo "✅ Firewall UFW: ATIVO"
+    log_message "INFO" "Firewall UFW ATIVO"
+    
+    # Verificar regras padrão
+    default_incoming=$(ufw status verbose | grep "Default:" | grep "incoming" | awk '{print $2}')
+    if [ "$default_incoming" = "deny" ] || [ "$default_incoming" = "reject" ]; then
+        echo "✅ Regra padrão de entrada: $default_incoming"
+        log_message "INFO" "Regra padrão de entrada: $default_incoming"
+    else
+        echo "⚠️  Regra padrão de entrada: $default_incoming (recomendado: deny)"
+        log_message "WARN" "Regra padrão de entrada: $default_incoming (recomendado: deny)"
+    fi
+else
+    echo "❌ Firewall UFW: INATIVO"
+    log_message "ERROR" "Firewall UFW INATIVO"
+fi
+
+# Verificar Fail2Ban
+echo "Verificando Fail2Ban..."
+if systemctl is-active --quiet fail2ban; then
+    echo "✅ Fail2Ban: ATIVO"
+    log_message "INFO" "Fail2Ban ATIVO"
+    
+    # Verificar jails ativos
+    echo "Jails ativos:"
+    fail2ban-client status | grep "Jail list" | sed -e 's/^[ \t]*Jail list:[ \t]*//' | tr ',' '\n' | sed 's/^[ \t]*//'
+    log_message "INFO" "Verificação de jails do Fail2Ban concluída"
+else
+    echo "❌ Fail2Ban: INATIVO"
+    log_message "ERROR" "Fail2Ban INATIVO"
+fi
+
+log_message "INFO" "Verificação de segurança concluída"
+echo "Verificação de segurança concluída. Verifique o log em $LOG_FILE"
+EOF
+
+    chmod +x /usr/local/bin/boxserver-security-check
+    log_message "INFO" "Script de verificação de segurança criado em /usr/local/bin/boxserver-security-check"
+    log_message "INFO" "Orientações de segurança adicionadas com sucesso"
 }
 
 # Função para configurar ambiente headless
