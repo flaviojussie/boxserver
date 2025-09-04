@@ -93,13 +93,11 @@ check_system_resources() {
     
     # MELHORIA: Detecção genérica de hardware RK322x
     local board_info=""
-    if [ -f /proc/device-tree/model ]; then
-        board_info=$(cat /proc/device-tree/model)
-    elif [ -f /sys/firmware/devicetree/base/model ]; then
-        board_info=$(cat /sys/firmware/devicetree/base/model)
-    fi
+    board_info=$(cat /proc/device-tree/model 2>/dev/null || cat /sys/firmware/devicetree/base/model 2>/dev/null)
     
     local rk322x_detected=false
+    # A detecção agora verifica o conteúdo de 'board_info' OU faz um fallback para /proc/cpuinfo
+    # O 'grep' só é executado se 'board_info' estiver vazio, tornando o processo mais eficiente.
     if [[ "$board_info" =~ "rk322x" ]] || [[ "$board_info" =~ "rk3229" ]] || grep -q -E "rk322x|rk3229" /proc/cpuinfo 2>/dev/null; then
         rk322x_detected=true
         log_message "INFO" "Hardware RK322x/RK3229 detectado. Informações da placa: $board_info"
