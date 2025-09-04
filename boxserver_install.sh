@@ -935,7 +935,8 @@ reconfigure_service_integrations() {
                     enable_nginx_proxy "$other_app_id"
                 fi
             done
-            systemctl restart nginx
+            local nginx_service=$(get_nginx_service_name)
+            systemctl restart "$nginx_service"
         fi
     done
 
@@ -2230,9 +2231,9 @@ EOF
     # Habilitar o site e remover o padrão
     ln -sf /etc/nginx/sites-available/boxserver /etc/nginx/sites-enabled/
     rm -f /etc/nginx/sites-enabled/default
-
-    systemctl enable nginx
-    systemctl restart nginx
+    local nginx_service=$(get_nginx_service_name)
+    systemctl enable "$nginx_service"
+    systemctl restart "$nginx_service"
 
     log_message "INFO" "Interface Web instalada. Acesse em http://$SERVER_IP"
 }
@@ -2241,6 +2242,7 @@ EOF
 enable_nginx_proxy() {
     local app_id="$1"
     local pihole_port=${PIHOLE_PORT_OVERRIDE:-80}
+    local nginx_service=$(get_nginx_service_name)
     local config_file="/etc/nginx/sites-available/boxserver"
 
     case $app_id in
@@ -2249,7 +2251,7 @@ enable_nginx_proxy() {
             log_message "INFO" "Nginx: Proxy para Pi-hole habilitado." ;;
         4) # Cockpit
             # CORREÇÃO: Configuração de proxy robusta para Cockpit, incluindo WebSockets.
-            sed -i '/# As localizações dos serviços/a \    location /cockpit/ {\n        proxy_pass http://127.0.0.1:9090/cockpit/;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection "upgrade";\n    }' "$config_file"
+            sed -i "/# As localizações dos serviços/a \\\n    location /cockpit/ {\\\n        proxy_pass http://127.0.0.1:$COCKPIT_PORT/cockpit/;\\\n        proxy_set_header Host \\\$host;\\\n        proxy_set_header X-Real-IP \\\$remote_addr;\\\n        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;\\\n        proxy_set_header X-Forwarded-Proto \\\$scheme;\\\n        proxy_http_version 1.1;\\\n        proxy_set_header Upgrade \\\$http_upgrade;\\\n        proxy_set_header Connection \\\"upgrade\\\";\\\n    }" "$config_file"
             log_message "INFO" "Nginx: Proxy para Cockpit (com suporte a WebSocket) habilitado." ;;
         5) # FileBrowser
             sed -i '/# As localizações dos serviços/a \
@@ -2329,8 +2331,8 @@ Type=simple
 User=cloudflared
 Group=cloudflared
 ExecStart=/usr/local/bin/cloudflared --config /etc/cloudflared/config.yml --no-autoupdate tunnel run
-Restart=on-failure
-RestartSec=5s
+Restart=always
+RestartSec=10s
 
 [Install]
 WantedBy=multi-user.target
@@ -4479,6 +4481,9 @@ configure_apps_menu() {
         if [[ "$(check_app_status 10)" != "not_installed" ]]; then
             menu_items+=("5" "Configurar Rclone")
         fi
+        if [[ "$(check_app_status 13)" != "not_installed" ]]; then
+            menu_items+=("6" "Configurar Cloudflare Tunnel")
+        fi
 
         if [ ${#menu_items[@]} -eq 0 ]; then
             dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" --msgbox "Nenhum aplicativo configurável foi instalado ainda." 8 60
@@ -4497,6 +4502,7 @@ configure_apps_menu() {
             3) configure_netdata ;;
             4) configure_minidlna ;;
             5) configure_rclone_service ;;
+            6) configure_cloudflare_tunnel ;;
         esac
     done
 }
