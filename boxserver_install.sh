@@ -2979,6 +2979,10 @@ configure_wireguard_vpn() {
             "10" "Voltar" \
             3>&1 1>&2 2>&3)
         
+        if [ $? -ne 0 ]; then
+            break
+        fi
+
         case $choice in
             1) check_wireguard_status ;;
             2) generate_wireguard_client ;;
@@ -3746,6 +3750,10 @@ configure_netdata() {
             "8" "Voltar" \
             3>&1 1>&2 2>&3)
         
+        if [ $? -ne 0 ]; then
+            break
+        fi
+
         case $choice in
             1) check_netdata_status ;;
             2) configure_netdata_plugins ;;
@@ -3774,6 +3782,10 @@ configure_filebrowser() {
             "9" "Voltar" \
             3>&1 1>&2 2>&3)
         
+        if [ $? -ne 0 ]; then
+            break
+        fi
+
         case $choice in
             1) check_filebrowser_status ;;
             2) manage_filebrowser_users ;;
@@ -3803,6 +3815,10 @@ configure_minidlna() {
             "9" "Voltar" \
             3>&1 1>&2 2>&3)
         
+        if [ $? -ne 0 ]; then
+            break
+        fi
+
         case $choice in
             1) check_minidlna_status ;;
             2) configure_minidlna_dirs ;;
