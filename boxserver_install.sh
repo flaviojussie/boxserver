@@ -9,7 +9,7 @@
 # Versão: 1.0
 # Data: $(date +%Y-%m-%d)
 #
-
+#
 # Configurações globais do script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="/var/log/boxserver"
@@ -64,6 +64,7 @@ declare -A APPS=(
     [12]="MiniDLNA|Servidor de mídia|Porta 8200"
     [13]="Cloudflared|Tunnel Cloudflare|CLI"
     [14]="Chrony|Sincronização de tempo (NTP)|Serviço em background"
+    [15]="Interface Web|Dashboard unificado com Nginx|Porta 80"
 )
 
 # MELHORIA: Função para logging com modo silencioso
@@ -257,6 +258,20 @@ optimize_for_nand() {
     log_message "INFO" "Caches de memória limpos"
 }
 
+# MELHORIA: Função para criar e configurar swap file otimizado para NAND
+create_swap_file() {
+    if [ -f /swapfile ]; then
+        log_message "INFO" "Arquivo de swap já existe. Ignorando."
+        return
+    fi
+    log_message "INFO" "Criando arquivo de swap de 512MB para estabilidade do sistema..."
+    fallocate -l 512M /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab
+}
+
 # MELHORIA: Função para limitar memória dos serviços RK322x
 limit_service_memory() {
     local service_name="$1"
@@ -363,6 +378,8 @@ run_system_checks() {
         # Otimizar para NAND 8GB
         optimize_for_nand
         # Aplicar limites de memória para 1GB DDR3
+        # Criar swap file para estabilidade
+        create_swap_file
         apply_rk3229_memory_limits
         dialog --title "Otimização RK3229" --msgbox "Sistema otimizado para RK3229 R329Q V3.0!\n\n• NAND 8GB otimizado\n• 1GB DDR3 gerenciado\n• Cortex-A7 otimizado" 8 50
     else
@@ -370,6 +387,7 @@ run_system_checks() {
         optimize_for_nand
         apply_rk322x_memory_limits
         dialog --title "Otimização Genérica" --msgbox "Sistema otimizado para MXQ-4K TV Box RK322x!\n\n• NAND otimizado\n• Memória limitada\n• I/O otimizado" 8 50
+        create_swap_file
     fi
 }
 
@@ -383,6 +401,60 @@ show_system_info() {
     dialog --title "Informações do Sistema" --msgbox "Sistema: $(lsb_release -d | cut -f2)\nCPU: $cpu_info\nRAM: $ram_info\nDisco: $disk_info\nUptime: $uptime_info\n\nInterface: $NETWORK_INTERFACE\nIP: $SERVER_IP" 12 70
 }
 
+# MELHORIA: Função auxiliar para obter o nome do serviço baseado no ID do aplicativo
+get_service_name() {
+    local app_id="$1"
+    case $app_id in
+        1) echo "pihole-FTL" ;;
+        2) echo "unbound" ;;
+        3) echo "wg-quick@wg0" ;;
+        4) echo "cockpit" ;;
+        5) echo "filebrowser" ;;
+        6) echo "netdata" ;;
+        7) echo "fail2ban" ;;
+        8) echo "ufw" ;;
+        9) echo "rng-tools" ;;
+        10) echo "" ;; # CLI tool, no service
+        11) echo "" ;; # CLI tool, no service
+        12) echo "minidlna" ;;
+        13) echo "cloudflared" ;;
+        14) echo "chrony" ;;
+        *) echo "" ;;
+    esac
+}
+
+# MELHORIA: Função para verificar o status de um aplicativo
+check_app_status() {
+    local app_id="$1"
+    local service_name=$(get_service_name "$app_id")
+
+    # Verificação baseada em arquivos de configuração ou binários
+    local is_installed=false
+    case $app_id in
+        1) [[ -f "/etc/pihole/setupVars.conf" ]] && is_installed=true ;;
+        2) [[ -f "/etc/unbound/unbound.conf" ]] && is_installed=true ;;
+        3) [[ -f "/etc/wireguard/wg0.conf" ]] && is_installed=true ;;
+        4) command -v cockpit-ws &>/dev/null && is_installed=true ;;
+        5) command -v filebrowser &>/dev/null && is_installed=true ;;
+        6) [[ -f "/etc/netdata/netdata.conf" ]] && is_installed=true ;;
+        7) command -v fail2ban-client &>/dev/null && is_installed=true ;;
+        8) command -v ufw &>/dev/null && is_installed=true ;;
+        9) command -v rngd &>/dev/null && is_installed=true ;;
+        10) command -v rclone &>/dev/null && is_installed=true ;;
+        11) command -v rsync &>/dev/null && is_installed=true ;;
+        12) [[ -f "/etc/minidlna.conf" ]] && is_installed=true ;;
+        13) command -v cloudflared &>/dev/null && is_installed=true ;;
+        14) command -v chronyd &>/dev/null && is_installed=true ;;
+    esac
+
+    if [ "$is_installed" = false ]; then
+        echo "not_installed"
+    elif [ -n "$service_name" ] && ! systemctl is-active --quiet "$service_name" 2>/dev/null; then
+        echo "installed_error"
+    else
+        echo "installed_ok"
+    fi
+}
 # Função para configurações avançadas
 configure_advanced_settings() {
     while true; do
@@ -391,7 +463,7 @@ configure_advanced_settings() {
             "2" "Configurar Rede VPN" \
             "3" "Configurar Portas dos Serviços" \
             "4" "Configurar Senhas" \
-            "5" "Voltar ao Menu Principal" \
+            "6" "Voltar ao Menu Principal" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -436,6 +508,61 @@ show_app_details() {
         esac
         
         dialog --title "Detalhes: $name" --msgbox "$details" 15 70
+    fi
+}
+
+# MELHORIA: Função auxiliar para obter o nome do serviço baseado no ID do aplicativo
+get_service_name() {
+    local app_id="$1"
+    case $app_id in
+        1) echo "pihole-FTL" ;;
+        2) echo "unbound" ;;
+        3) echo "wg-quick@wg0" ;;
+        4) echo "cockpit" ;;
+        5) echo "filebrowser" ;;
+        6) echo "netdata" ;;
+        7) echo "fail2ban" ;;
+        8) echo "ufw" ;;
+        9) echo "rng-tools" ;;
+        10) echo "" ;; # CLI tool, no service
+        11) echo "" ;; # CLI tool, no service
+        12) echo "minidlna" ;;
+        13) echo "cloudflared" ;;
+        14) echo "chrony" ;;
+        *) echo "" ;;
+    esac
+}
+
+# MELHORIA: Função para verificar o status de um aplicativo
+check_app_status() {
+    local app_id="$1"
+    local service_name=$(get_service_name "$app_id")
+
+    # Verificação baseada em arquivos de configuração ou binários
+    local is_installed=false
+    case $app_id in
+        1) [[ -f "/etc/pihole/setupVars.conf" ]] && is_installed=true ;;
+        2) [[ -f "/etc/unbound/unbound.conf" ]] && is_installed=true ;;
+        3) [[ -f "/etc/wireguard/wg0.conf" ]] && is_installed=true ;;
+        4) command -v cockpit-ws &>/dev/null && is_installed=true ;;
+        5) command -v filebrowser &>/dev/null && is_installed=true ;;
+        6) [[ -f "/etc/netdata/netdata.conf" ]] && is_installed=true ;;
+        7) command -v fail2ban-client &>/dev/null && is_installed=true ;;
+        8) command -v ufw &>/dev/null && is_installed=true ;;
+        9) command -v rngd &>/dev/null && is_installed=true ;;
+        10) command -v rclone &>/dev/null && is_installed=true ;;
+        11) command -v rsync &>/dev/null && is_installed=true ;;
+        12) [[ -f "/etc/minidlna.conf" ]] && is_installed=true ;;
+        13) command -v cloudflared &>/dev/null && is_installed=true ;;
+        14) command -v chronyd &>/dev/null && is_installed=true ;;
+    esac
+
+    if [ "$is_installed" = false ]; then
+        echo "not_installed"
+    elif [ -n "$service_name" ] && ! systemctl is-active --quiet "$service_name" 2>/dev/null; then
+        echo "installed_error"
+    else
+        echo "installed_ok"
     fi
 }
 
@@ -597,7 +724,8 @@ sort_installation_order() {
     # Fase 3: Serviços de rede
     # Fase 4: Segurança (após todos os serviços)
     # Fase 5: Serviços avançados e de tempo
-    local priority_order=(9 11 10 14 2 1 3 4 5 6 12 8 7 13)
+    # Fase 6: Interface Web (por último, para configurar proxies)
+    local priority_order=(9 11 10 14 2 1 3 4 5 6 12 8 7 13 15)
     
     log_message "INFO" "Ordenando aplicativos por dependências..."
     
@@ -665,6 +793,7 @@ EOF
             12) apt_packages+=("minidlna") ;;
             13) external_scripts+=("cloudflared|https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm.deb") ;;
             14) apt_packages+=("chrony") ;;
+            15) apt_packages+=("nginx") ;;
         esac
     done
 
@@ -701,6 +830,7 @@ EOF
             12) install_minidlna ;;
             13) install_cloudflared ;;
             14) install_chrony ;;
+            15) install_web_interface ;;
         esac
         if [ $? -ne 0 ]; then log_message "ERROR" "Falha na instalação de $app_name"; exit 1; fi
 
@@ -757,6 +887,7 @@ get_service_name() {
         12) echo "minidlna" ;;
         13) echo "cloudflared" ;;
         14) echo "chrony" ;;
+        15) echo "nginx" ;;
         *) echo "" ;;
     esac
 }
@@ -882,6 +1013,20 @@ reconfigure_service_integrations() {
         fi
     done
     
+    # Reconfigurar Nginx se a interface web foi instalada
+    for app_id in "${installed_apps[@]}"; do
+        if [[ "$app_id" == "15" ]]; then # Interface Web
+            log_message "INFO" "Reconfigurando Nginx para serviços ativos..."
+            # Habilitar proxies para serviços instalados
+            for other_app_id in "${installed_apps[@]}"; do
+                if [[ "$other_app_id" != "15" ]]; then
+                    enable_nginx_proxy "$other_app_id"
+                fi
+            done
+            systemctl reload nginx
+        fi
+    done
+
     log_message "INFO" "Reconfiguração de integrações concluída"
 }
 
@@ -1698,15 +1843,18 @@ EOF
     # Configurar Cockpit para ARM/baixa RAM
     mkdir -p /etc/cockpit
     cat > /etc/cockpit/cockpit.conf << 'EOF'
-[WebService]
-AllowUnencrypted = true
-MaxStartups = 3
-LoginTimeout = 30
-
-[Session]
-IdleTimeout = 15
+    [WebService]
+    AllowUnencrypted = true
+    MaxStartups = 3
+    LoginTimeout = 30
+    
+    [Session]
+    IdleTimeout = 15
 EOF
     
+    # MELHORIA: Informar o usuário sobre como fazer login
+    dialog --title "Login Cockpit" --msgbox "O login no Cockpit é feito com o seu usuário e senha do sistema Linux (ex: root ou seu usuário sudo)." 8 70
+
     # Habilitar e iniciar serviços
     systemctl enable cockpit.socket
     systemctl start cockpit.socket
@@ -1744,11 +1892,15 @@ install_filebrowser() {
     mkdir -p /etc/filebrowser /var/lib/filebrowser
     
     # Configurar banco de dados e usuário admin
+    # MELHORIA: Gerar senha aleatória e segura
+    local fb_password=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 12)
+    log_message "INFO" "Senha gerada para FileBrowser: $fb_password"
+
     filebrowser -d /var/lib/filebrowser/filebrowser.db config init
     filebrowser -d /var/lib/filebrowser/filebrowser.db config set --address 0.0.0.0
     filebrowser -d /var/lib/filebrowser/filebrowser.db config set --port $FILEBROWSER_PORT
     filebrowser -d /var/lib/filebrowser/filebrowser.db config set --root /home
-    filebrowser -d /var/lib/filebrowser/filebrowser.db users add admin admin --perm.admin
+    filebrowser -d /var/lib/filebrowser/filebrowser.db users add admin "$fb_password" --perm.admin
     
     # Configurar permissões
     chown -R filebrowser:filebrowser /var/lib/filebrowser
@@ -1781,7 +1933,7 @@ EOF
     if systemctl is-active --quiet filebrowser; then
         log_message "INFO" "FileBrowser instalado com sucesso na porta $FILEBROWSER_PORT"
         log_message "INFO" "Acesse via: http://$SERVER_IP:$FILEBROWSER_PORT"
-        log_message "INFO" "Login: admin / Senha: admin"
+        dialog --title "FileBrowser Instalado" --msgbox "FileBrowser instalado com sucesso!\n\nAcesse: http://$SERVER_IP:$FILEBROWSER_PORT\n\nLogin: admin\nSenha: $fb_password\n\n(A senha foi salva em $LOG_FILE)" 12 70
     else
         log_message "ERROR" "Erro na configuração do FileBrowser"
         return 1
@@ -1821,6 +1973,10 @@ install_netdata() {
 [web]
     web files owner = root
     web files group = netdata
+    # Habilitar API para o dashboard
+    allow connections from = localhost *
+    allow dashboard from = localhost *
+    allow badges from = *
     bind to = *
     
 [plugins]
@@ -2264,6 +2420,147 @@ EOF
     log_message "INFO" "Logrotate para Pi-hole configurado."
 }
 
+# IMPLEMENTAÇÃO: Instalação da Interface Web Unificada
+install_web_interface() {
+    log_message "INFO" "Instalando Interface Web com Nginx..."
+
+    # Nginx já foi instalado como dependência
+    if ! command -v nginx &>/dev/null; then
+        log_message "ERROR" "Nginx não foi encontrado. A instalação falhou."
+        return 1
+    fi
+
+    # Criar diretório web
+    mkdir -p /var/www/html
+
+    # Criar página de dashboard
+    cat > /var/www/html/index.html << 'EOF'
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Boxserver Dashboard</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f9; color: #333; margin: 0; padding: 2em; }
+        .container { max-width: 960px; margin: auto; }
+        .header { text-align: center; margin-bottom: 2em; }
+        .header h1 { color: #2c3e50; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5em; }
+        .card { background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); padding: 1.5em; text-align: center; transition: transform 0.2s; }
+        .card:hover { transform: translateY(-5px); }
+        .card h3 { margin-top: 0; color: #34495e; }
+        .card p { color: #7f8c8d; }
+        .card a { display: inline-block; margin-top: 1em; padding: 0.7em 1.5em; background-color: #3498db; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; }
+        .card a:hover { background-color: #2980b9; }
+    </style>
+</head>
+<body onload="startRealtimeUpdates()">
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Boxserver Dashboard</h1>
+            <p>Interface unificada para todos os serviços</p>
+        </div>
+        <div class="grid">
+            <div class="card" id="system-card"><h3>Sistema</h3><p>CPU: <span id="cpu-usage">--</span>% | RAM: <span id="ram-usage">--</span>%</p><a href="/netdata/" target="_blank">Ver Detalhes</a></div>
+            <div class="card" id="pihole-card" style="display:none;"><h3>Pi-hole</h3><p>Bloqueador de anúncios</p><a href="/pihole/admin/" target="_blank">Acessar</a></div>
+            <div class="card" id="cockpit-card" style="display:none;"><h3>Cockpit</h3><p>Painel de Administração</p><a href="/cockpit/" target="_blank">Acessar</a></div>
+            <div class="card" id="filebrowser-card" style="display:none;"><h3>FileBrowser</h3><p>Gerenciador de Arquivos</p><a href="/filebrowser/" target="_blank">Acessar</a></div>
+            <div class="card" id="rclone-card" style="display:none;"><h3>Rclone Web-GUI</h3><p>Gerenciador de Nuvem</p><a href="/rclone/" target="_blank">Acessar</a></div>
+        </div>
+    </div>
+    <script>
+        function updateSystemInfo() {
+            // API do Netdata para CPU (user + system) e RAM (used)
+            const netdataUrl = 'http://' + window.location.hostname + ':19999/api/v1/data?chart=system.cpu&after=-1&points=1&group=average&format=json';
+            const ramUrl = 'http://' + window.location.hostname + ':19999/api/v1/data?chart=system.ram&dimension=used&after=-1&points=1&format=json';
+
+            fetch(netdataUrl).then(r => r.json()).then(data => {
+                document.getElementById('cpu-usage').textContent = data.data[0][1].toFixed(1);
+            }).catch(e => console.error('Error fetching CPU data:', e));
+
+            fetch(ramUrl).then(r => r.json()).then(data => {
+                document.getElementById('ram-usage').textContent = data.data[0][1].toFixed(1);
+            }).catch(e => console.error('Error fetching RAM data:', e));
+        }
+
+        function checkService(id, url) {
+             fetch(url, {method: 'HEAD', mode: 'no-cors'}).then(res => {
+                const card = document.getElementById(id);
+                if(card) card.style.display = 'block';
+            }).catch(err => {});
+        }
+
+        function startRealtimeUpdates() {
+            updateSystemInfo();
+            setInterval(updateSystemInfo, 3000); // Atualiza a cada 3 segundos
+
+            checkService('pihole-card', '/pihole/admin/');
+            checkService('cockpit-card', '/cockpit/');
+            checkService('filebrowser-card', '/filebrowser/');
+            checkService('rclone-card', '/rclone/');
+        };
+    </script>
+</body>
+</html>
+EOF'
+
+    # Criar configuração do Nginx
+    cat > /etc/nginx/sites-available/boxserver << 'EOF'
+server {
+    listen 80 default_server;
+    server_name _;
+
+    root /var/www/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    # As localizações dos serviços serão adicionadas aqui por 'enable_nginx_proxy'
+}
+EOF
+
+    # Habilitar o site
+    ln -sf /etc/nginx/sites-available/boxserver /etc/nginx/sites-enabled/
+    rm -f /etc/nginx/sites-enabled/default
+
+    systemctl enable nginx
+    systemctl restart nginx
+
+    log_message "INFO" "Interface Web instalada. Acesse em http://$SERVER_IP"
+}
+
+# IMPLEMENTAÇÃO: Função para habilitar proxy no Nginx para um serviço
+enable_nginx_proxy() {
+    local app_id="$1"
+    local config_file="/etc/nginx/sites-available/boxserver"
+
+    case $app_id in
+        1) # Pi-hole
+            sed -i '/# As localizações dos serviços/a \
+    location /pihole/ {\n        proxy_pass http://127.0.0.1/;\n    }' "$config_file"
+            ;;
+        4) # Cockpit
+            sed -i '/# As localizações dos serviços/a \
+    location /cockpit/ {\n        proxy_pass http://127.0.0.1:9090/cockpit/;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection "upgrade";\n    }' "$config_file"
+            ;;
+        5) # FileBrowser
+            sed -i '/# As localizações dos serviços/a \
+    location /filebrowser/ {\n        proxy_pass http://127.0.0.1:8080/;\n    }' "$config_file"
+            ;;
+        6) # Netdata
+            sed -i '/# As localizações dos serviços/a \
+    location /netdata/ {\n        proxy_pass http://127.0.0.1:19999/;\n    }' "$config_file"
+            ;;
+        10) # Rclone Web-GUI
+             sed -i '/# As localizações dos serviços/a \
+    location /rclone/ {\n        proxy_pass http://127.0.0.1:5572/;\n    }' "$config_file"
+            ;;
+    esac
+}
+
 # Função para instalação do Cloudflared (baseada em INSTALAÇÃO APPS.md)
 install_cloudflared() {
     log_message "INFO" "Instalando Cloudflared..."
@@ -2381,17 +2678,17 @@ configure_cloudflare_tunnel() {
 
 # Função para login no Cloudflare (compatível com servidores headless)
 cloudflare_login() {
-    # Verificar se já existe certificado
+    # CORREÇÃO: Verificar o certificado de login, não o do túnel
     if [[ -f "$HOME/.cloudflared/cert.pem" ]]; then
         dialog --title "Certificado Existente" --yesno "Já existe um certificado Cloudflare.\n\nDeseja renovar o login?" 8 50
         if [[ $? -ne 0 ]]; then
             return 0
         fi
     fi
-    
+
     # MELHORIA: Extrair a URL de login e exibi-la de forma clara
     local login_url
-    login_url=$(cloudflared tunnel login 2>&1 | grep -o 'https://dash.cloudflare.com/[a-zA-Z0-9?=&-]*')
+    login_url=$(cloudflared tunnel login 2>&1 | grep -Eo 'https://dash\.cloudflare\.com/[-a-zA-Z0-9()@:%_\+.~#?&=]*' | head -1)
 
     if [ -z "$login_url" ]; then
         dialog --title "Erro de Login" --msgbox "Não foi possível obter a URL de login do Cloudflare.\n\nVerifique sua conexão e tente novamente." 8 60
@@ -2624,7 +2921,7 @@ cloudflare_test_tunnel() {
     fi
     
     # Verificar configuração
-    if cloudflared tunnel --config /etc/cloudflared/config.yml validate &> /dev/null; then
+    if cloudflared tunnel --config /etc/cloudflared/config.yml validate >/dev/null 2>&1; then
         test_results+="✓ Configuração: VÁLIDA\n"
     else
         test_results+="✗ Configuração: INVÁLIDA\n"
@@ -2707,7 +3004,7 @@ edit_config_manually() {
         nano /etc/cloudflared/config.yml
         
         # Validar configuração
-        if cloudflared tunnel --config /etc/cloudflared/config.yml validate &> /dev/null; then
+        if cloudflared tunnel --config /etc/cloudflared/config.yml validate >/dev/null 2>&1; then
             dialog --title "Configuração Válida" --msgbox "Configuração salva e validada com sucesso!" 6 50
             log_message "INFO" "Configuração Cloudflare editada manualmente"
         else
@@ -2959,36 +3256,40 @@ validate_tunnel_configuration() {
 # Menu pós-instalação
 post_installation_menu() {
     while true; do
-        local choice=$(dialog --title "Pós-Instalação" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
-            "1" "Executar testes do sistema" \
-            "2" "Ver status dos serviços" \
-            "3" "Ver logs de instalação" \
-            "4" "Configurar WireGuard VPN" \
-            "5" "Configurar túnel Cloudflare" \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento do Boxserver" --menu "Instalação concluída. O que deseja fazer agora?" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Gerenciamento de Serviços" \
+            "2" "Configurar WireGuard VPN" \
+            "3" "Configurar Túnel Cloudflare" \
+            "4" "Diagnóstico e Testes" \
+            "5" "Manutenção e Backups" \
+            "6" "Segurança (Firewall & Fail2Ban)" \
             "6" "Configurar Pi-hole + Unbound" \
             "7" "Configurar Fail2Ban" \
             "8" "Configurar Netdata" \
             "9" "Configurar FileBrowser" \
             "10" "Configurar MiniDLNA" \
+            "11" "Configurar Rclone" \
             "11" "Configurar outros serviços" \
             "12" "Backup das configurações" \
             "13" "Sair" \
             3>&1 1>&2 2>&3)
         
         case $choice in
-            1) run_system_tests ;;
-            2) show_services_status ;;
-            3) show_installation_logs ;;
-            4) configure_wireguard_vpn ;;
-            5) configure_cloudflare_tunnel ;;
+            1) manage_services_menu ;;
+            2) configure_wireguard_vpn ;;
+            3) configure_cloudflare_tunnel ;;
+            4) diagnostics_menu ;;
+            5) maintenance_menu ;;
+            6) security_menu ;;
             6) configure_pihole_unbound ;;
             7) configure_fail2ban ;;
             8) configure_netdata ;;
             9) configure_filebrowser ;;
             10) configure_minidlna ;;
+            11) configure_rclone_service ;;
             11) configure_other_services ;;
             12) backup_configurations ;;
-            13|"")
+            13|""|"Sair")
                 break
                 ;;
         esac
@@ -3070,41 +3371,42 @@ check_wireguard_status() {
 # Gerar novo cliente WireGuard
 generate_wireguard_client() {
     local client_name=$(dialog --title "Novo Cliente" --inputbox "Nome do cliente:" 8 40 3>&1 1>&2 2>&3)
-    
+
     if [[ -z "$client_name" ]]; then
         dialog --title "Erro" --msgbox "Nome do cliente é obrigatório!" 6 40
         return 1
     fi
-    
+
     # Verificar se cliente já existe
     if [[ -f "/etc/wireguard/clients/${client_name}.conf" ]]; then
         dialog --title "Erro" --msgbox "Cliente '$client_name' já existe!" 6 40
         return 1
     fi
-    
+
     dialog --title "Gerando Cliente" --infobox "Criando configuração para $client_name..." 5 50
-    
+
     # Criar diretório de clientes se não existir
     mkdir -p /etc/wireguard/clients
-    
+
     # Gerar chaves do cliente
     local client_private_key=$(wg genkey)
     local client_public_key=$(echo "$client_private_key" | wg pubkey)
-    
+
     # Obter próximo IP disponível
     local client_ip=$(get_next_client_ip)
-    
+
     # Obter configurações do servidor
-    local server_public_key=$(grep "PublicKey" /etc/wireguard/wg0.conf | head -1 | cut -d'=' -f2 | tr -d ' ' || echo "")
+    local server_public_key=$(cat /etc/wireguard/keys/publickey)
     local server_endpoint=$(get_server_endpoint)
     local server_port=$(grep "ListenPort" /etc/wireguard/wg0.conf | cut -d'=' -f2 | tr -d ' ' || echo "51820")
-    
+
     # Criar configuração do cliente
-    cat > "/etc/wireguard/clients/${client_name}.conf" << EOF
+    local client_config_path="/etc/wireguard/clients/${client_name}.conf"
+    cat > "$client_config_path" << EOF
 [Interface]
 PrivateKey = $client_private_key
 Address = $client_ip/24
-DNS = 10.8.0.1
+DNS = ${VPN_NETWORK%.*}.1
 
 [Peer]
 PublicKey = $server_public_key
@@ -3112,34 +3414,43 @@ Endpoint = $server_endpoint:$server_port
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
-    
+
     # Adicionar peer ao servidor
     wg set wg0 peer "$client_public_key" allowed-ips "$client_ip/32"
-    
+
     # Salvar configuração no arquivo do servidor
     echo "" >> /etc/wireguard/wg0.conf
     echo "# Cliente: $client_name" >> /etc/wireguard/wg0.conf
     echo "[Peer]" >> /etc/wireguard/wg0.conf
     echo "PublicKey = $client_public_key" >> /etc/wireguard/wg0.conf
     echo "AllowedIPs = $client_ip/32" >> /etc/wireguard/wg0.conf
-    
+
     # Gerar QR Code se qrencode estiver disponível
-    local qr_file="/etc/wireguard/clients/${client_name}.png"
-    if command -v qrencode &>/dev/null; then
-        qrencode -t png -o "$qr_file" < "/etc/wireguard/clients/${client_name}.conf"
+    if command -v qrencode &>/dev/null;
+    then
+        local qr_file="/etc/wireguard/clients/${client_name}.png"
+        qrencode -t png -o "$qr_file" < "$client_config_path"
+
+        # Tentar exibir o QR code no terminal
+        local qr_terminal
+        qr_terminal=$(qrencode -t ansiutf8 < "$client_config_path")
+        
+        dialog --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\nQR Code (se o terminal suportar):\n$qr_terminal" 20 70
+    else
+        dialog --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\n(Instale 'qrencode' para gerar QR codes)" 12 60
     fi
-    
-    dialog --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: /etc/wireguard/clients/${client_name}.conf" 10 60
 }
 
 # Obter próximo IP disponível para cliente
 get_next_client_ip() {
-    local base_ip="10.8.0"
+    local base_ip="${VPN_NETWORK%.*}"
     local start_ip=2
     
-    for i in $(seq $start_ip 254); do
+    for i in $(seq $start_ip 254);
+    do
         local test_ip="${base_ip}.${i}"
-        if ! grep -q "$test_ip" /etc/wireguard/wg0.conf /etc/wireguard/clients/*.conf 2>/dev/null; then
+        if ! grep -q "$test_ip" /etc/wireguard/wg0.conf /etc/wireguard/clients/*.conf 2>/dev/null;
+        then
             echo "$test_ip"
             return 0
         fi
@@ -3147,6 +3458,7 @@ get_next_client_ip() {
     
     echo "${base_ip}.254"  # Fallback
 }
+
 
 # Obter endpoint do servidor
 get_server_endpoint() {
@@ -3395,7 +3707,7 @@ wireguard_advanced_settings() {
             "5" "Backup/Restore configurações" \
             "6" "Logs e diagnósticos" \
             "7" "Voltar" \
-            3>&1 1>&2 2>&3)
+            3>&1 1>&2 2>&3) # Faltava esta linha
         
         case $choice in
             1) change_wireguard_port ;;
@@ -3540,7 +3852,7 @@ check_dns_services_status() {
 # Configurar integração Pi-hole/Unbound
 configure_pihole_unbound_integration() {
     dialog --title "Configurando Integração" --infobox "Configurando integração Pi-hole + Unbound..." 5 60
-    
+
     # Verificar se os serviços estão instalados
     if ! command -v pihole &>/dev/null; then
         dialog --title "Erro" --msgbox "Pi-hole não está instalado!" 6 40
@@ -3552,71 +3864,66 @@ configure_pihole_unbound_integration() {
         return 1
     fi
     
-    # Configurar Unbound para Pi-hole
+    # IMPLEMENTAÇÃO: Configurar Unbound para Pi-hole conforme iNSTALAÇÃO APPS.md
     cat > /etc/unbound/unbound.conf.d/pi-hole.conf << 'EOF'
 server:
-    # Porta para escutar (diferente da 53 usada pelo Pi-hole)
-    port: 5335
-    
-    # Interfaces de escuta
+    verbosity: 1
     interface: 127.0.0.1
-    
-    # Não fazer cache de TTL zero
-    cache-min-ttl: 0
-    
-    # Servir dados expirados
-    serve-expired: yes
-    
-    # Prefetch de registros populares
-    prefetch: yes
-    
-    # Número de threads
-    num-threads: 2
-    
-    # Configurações de segurança
-    hide-identity: yes
-    hide-version: yes
+    port: 5335
+    do-ip4: yes
+    do-udp: yes
+    do-tcp: yes
+    do-ip6: no
+    prefer-ip6: no
     harden-glue: yes
     harden-dnssec-stripped: yes
     use-caps-for-id: no
-    
-    # Cache settings otimizadas para ARM
-    rrset-cache-size: 32m
-    msg-cache-size: 16m
-    
-    # Configurações de rede
     edns-buffer-size: 1232
-    
-    # Logs
-    verbosity: 1
-    
-    # Root hints
-    root-hints: "/var/lib/unbound/root.hints"
-    
-    # Trust anchor para DNSSEC
+    prefetch: yes
+    # OTIMIZADO PARA ARM/BAIXA RAM
+    num-threads: 1
+    msg-cache-slabs: 1
+    rrset-cache-slabs: 1
+    infra-cache-slabs: 1
+    key-cache-slabs: 1
+    so-rcvbuf: 512k
+    so-sndbuf: 512k
+    # Configurações de privacidade
+    private-address: 192.168.0.0/16
+    private-address: 169.254.0.0/16
+    private-address: 172.16.0.0/12
+    private-address: 10.0.0.0/8
+    private-address: fd00::/8
+    private-address: fe80::/10
+    hide-identity: yes
+    hide-version: yes
+    # Trust anchor automático
     auto-trust-anchor-file: "/var/lib/unbound/root.key"
+    root-hints: "/var/lib/unbound/root.hints"
 EOF
     
     # Baixar root hints se não existir
     if [[ ! -f "/var/lib/unbound/root.hints" ]]; then
-        curl -s https://www.internic.net/domain/named.cache -o /var/lib/unbound/root.hints
+        log_message "INFO" "Baixando root.hints para Unbound..."
+        wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
         chown unbound:unbound /var/lib/unbound/root.hints
     fi
     
     # Configurar trust anchor se não existir
     if [[ ! -f "/var/lib/unbound/root.key" ]]; then
+        log_message "INFO" "Gerando root.key para Unbound..."
         unbound-anchor -a /var/lib/unbound/root.key
         chown unbound:unbound /var/lib/unbound/root.key
     fi
     
     # Configurar Pi-hole para usar Unbound
-    echo "127.0.0.1#5335" > /etc/pihole/setupVars.conf.tmp
     if [[ -f "/etc/pihole/setupVars.conf" ]]; then
+        log_message "INFO" "Configurando Pi-hole para usar Unbound como upstream DNS..."
         # Backup da configuração atual
         cp /etc/pihole/setupVars.conf /etc/pihole/setupVars.conf.backup
         
         # Atualizar DNS upstream
-        sed -i 's/^PIHOLE_DNS_.*$/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
+        sed -i 's/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
         
         # Remover DNS secundário se existir
         sed -i '/^PIHOLE_DNS_2=/d' /etc/pihole/setupVars.conf
@@ -4402,25 +4709,230 @@ configure_cockpit_service() {
     dialog --title "Cockpit" --msgbox "$cockpit_status" 12 60
 }
 
+# IMPLEMENTAÇÃO: Menu de gerenciamento de serviços
+manage_services_menu() {
+    while true; do
+        local menu_items=()
+        for app_id in $(echo "${!APPS[@]}" | tr ' ' '\n' | sort -n); do
+            local service_name=$(get_service_name "$app_id")
+            if [ -n "$service_name" ]; then
+                local app_name=$(echo "${APPS[$app_id]}" | cut -d'|' -f1)
+                local status_icon="?"
+                if systemctl list-unit-files | grep -q "^${service_name}"; then
+                    if systemctl is-active --quiet "$service_name"; then
+                        status_icon="✅"
+                    else
+                        status_icon="❌"
+                    fi
+                else
+                    status_icon="-"
+                fi
+                menu_items+=("$app_id" "$status_icon $app_name")
+            fi
+        done
+
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Serviços" --menu "Selecione um serviço para gerenciar:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT "${menu_items[@]}" 3>&1 1>&2 2>&3)
+
+        if [ $? -ne 0 ]; then
+            break
+        fi
+
+        local service_name=$(get_service_name "$choice")
+        local app_name=$(echo "${APPS[$choice]}" | cut -d'|' -f1)
+
+        if [ -n "$service_name" ]; then
+            local action=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciar: $app_name" --menu "Escolha uma ação:" 15 50 4 \
+                "start" "Iniciar" \
+                "stop" "Parar" \
+                "restart" "Reiniciar" \
+                "status" "Ver Status" \
+                3>&1 1>&2 2>&3)
+
+            case $action in
+                start|stop|restart)
+                    systemctl "$action" "$service_name"
+                    dialog "${DIALOG_OPTS[@]}" --title "Ação Executada" --infobox "Comando '$action' executado para $app_name." 5 50
+                    sleep 1
+                    ;;
+                status)
+                    local status_output=$(systemctl status "$service_name" --no-pager -l)
+                    dialog "${DIALOG_OPTS[@]}" --title "Status: $app_name" --msgbox "$status_output" 20 80
+                    ;;
+            esac
+        fi
+    done
+}
+
+# IMPLEMENTAÇÃO: Menu de diagnóstico
+diagnostics_menu() {
+    while true; do
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Diagnóstico e Testes" --menu "Selecione um teste para executar:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Relatório de Saúde Completo (boxserver-health)" \
+            "2" "Testar Conectividade de Rede" \
+            "3" "Testar Resolução DNS (Pi-hole & Unbound)" \
+            "4" "Verificar Status do Firewall (UFW)" \
+            "5" "Verificar Status do Fail2Ban" \
+            "6" "Verificar Status da VPN (WireGuard)" \
+            "7" "Voltar" \
+            3>&1 1>&2 2>&3)
+
+        case $choice in
+            1)
+                local health_report=$(/usr/local/bin/boxserver-health)
+                dialog "${DIALOG_OPTS[@]}" --title "Relatório de Saúde" --msgbox "$health_report" 25 80
+                ;;
+            2)
+                test_connectivity
+                dialog "${DIALOG_OPTS[@]}" --title "Conectividade" --msgbox "Teste de conectividade concluído." 6 50
+                ;;
+            3)
+                test_dns_resolution
+                ;;
+            4)
+                local ufw_status=$(ufw status verbose)
+                dialog "${DIALOG_OPTS[@]}" --title "Status UFW" --msgbox "$ufw_status" 20 80
+                ;;
+            5)
+                local f2b_status=$(systemctl status fail2ban --no-pager -l)
+                dialog "${DIALOG_OPTS[@]}" --title "Status Fail2Ban" --msgbox "$f2b_status" 20 80
+                ;;
+            6)
+                check_wireguard_status
+                ;;
+            7|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# IMPLEMENTAÇÃO: Configuração do Rclone
+configure_rclone_service() {
+    if ! command -v rclone &>/dev/null; then
+        dialog --title "Erro" --msgbox "Rclone não está instalado." 6 40
+        return 1
+    fi
+
+    while true; do
+        local webui_status="INATIVO"
+        if systemctl is-active --quiet rclone-webui 2>/dev/null; then
+            webui_status="ATIVO"
+        fi
+
+        local choice=$(dialog --title "Configuração Rclone" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Configurar um novo 'remote' (rclone config)" \
+            "2" "Listar 'remotes' configurados" \
+            "3" "Habilitar/Iniciar Web-GUI (Status: $webui_status)" \
+            "4" "Parar/Desabilitar Web-GUI" \
+            "5" "Ver status da Web-GUI" \
+            "6" "Alterar senha da Web-GUI" \
+            "6" "Executar script de backup manual" \
+            "7" "Voltar" \
+            3>&1 1>&2 2>&3)
+
+        case $choice in
+            1)
+                dialog --title "Configurar Rclone" --msgbox "Você será levado para a configuração interativa do Rclone.\n\nSiga as instruções no terminal." 8 60
+                clear
+                rclone config
+                dialog --title "Concluído" --msgbox "Configuração do Rclone finalizada.\nPressione ENTER para voltar ao menu." 6 50
+                ;;
+            2)
+                local remotes=$(rclone listremotes)
+                dialog --title "Remotes Configurados" --msgbox "Remotes:\n\n$remotes" 15 60
+                ;;
+            3)
+                setup_rclone_webui
+                ;;
+            4)
+                systemctl stop rclone-webui 2>/dev/null
+                systemctl disable rclone-webui 2>/dev/null
+                dialog --title "Web-GUI" --msgbox "Interface Web do Rclone parada e desabilitada." 6 50
+                ;;
+            6)
+                local new_pass=$(dialog --title "Nova Senha" --passwordbox "Digite a nova senha para a Web-GUI do Rclone:" 8 60 3>&1 1>&2 2>&3)
+                if [ -n "$new_pass" ]; then
+                    # Parar, alterar a senha no arquivo de serviço e reiniciar
+                    systemctl stop rclone-webui
+                    sed -i "s/--rc-pass [^ ]*/--rc-pass $new_pass/" /etc/systemd/system/rclone-webui.service
+                    systemctl daemon-reload
+                    systemctl start rclone-webui
+                    dialog --title "Senha Alterada" --msgbox "Senha da Web-GUI alterada com sucesso!" 6 50
+                fi
+                ;;
+            5)
+                local status=$(systemctl status rclone-webui --no-pager -l)
+                dialog --title "Status Web-GUI" --msgbox "Status do serviço rclone-webui:\n\n$status" 20 80
+                ;;
+            6)
+                /usr/local/bin/boxserver-backup
+                dialog --title "Backup" --msgbox "Script de backup executado." 6 40
+                ;;
+            7|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# IMPLEMENTAÇÃO: Função para configurar a Web-GUI do Rclone
+setup_rclone_webui() {
+    # MELHORIA: Gerar senha aleatória e segura
+    local rclone_password=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 12)
+    log_message "INFO" "Senha gerada para Rclone Web-GUI: $rclone_password"
+    log_message "INFO" "Configurando serviço para a Web-GUI do Rclone..."
+    cat > /etc/systemd/system/rclone-webui.service << 'EOF'
+[Unit]
+Description=Rclone Web-GUI
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/rclone rcd --rc-web-gui --rc-addr :5572 --rc-user admin --rc-pass 
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Inserir a senha gerada no arquivo de serviço
+    sed -i "s/--rc-pass /--rc-pass $rclone_password/" /etc/systemd/system/rclone-webui.service
+
+    systemctl daemon-reload
+    systemctl enable rclone-webui
+    systemctl start rclone-webui
+
+    if systemctl is-active --quiet rclone-webui; then
+        dialog --title "Web-GUI Ativada" --msgbox "Interface Web do Rclone está ativa!\n\nAcesse: http://$SERVER_IP:5572\n\nLogin: admin\nSenha: $rclone_password\n\n(A senha foi salva em $LOG_FILE)" 12 70
+        log_message "INFO" "Serviço Rclone Web-GUI iniciado com sucesso."
+    else
+        dialog --title "Erro" --msgbox "Falha ao iniciar a Web-GUI do Rclone.\nVerifique os logs com 'journalctl -u rclone-webui'." 8 60
+        log_message "ERROR" "Falha ao iniciar o serviço Rclone Web-GUI."
+    fi
+}
+
 # MELHORIA: Menu principal com opção de modo silencioso
 main_menu() {
     while true; do
-        local silent_status="Desabilitado"
+        local silent_status="Desabilitado" # Esta variável não é mais usada no menu principal
         if [[ "$SILENT_MODE" == "true" ]]; then
             silent_status="Habilitado"
         fi
         
-        local choice=$(dialog --title "Boxserver TUI Installer v1.0" \
-            --menu "Instalador automatizado para MXQ-4K (RK322x)\n\nModo Silencioso: $silent_status\n\nEscolha uma opção:" \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Boxserver TUI - Canivete Suíço" \
+            --menu "Bem-vindo ao painel de controle do seu Boxserver.\n\nO que você gostaria de fazer?" \
             $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Verificações do sistema" \
             "2" "Selecionar e instalar aplicativos" \
-            "3" "Configurações avançadas" \
-            "4" "Informações do sistema" \
-            "5" "Ver logs" \
-            "6" "Alternar modo silencioso ($silent_status)" \
-            "7" "Sobre" \
-            "8" "Sair" \
+            "3" "Gerenciamento de Serviços" \
+            "4" "Configurações Gerais" \
+            "5" "Diagnóstico e Testes" \
+            "6" "Manutenção e Backups" \
+            "7" "Segurança" \
+            "8" "Informações do Sistema" \
+            "9" "Sobre" \
+            "10" "Sair" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -4430,22 +4942,28 @@ main_menu() {
             2)
                 select_applications
                 ;;
-            3)
-                configure_advanced_settings
+            3) 
+                manage_services_menu
                 ;;
             4)
-                show_system_info
+                configure_advanced_settings
                 ;;
             5)
-                show_installation_logs
+                diagnostics_menu
                 ;;
             6)
-                toggle_silent_mode
+                maintenance_menu
                 ;;
             7)
+                security_menu
+                ;;
+            8)
+                show_system_info
+                ;;
+            9)
                 dialog --title "Sobre" --msgbox "Boxserver TUI Installer v1.0\n\nInstalador automatizado para servidor doméstico\nem dispositivos MXQ-4K com chip RK322x\n\nBaseado na base de conhecimento do\nprojeto Boxserver Arandutec\n\nDesenvolvido para hardware limitado\ncom otimizações específicas para ARM\n\n🔇 Modo Silencioso: Instalação com barra de progresso\n📋 Logs detalhados salvos automaticamente" 14 70
                 ;;
-            8|"")
+            10|"")
                 if dialog --title "Confirmar Saída" --yesno "Deseja realmente sair?" 6 30; then
                     clear
                     echo "Obrigado por usar o Boxserver TUI Installer!"
@@ -4523,7 +5041,67 @@ EOF
     chmod +x /etc/cron.weekly/cleanup-boxserver
     log_message "INFO" "Script de limpeza semanal criado em /etc/cron.weekly/cleanup-boxserver"
 
-    # Adicionar aqui a criação do script boxserver-health se desejar
+    # MELHORIA: Criar script de saúde do sistema, conforme documentação
+    cat > /usr/local/bin/boxserver-health << 'EOF'
+#!/bin/bash
+# Script de monitoramento de saúde do Boxserver
+
+echo "==========================================="
+echo "    RELATÓRIO DE SAÚDE DO BOXSERVER"
+echo "==========================================="
+echo "Data: $(date)"
+echo
+
+# Informações do sistema
+echo "=== SISTEMA ==="
+echo "Uptime: $(uptime -p)"
+echo "Load Average: $(uptime | awk -F'load average:' '{print $2}')"
+echo "Memória: $(free -h | awk 'NR==2{printf "%.1f%% (%s/%s)", $3*100/$2, $3, $2}')"
+echo "Disco: $(df -h / | awk 'NR==2{printf "%s usado de %s (%s)", $3, $2, $5}')"
+if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
+    echo "Temperatura CPU: $(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))°C"
+fi
+echo
+
+# Status dos serviços
+echo "=== SERVIÇOS ==="
+services=("pihole-FTL" "unbound" "wg-quick@wg0" "rng-tools" "chrony" "cockpit.socket" "filebrowser" "netdata" "fail2ban")
+for service in "${services[@]}"; do
+    if systemctl list-unit-files | grep -q "^${service}.service" || systemctl list-unit-files | grep -q "^${service}.socket"; then
+        if systemctl is-active --quiet "$service"; then
+            echo "✅ $service: ATIVO"
+        else
+            echo "❌ $service: INATIVO"
+        fi
+    fi
+done
+echo
+
+# Testes de conectividade
+echo "=== CONECTIVIDADE ==="
+echo "Entropia: $(cat /proc/sys/kernel/random/entropy_avail)"
+echo "DNS Pi-hole: $(timeout 2 dig @127.0.0.1 google.com +short | head -1 || echo 'FALHOU')"
+echo "DNS Unbound: $(timeout 2 dig @127.0.0.1 -p 5335 google.com +short | head -1 || echo 'FALHOU')"
+echo "Internet: $(timeout 2 ping -c 1 8.8.8.8 >/dev/null 2>&1 && echo 'OK' || echo 'FALHOU')"
+echo
+
+# Alertas
+echo "=== ALERTAS ==="
+RAM_USAGE=$(free | awk 'NR==2{printf "%.0f", $3*100/$2}')
+if [ "$RAM_USAGE" -gt 85 ]; then
+    echo "⚠️  Uso de RAM alto: ${RAM_USAGE}%"
+fi
+
+DISK_USAGE=$(df / | awk 'NR==2{print $5}' | sed 's/%//')
+if [ "$DISK_USAGE" -gt 90 ]; then
+    echo "⚠️  Uso de disco alto: ${DISK_USAGE}%"
+fi
+
+echo "==========================================="
+EOF
+
+    chmod +x /usr/local/bin/boxserver-health
+    log_message "INFO" "Script de saúde do sistema criado em /usr/local/bin/boxserver-health"
 }
 
 # Função principal
