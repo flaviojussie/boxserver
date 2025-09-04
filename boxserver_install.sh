@@ -1624,13 +1624,13 @@ EOF
 install_netdata() {
     log_message "INFO" "Instalando Netdata..."
     
-    # MELHORIA: Garantir um ambiente limpo antes da instalação
+    # CORREÇÃO: Garantir um ambiente limpo e com todas as dependências de compilação.
     log_message "INFO" "Removendo instalações antigas do Netdata, se existirem..."
-    systemctl stop netdata 2>/dev/null
+    systemctl stop netdata >/dev/null 2>&1
     userdel netdata 2>/dev/null
     rm -rf /etc/netdata /var/lib/netdata /var/cache/netdata /var/log/netdata
-    # MELHORIA: Instalar todas as dependências de compilação necessárias para o Netdata e garantir que o curl esteja presente
-    apt install -y build-essential cmake git autoconf automake curl libuv1-dev liblz4-dev libjudy-dev libssl-dev libelf-dev uuid-dev zlib1g-dev
+    log_message "INFO" "Instalando dependências de compilação para o Netdata..."
+    apt-get install -y build-essential cmake git autoconf automake curl libuv1-dev liblz4-dev libjudy-dev libssl-dev libelf-dev uuid-dev zlib1g-dev
     
     # Baixar e instalar Netdata com otimizações
     bash <(curl -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry --no-updates
@@ -1640,7 +1640,7 @@ install_netdata() {
         return 1
     fi
     
-    # Configurar para ARM/baixa RAM
+    # Configurar para ARM/baixa RAM (RK322x)
     cat > /etc/netdata/netdata.conf << 'EOF'
 [global]
     run as user = netdata
@@ -1655,7 +1655,6 @@ install_netdata() {
     
 [web]
     web files owner = root
-    web files group = netdata
     
 [plugins]
     # Desabilitar plugins pesados
@@ -1682,7 +1681,7 @@ EOF
     
     # Verificar se está funcionando
     sleep 5
-    if systemctl is-active --quiet netdata && pgrep netdata >/dev/null; then
+    if systemctl is-active --quiet netdata; then
         log_message "INFO" "Netdata instalado com sucesso na porta 19999"
         log_message "INFO" "Acesse via: http://$SERVER_IP:19999"
     else
@@ -2268,10 +2267,11 @@ enable_nginx_proxy() {
 install_cloudflared() {
     log_message "INFO" "Instalando Cloudflared..."
     
-    # MELHORIA: Detectar arquitetura para download correto (arm vs arm64)
-    local arch=$(dpkg --print-architecture)
+    # CORREÇÃO: Detectar arquitetura para download correto (arm vs arm64)
+    local arch
+    arch=$(dpkg --print-architecture)
     local download_url=""
-    if [[ "$arch" == "arm64" ]]; then
+    if [[ "$arch" == "arm64" ]] || [[ "$arch" == "aarch64" ]]; then
         download_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb"
         log_message "INFO" "Arquitetura ARM64 detectada. Baixando cloudflared-linux-arm64.deb"
     else
@@ -2291,10 +2291,10 @@ install_cloudflared() {
     apt-get install -f -y  # Corrigir dependências se necessário
     
     # Criar usuário para cloudflared
-    useradd -r -s /bin/false -d /var/lib/cloudflared cloudflared 2>/dev/null || true
+    useradd -r -s /bin/false -d /etc/cloudflared cloudflared 2>/dev/null || true
     
     # Criar configuração básica
-    mkdir -p /etc/cloudflared /var/lib/cloudflared
+    mkdir -p /etc/cloudflared
     cat > /etc/cloudflared/config.yml << 'EOF'
 # Configuração Cloudflared para Boxserver
 # O ID do túnel e o arquivo de credenciais serão preenchidos automaticamente.
@@ -2315,20 +2315,17 @@ ingress:
   - service: http_status:404
 EOF
     
-    # Configurar permissões
-    chown -R cloudflared:cloudflared /etc/cloudflared
-    
-    # Criar serviço systemd
+    # CORREÇÃO: Criar serviço systemd com caminhos e permissões corretas
     cat > /etc/systemd/system/cloudflared.service << 'EOF'
 [Unit]
-Description=Cloudflare Tunnel Agent
-After=network-online.target
+Description=Cloudflare Tunnel
+After=network.target
 
 [Service]
 Type=simple
 User=cloudflared
 Group=cloudflared
-ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run
+ExecStart=/usr/local/bin/cloudflared --config /etc/cloudflared/config.yml --no-autoupdate tunnel run
 Restart=on-failure
 RestartSec=5s
 
@@ -2336,7 +2333,7 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
     
-    chown -R cloudflared:cloudflared /etc/cloudflared /var/lib/cloudflared
+    chown -R cloudflared:cloudflared /etc/cloudflared
     systemctl daemon-reload
     
     log_message "INFO" "Cloudflared instalado com sucesso"
