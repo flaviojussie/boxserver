@@ -30,7 +30,6 @@ DIALOG_WIDTH=70
 DIALOG_MENU_HEIGHT=12
 
 # MELHORIA: Opções globais do dialog para consistência visual
-export DIALOGRC=/etc/dialogrc.boxserver
 BACKTITLE="Boxserver TUI v1.0 | IP: ${SERVER_IP:-Detectando...} | Hardware: RK322x"
 DIALOG_OPTS=(--backtitle "$BACKTITLE" --colors --ok-label "Confirmar" --cancel-label "Voltar")
 
@@ -89,12 +88,12 @@ check_system_resources() {
     local ram_mb=$(free -m | awk 'NR==2{print $2}')
     local disk_gb=$(df / | awk 'NR==2{print int($4/1024/1024)}')
     local arch=$(uname -m)
+    
     local errors=""
     
     # MELHORIA: Detecção genérica de hardware RK322x
     local board_info=""
     if [ -f /proc/device-tree/model ]; then
-        board_info=$(cat /proc/device-tree/model)
     elif [ -f /sys/firmware/devicetree/base/model ]; then
         board_info=$(cat /sys/firmware/devicetree/base/model)
     fi
@@ -104,7 +103,7 @@ check_system_resources() {
         rk322x_detected=true
         log_message "INFO" "Hardware RK322x/RK3229 detectado. Informações da placa: $board_info"
     else
-        if dialog --title "Confirmação de Hardware" --yesno "Não foi possível detectar automaticamente um hardware RK322x.\n\nEste script é otimizado para essa família de chipsets.\n\nDeseja continuar mesmo assim?" 10 70; then
+        if dialog "${DIALOG_OPTS[@]}" --title "Confirmação de Hardware" --yesno "Não foi possível detectar automaticamente um hardware RK322x.\n\nEste script é otimizado para essa família de chipsets.\n\nDeseja continuar mesmo assim?" 10 70; then
             log_message "WARN" "Hardware não detectado como RK322x, usuário optou por continuar."
         else
             log_message "ERROR" "Instalação cancelada pelo usuário devido a hardware incompatível."
@@ -128,11 +127,11 @@ check_system_resources() {
     fi
     
     if [ -n "$errors" ]; then
-        dialog --title "Verificação do Sistema" --msgbox "Problemas encontrados:\n\n$errors\nRecomenda-se resolver estes problemas antes de continuar." 12 60
+        dialog "${DIALOG_OPTS[@]}" --title "Verificação do Sistema" --msgbox "Problemas encontrados:\n\n$errors\nRecomenda-se resolver estes problemas antes de continuar." 12 60
         return 1
     fi
     
-    dialog --title "Verificação do Sistema" --msgbox "Sistema compatível com RK322x:\n\n• RAM: ${ram_mb}MB ✓\n• Disco Livre: ${disk_gb}GB ✓\n• Arquitetura: $arch ✓" 10 50
+    dialog "${DIALOG_OPTS[@]}" --title "Verificação do Sistema" --msgbox "Sistema compatível com RK322x:\n\n• RAM: ${ram_mb}MB ✓\n• Disco Livre: ${disk_gb}GB ✓\n• Arquitetura: $arch ✓" 10 50
     return 0
 }
 
@@ -161,7 +160,7 @@ optimize_for_nand() {
     # Otimizar cache de dentries e inodes para NAND
     if sysctl vm.vfs_cache_pressure >/dev/null 2>&1; then
         echo 'vm.vfs_cache_pressure=50' | tee -a /etc/sysctl.conf >/dev/null
-        log_message "INFO" "Nível de log do kernel reduzido"
+        log_message "INFO" "Pressão do cache VFS otimizada para 50"
     fi
     
     # Limpar caches antigos
@@ -265,7 +264,7 @@ run_system_checks() {
     check_root
     
     if ! check_system_resources; then
-        if ! dialog --title "Continuar?" --yesno "Foram encontrados problemas no sistema.\n\nDeseja continuar mesmo assim?" 8 50; then
+        if ! dialog "${DIALOG_OPTS[@]}" --title "Continuar?" --yesno "Foram encontrados problemas no sistema.\n\nDeseja continuar mesmo assim?" 8 50; then
             exit 1
         fi
     fi
@@ -278,10 +277,10 @@ run_system_checks() {
         exit 1
     fi
     
-    dialog --title "Verificações Concluídas" --msgbox "Todas as verificações foram concluídas com sucesso!\n\nInterface: $NETWORK_INTERFACE\nIP: $SERVER_IP" 8 50
+    dialog "${DIALOG_OPTS[@]}" --title "Verificações Concluídas" --msgbox "Todas as verificações foram concluídas com sucesso!\n\nInterface: $NETWORK_INTERFACE\nIP: $SERVER_IP" 8 50
     
     # Aplicar otimizações específicas RK322x
-    dialog --title "Otimização RK322x" --infobox "Aplicando otimizações para MXQ-4K..." 5 40
+    dialog "${DIALOG_OPTS[@]}" --title "Otimização RK322x" --infobox "Aplicando otimizações para MXQ-4K..." 5 40
     
     # Detectar e otimizar para hardware específico
     if [[ "$board_info" =~ "RK3229" ]] || [[ "$board_info" =~ "R329Q" ]]; then
@@ -297,7 +296,7 @@ run_system_checks() {
         # Fallback para RK322x genérico
         optimize_for_nand
         apply_rk322x_memory_limits
-        dialog --title "Otimização Genérica" --msgbox "Sistema otimizado para MXQ-4K TV Box RK322x!\n\n• NAND otimizado\n• Memória limitada\n• I/O otimizado" 8 50
+        dialog "${DIALOG_OPTS[@]}" --title "Otimização Genérica" --msgbox "Sistema otimizado para MXQ-4K TV Box RK322x!\n\n• NAND otimizado\n• Memória limitada\n• I/O otimizado" 8 50
         create_swap_file
     fi
 }
@@ -309,7 +308,7 @@ show_system_info() {
     local cpu_info=$(lscpu | grep "Model name" | cut -d: -f2 | xargs)
     local uptime_info=$(uptime -p)
     
-    dialog --title "Informações do Sistema" --msgbox "Sistema: $(lsb_release -d | cut -f2)\nCPU: $cpu_info\nRAM: $ram_info\nDisco: $disk_info\nUptime: $uptime_info\n\nInterface: $NETWORK_INTERFACE\nIP: $SERVER_IP" 12 70
+    dialog "${DIALOG_OPTS[@]}" --title "Informações do Sistema" --msgbox "Sistema: $(lsb_release -d | cut -f2)\nCPU: $cpu_info\nRAM: $ram_info\nDisco: $disk_info\nUptime: $uptime_info\n\nInterface: $NETWORK_INTERFACE\nIP: $SERVER_IP" 12 70
 }
 
 # MELHORIA: Função auxiliar para obter o nome do serviço baseado no ID do aplicativo
@@ -330,6 +329,7 @@ get_service_name() {
         12) echo "minidlna" ;;
         13) echo "cloudflared" ;;
         14) echo "chrony" ;;
+        15) echo "nginx" ;;
         *) echo "" ;;
     esac
 }
@@ -345,7 +345,7 @@ check_app_status() {
         1) [[ -f "/etc/pihole/setupVars.conf" ]] && is_installed=true ;;
         2) [[ -f "/etc/unbound/unbound.conf" ]] && is_installed=true ;;
         3) [[ -f "/etc/wireguard/wg0.conf" ]] && is_installed=true ;;
-        4) command -v cockpit-ws &>/dev/null && is_installed=true ;;
+        4) [[ -f "/etc/cockpit/cockpit.conf" ]] && is_installed=true ;;
         5) command -v filebrowser &>/dev/null && is_installed=true ;;
         6) [[ -f "/etc/netdata/netdata.conf" ]] && is_installed=true ;;
         7) command -v fail2ban-client &>/dev/null && is_installed=true ;;
@@ -356,6 +356,7 @@ check_app_status() {
         12) [[ -f "/etc/minidlna.conf" ]] && is_installed=true ;;
         13) command -v cloudflared &>/dev/null && is_installed=true ;;
         14) command -v chronyd &>/dev/null && is_installed=true ;;
+        15) [[ -f "/etc/nginx/sites-available/boxserver" ]] && is_installed=true ;;
     esac
 
     if [ "$is_installed" = false ]; then
@@ -440,6 +441,7 @@ get_service_name() {
         12) echo "minidlna" ;;
         13) echo "cloudflared" ;;
         14) echo "chrony" ;;
+        15) echo "nginx" ;;
         *) echo "" ;;
     esac
 }
@@ -466,6 +468,7 @@ check_app_status() {
         12) [[ -f "/etc/minidlna.conf" ]] && is_installed=true ;;
         13) command -v cloudflared &>/dev/null && is_installed=true ;;
         14) command -v chronyd &>/dev/null && is_installed=true ;;
+        15) [[ -f "/etc/nginx/sites-available/boxserver" ]] && is_installed=true ;;
     esac
 
     if [ "$is_installed" = false ]; then
@@ -495,6 +498,7 @@ get_service_name() {
         12) echo "minidlna" ;;
         13) echo "cloudflared" ;;
         14) echo "chrony" ;;
+        15) echo "nginx" ;;
         *) echo "" ;;
     esac
 }
@@ -667,7 +671,7 @@ install_selected_apps() {
     local apps_to_install=("$@")
     local total_steps=$(( ${#apps_to_install[@]} * 2 + 2 )) # Preparação, apt, e 2 etapas por app
     local current_step=0
-    
+
     # Criar arquivo de configuração
     cat > "$CONFIG_DIR/system.conf" << EOF
 # Configurações do Boxserver
@@ -1030,7 +1034,7 @@ EOF
     # Reiniciar serviço
     systemctl restart pihole-FTL
     systemctl enable pihole-FTL
-
+    
     # MELHORIA: Configurar logrotate para Pi-hole conforme documentação
     setup_logrotate
     
@@ -1128,7 +1132,7 @@ EOF
             break
         fi
     done
-
+    
     if [ "$download_success" = false ]; then
         log_message "ERROR" "Falha ao baixar root hints de todas as fontes."
         return 1
@@ -1632,7 +1636,7 @@ install_netdata() {
     rm -rf /etc/netdata /var/lib/netdata /var/cache/netdata /var/log/netdata
     log_message "INFO" "Instalando dependências de compilação para o Netdata..."
     apt-get install -y build-essential cmake git autoconf automake curl libuv1-dev liblz4-dev libjudy-dev libssl-dev libelf-dev uuid-dev zlib1g-dev
-    
+
     # Baixar e instalar Netdata com otimizações
     bash <(curl -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry --no-updates
     
@@ -1678,7 +1682,7 @@ EOF
     
     # CORREÇÃO: Garantir que o usuário netdata tenha permissão para ler a configuração.
     chown -R netdata:netdata /etc/netdata
-    
+
     # Reiniciar serviço
     systemctl restart netdata
     systemctl enable netdata
@@ -2036,7 +2040,7 @@ install_chrony() {
         log_message "ERROR" "Falha na instalação do Chrony"
         return 1
     fi
-
+    
     # Configurar servidores NTP brasileiros
     cat > /etc/chrony/chrony.conf << 'EOF'
 # Welcome to the chrony configuration file. See chrony.conf(5) for more
@@ -2072,10 +2076,10 @@ rtcsync
 # Step the clock quickly on start.
 makestep 1 3
 EOF
-
+    
     systemctl restart chrony
     systemctl enable chrony
-
+    
     if systemctl is-active --quiet chrony; then
         log_message "INFO" "Chrony instalado e configurado com sucesso."
     else
@@ -2139,7 +2143,7 @@ install_web_interface() {
 </body>
 </html>
 EOF'
-
+    
     # Criar arquivo CSS
     cat > "$web_root/style.css" << 'EOF'
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f9; color: #333; margin: 0; padding: 2em; }
@@ -2154,7 +2158,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helve
 .card a { display: inline-block; margin-top: 1em; padding: 0.7em 1.5em; background-color: #3498db; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; }
 .card a:hover { background-color: #2980b9; }
 EOF
-
+    
     # Criar arquivo JavaScript dinâmico
     cat > "$web_root/script.js" << 'EOF'
 const services = [
@@ -2200,17 +2204,17 @@ function startRealtimeUpdates() {
 function updateSystemInfo() {
     const netdataUrl = 'http://' + window.location.hostname + ':19999/api/v1/data?chart=system.cpu&after=-1&points=1&group=average&format=json';
     const ramUrl = 'http://' + window.location.hostname + ':19999/api/v1/data?chart=system.ram&dimension=used&after=-1&points=1&format=json';
-
+    
     fetch(netdataUrl).then(r => r.json()).then(data => {
         document.getElementById('cpu-usage').textContent = data.data[0][1].toFixed(1);
     }).catch(e => console.error('Error fetching CPU data:', e));
-
+    
     fetch(ramUrl).then(r => r.json()).then(data => {
         document.getElementById('ram-usage').textContent = data.data[0][1].toFixed(1);
     }).catch(e => console.error('Error fetching RAM data:', e));
 }
 EOF
-
+    
     # Criar configuração do Nginx
     cat > /etc/nginx/sites-available/boxserver << 'EOF'
 server {
@@ -2227,14 +2231,14 @@ server {
     # As localizações dos serviços serão adicionadas aqui por 'enable_nginx_proxy'
 }
 EOF
-
+    
     # Habilitar o site e remover o padrão
     ln -sf /etc/nginx/sites-available/boxserver /etc/nginx/sites-enabled/
     rm -f /etc/nginx/sites-enabled/default
     local nginx_service=$(get_nginx_service_name)
     systemctl enable "$nginx_service"
     systemctl restart "$nginx_service"
-
+    
     log_message "INFO" "Interface Web instalada. Acesse em http://$SERVER_IP"
 }
 
@@ -2262,7 +2266,7 @@ enable_nginx_proxy() {
     location /netdata/ {\n        proxy_pass http://127.0.0.1:19999/;\n    }' "$config_file"
             ;;
         10) # Rclone Web-GUI
-             sed -i '/# As localizações dos serviços/a \
+            sed -i '/# As localizações dos serviços/a \
     location /rclone/ {\n        proxy_pass http://127.0.0.1:5572/;\n    }' "$config_file"
             ;;
     esac
@@ -2283,7 +2287,7 @@ install_cloudflared() {
         download_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm.deb"
         log_message "INFO" "Arquitetura ARM (32-bit) detectada. Baixando cloudflared-linux-arm.deb"
     fi
-
+    
     wget -O /tmp/cloudflared.deb "$download_url"
     
     if [ $? -ne 0 ]; then
@@ -2391,17 +2395,17 @@ cloudflare_login() {
             return 0
         fi
     fi
-
+    
     # MELHORIA: Extrair a URL de login e exibi-la de forma clara
     local login_url
     login_url=$(cloudflared tunnel login 2>&1 | grep -Eo 'https://dash\.cloudflare\.com/[-a-zA-Z0-9()@:%_\+.~#?&=]*' | head -1)
-
+    
     if [ -z "$login_url" ]; then
         dialog "${DIALOG_OPTS[@]}" --title "Erro de Login" --msgbox "Não foi possível obter a URL de login do Cloudflare.\n\nVerifique sua conexão e tente novamente." 8 60
         log_message "ERROR" "Falha ao obter a URL de login do Cloudflare."
         return 1
     fi
-
+    
     dialog --title "Login Cloudflare" --msgbox "Abra a seguinte URL em um navegador para fazer login:\n\n\Z1$login_url\Z0\n\nApós autorizar o túnel no navegador, pressione ENTER aqui para continuar." 12 90
     
     # Verificar se o certificado foi criado
@@ -2539,16 +2543,16 @@ update_ingress_rule() {
     local domain="$1"
     local port="$2"
     local config_file="/etc/cloudflared/config.yml"
-    
+
     # Backup da configuração atual
     cp "$config_file" "$config_file.bak"
-    
+
     # MELHORIA: Lógica robusta para adicionar/atualizar regras de ingress.
     # Extrai a seção de ingress, remove a regra antiga, adiciona a nova e junta tudo.
     # Isso evita problemas com sed em diferentes versões.
     local ingress_section=$(awk '/^ingress:/ {p=1; next} p && /^[^ ]/ {p=0} p' "$config_file")
     local other_configs=$(awk '/^ingress:/ {p=1; next} p && /^[^ ]/ {p=0} !p' "$config_file")
-
+    
     # Remover a regra existente para o mesmo hostname
     local updated_ingress=""
     local skip_next=false
@@ -2568,10 +2572,10 @@ update_ingress_rule() {
 
     # Remover a regra catch-all antiga para readicioná-la no final
     updated_ingress=$(echo -e "$updated_ingress" | grep -v "service:http_status:404")
-
+    
     # Adicionar a nova regra e a regra catch-all no final
     local new_ingress_section=$(printf "ingress:\n%b  - hostname: %s\n    service: http://127.0.0.1:%s\n  - service: http_status:404" "$(echo -e "$updated_ingress" | sed '/^$/d')" "$domain" "$port")
-
+    
     # Recriar o arquivo de configuração
     echo -e "$other_configs\n$new_ingress_section" > "$config_file"
 }
@@ -2638,7 +2642,7 @@ cloudflare_test_tunnel() {
     else
         test_results+="✗ Configuração: INVÁLIDA\n"
     fi
-    
+
     # Verificar túnel
     if cloudflared tunnel list | grep -q "boxserver-tunnel"; then
         test_results+="✓ Túnel: ENCONTRADO\n"
@@ -3044,7 +3048,7 @@ check_wireguard_status() {
 # Gerar novo cliente WireGuard
 generate_wireguard_client() {
     local client_name=$(dialog "${DIALOG_OPTS[@]}" --title "Novo Cliente" --inputbox "Nome do cliente:" 8 40 3>&1 1>&2 2>&3)
-
+    
     if [[ -z "$client_name" ]]; then
         dialog --title "Erro" --msgbox "Nome do cliente é obrigatório!" 6 40
         return 1
@@ -3055,7 +3059,7 @@ generate_wireguard_client() {
         dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Cliente '$client_name' já existe!" 6 40
         return 1
     fi
-
+    
     dialog --title "Gerando Cliente" --infobox "Criando configuração para $client_name..." 5 50
 
     # Criar diretório de clientes se não existir
@@ -4020,7 +4024,7 @@ restart_netdata_service() {
     dialog --title "Reiniciando Netdata" --infobox "Reiniciando serviço..." 5 30
     systemctl restart netdata
     sleep 2
-    
+
     if systemctl is-active --quiet netdata; then
         dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "Netdata reiniciado com sucesso!" 6 40
     else
@@ -4127,7 +4131,7 @@ restart_filebrowser_service() {
     dialog --title "Reiniciando FileBrowser" --infobox "Reiniciando serviço..." 5 30
     systemctl restart filebrowser
     sleep 2
-    
+
     if systemctl is-active --quiet filebrowser; then
         dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "FileBrowser reiniciado com sucesso!" 6 40
     else
@@ -4239,7 +4243,7 @@ restart_minidlna_service() {
     dialog --title "Reiniciando MiniDLNA" --infobox "Reiniciando serviço..." 5 30
     systemctl restart minidlna
     sleep 2
-    
+
     if systemctl is-active --quiet minidlna; then
         dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "MiniDLNA reiniciado com sucesso!" 6 40
     else
@@ -4272,7 +4276,7 @@ configure_netdata_access() {
             dialog "${DIALOG_OPTS[@]}" --title "Acesso" --msgbox "Acesso restrito à rede local." 6 40
             ;;
         3)
-            dialog "${DIALOG_OPTS[@]}" --title "Senha" --msgbox "Configuração de senha será implementada\nem versão futura." 8 50
+            dialog --title "Senha" --msgbox "Configuração de senha será implementada\nem versão futura." 8 50
             ;;
     esac
 }
