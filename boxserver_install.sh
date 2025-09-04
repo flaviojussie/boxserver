@@ -3100,16 +3100,15 @@ EOF
 
     # Gerar QR Code se qrencode estiver disponível
     if command -v qrencode &>/dev/null; then
-        # MELHORIA: Exibir a configuração e o QR Code juntos em uma caixa de texto rolável.
+        # MELHORIA: Priorizar a exibição do QR Code, colocando-o no topo da caixa de diálogo.
         local client_config_content=$(cat "$client_config_path")
         local qr_code_terminal=$(qrencode -t ansiutf8 <<< "$client_config_content")
         
-        local dialog_text="Cliente '$client_name' criado com sucesso.\n\n"
-        dialog_text+="Arquivo de configuração salvo em:\n$client_config_path\n\n"
-        dialog_text+="--- Configuração do Cliente (copie se necessário) ---\n"
-        dialog_text+="$client_config_content\n"
-        dialog_text+="--- QR Code (use as setas para rolar para baixo) ---\n\n"
+        local dialog_text="Cliente '$client_name' criado. Aponte a câmera do app WireGuard abaixo:\n\n"
         dialog_text+="$qr_code_terminal"
+        dialog_text+="\n\n--- Detalhes da Configuração ---\n"
+        dialog_text+="Arquivo salvo em: $client_config_path\n\n"
+        dialog_text+="$client_config_content"
 
         # Exibir o QR Code e as informações no dialog usando --textbox
         echo -e "$dialog_text" | dialog "${DIALOG_OPTS[@]}" --title "Cliente WireGuard: $client_name" --textbox - 25 80
