@@ -1629,7 +1629,7 @@ install_netdata() {
     systemctl stop netdata 2>/dev/null
     userdel netdata 2>/dev/null
     rm -rf /etc/netdata /var/lib/netdata /var/cache/netdata /var/log/netdata
-    # MELHORIA: Instalar todas as dependências de compilação necessárias para o Netdata
+    # MELHORIA: Instalar todas as dependências de compilação necessárias para o Netdata e garantir que o curl esteja presente
     apt install -y build-essential cmake git autoconf automake curl libuv1-dev liblz4-dev libjudy-dev libssl-dev libelf-dev uuid-dev zlib1g-dev
     
     # Baixar e instalar Netdata com otimizações
@@ -2246,9 +2246,9 @@ enable_nginx_proxy() {
             sed -i "/# As localizações dos serviços/a \\\n    location /pihole/ {\\\n        proxy_pass http://127.0.0.1:$pihole_port/admin/;\\\n        proxy_set_header Host \\\$host;\\\n        proxy_set_header X-Real-IP \\\$remote_addr;\\\n    }" "$config_file"
             log_message "INFO" "Nginx: Proxy para Pi-hole habilitado." ;;
         4) # Cockpit
-            sed -i '/# As localizações dos serviços/a \
-    location /cockpit/ {\n        proxy_pass http://127.0.0.1:9090/;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection "upgrade";\n    }' "$config_file"
-            log_message "INFO" "Nginx: Proxy para Cockpit habilitado." ;;
+            # CORREÇÃO: Configuração de proxy robusta para Cockpit, incluindo WebSockets.
+            sed -i '/# As localizações dos serviços/a \    location /cockpit/ {\n        proxy_pass http://127.0.0.1:9090/cockpit/;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection "upgrade";\n    }' "$config_file"
+            log_message "INFO" "Nginx: Proxy para Cockpit (com suporte a WebSocket) habilitado." ;;
         5) # FileBrowser
             sed -i '/# As localizações dos serviços/a \
     location /filebrowser/ {\n        proxy_pass http://127.0.0.1:8080/;\n    }' "$config_file"
@@ -2328,7 +2328,7 @@ After=network-online.target
 Type=simple
 User=cloudflared
 Group=cloudflared
-ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/config.yml run
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run
 Restart=on-failure
 RestartSec=5s
 
@@ -2963,35 +2963,6 @@ validate_tunnel_configuration() {
     fi
 }
 
-# Menu pós-instalação
-post_installation_menu() {
-    while true; do
-        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento do Boxserver" --menu "Instalação concluída. O que deseja fazer agora?" 20 70 13 \
-            "1" "Gerenciamento de Serviços" \
-            "2" "Configurar WireGuard VPN" \
-            "3" "Configurar Túnel Cloudflare" \
-            "4" "Diagnóstico e Testes" \
-            "5" "Manutenção e Backups" \
-            "6" "Segurança (Firewall & Fail2Ban)" \
-            "7" "Configurar Aplicativos" \
-            "8" "Sair" \
-            3>&1 1>&2 2>&3)
-        
-        case $choice in
-            1) manage_services_menu ;;
-            2) configure_wireguard_vpn ;;
-            3) configure_cloudflare_tunnel ;;
-            4) diagnostics_menu ;;
-            5) maintenance_menu ;;
-            6) security_menu ;;
-            7) configure_apps_menu ;;
-            8|""|"Sair")
-                break
-                ;;
-        esac
-    done
-}
-
 # Configuração do WireGuard VPN
 configure_wireguard_vpn() {
     while true; do
@@ -3122,20 +3093,20 @@ EOF
     echo "AllowedIPs = $client_ip/32" >> /etc/wireguard/wg0.conf
 
     # Gerar QR Code se qrencode estiver disponível
-    if command -v qrencode &>/dev/null;
-    then
+    if command -v qrencode &>/dev/null; then
         local qr_file="/etc/wireguard/clients/${client_name}.png"
-        local client_config_content=$(cat "$client_config_path")
         qrencode -t png -o "$qr_file" < "$client_config_path"
 
-        # MELHORIA: Exibir o QR code em um textbox para melhor renderização
-        # e fornecer um fallback claro.
-        local qr_terminal_text="Configuração do Cliente '$client_name':\n\n$client_config_content\n\n"
+        # MELHORIA: Exibir o QR code diretamente no terminal com fallback claro.
+        local qr_terminal_text="Configuração do Cliente '$client_name':\n\n"
+        qr_terminal_text+=$(cat "$client_config_path")
+        qr_terminal_text+="\n\n"
         qr_terminal_text+="QR Code (aponte a câmera do seu app WireGuard aqui):\n\n"
         qr_terminal_text+="$(qrencode -t ansiutf8 < "$client_config_path")"
         qr_terminal_text+="\n\nSe o QR code aparecer quebrado, você pode usar o arquivo de imagem salvo em:\n$qr_file"
         
-        dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado: $client_name" --textbox <(echo -e "$qr_terminal_text") 25 80
+        # Usar --textbox para melhor renderização de caracteres especiais, lendo da stdin
+        echo -e "$qr_terminal_text" | dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado: $client_name" --textbox - 25 80
     else
         dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\n(Instale 'qrencode' para gerar QR codes)" 12 60
     fi
@@ -4461,6 +4432,129 @@ manage_services_menu() {
                     ;;
             esac
         fi
+    done
+}
+
+# IMPLEMENTAÇÃO: Menu para configurar aplicativos específicos
+configure_apps_menu() {
+    while true; do
+        local menu_items=()
+        # Adiciona apenas aplicativos instalados que têm um menu de configuração
+        if [[ "$(check_app_status 1)" != "not_installed" || "$(check_app_status 2)" != "not_installed" ]]; then
+            menu_items+=("1" "Configurar Pi-hole & Unbound")
+        fi
+        if [[ "$(check_app_status 5)" != "not_installed" ]]; then
+            menu_items+=("2" "Configurar FileBrowser")
+        fi
+        if [[ "$(check_app_status 6)" != "not_installed" ]]; then
+            menu_items+=("3" "Configurar Netdata")
+        fi
+        if [[ "$(check_app_status 12)" != "not_installed" ]]; then
+            menu_items+=("4" "Configurar MiniDLNA")
+        fi
+        if [[ "$(check_app_status 10)" != "not_installed" ]]; then
+            menu_items+=("5" "Configurar Rclone")
+        fi
+
+        if [ ${#menu_items[@]} -eq 0 ]; then
+            dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" --msgbox "Nenhum aplicativo configurável foi instalado ainda." 8 60
+            break
+        fi
+
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" --menu "Selecione um aplicativo para configurar:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT "${menu_items[@]}" 3>&1 1>&2 2>&3)
+
+        if [ $? -ne 0 ]; then
+            break
+        fi
+
+        case $choice in
+            1) configure_pihole_unbound ;;
+            2) configure_filebrowser ;;
+            3) configure_netdata ;;
+            4) configure_minidlna ;;
+            5) configure_rclone_service ;;
+        esac
+    done
+}
+
+# IMPLEMENTAÇÃO: Menu de gerenciamento de serviços
+manage_services_menu() {
+    while true; do
+        local menu_items=()
+        # Itera sobre os aplicativos na ordem de prioridade para consistência
+        local priority_order=(1 2 3 4 5 6 7 8 9 12 13 14 15)
+
+        for app_id in "${priority_order[@]}"; do
+            local service_name=$(get_service_name "$app_id")
+            # Adiciona ao menu apenas se for um serviço gerenciável e estiver instalado
+            if [ -n "$service_name" ] && [[ "$(check_app_status "$app_id")" != "not_installed" ]]; then
+                local app_name=$(echo "${APPS[$app_id]}" | cut -d'|' -f1)
+                local status_icon="❌" # Padrão para inativo
+
+                if systemctl is-active --quiet "$service_name" 2>/dev/null; then
+                    status_icon="✅"
+                fi
+                menu_items+=("$app_id" "$status_icon $app_name")
+            fi
+        done
+
+        if [ ${#menu_items[@]} -eq 0 ]; then
+            dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Serviços" --msgbox "Nenhum serviço gerenciável foi instalado ainda." 8 60
+            break
+        fi
+
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Serviços" --menu "Selecione um serviço para gerenciar:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT "${menu_items[@]}" 3>&1 1>&2 2>&3)
+
+        exit_status=$?
+        if [ $exit_status -ne 0 ]; then
+            break
+        fi
+
+        # Ação de gerenciamento para o serviço escolhido
+        manage_single_service "$choice"
+    done
+}
+
+# IMPLEMENTAÇÃO: Menu para configurar aplicativos específicos
+configure_apps_menu() {
+    while true; do
+        local menu_items=()
+        # Adiciona apenas aplicativos instalados que têm um menu de configuração
+        if [[ "$(check_app_status 1)" != "not_installed" || "$(check_app_status 2)" != "not_installed" ]]; then
+            menu_items+=("1" "Configurar Pi-hole & Unbound")
+        fi
+        if [[ "$(check_app_status 5)" != "not_installed" ]]; then
+            menu_items+=("2" "Configurar FileBrowser")
+        fi
+        if [[ "$(check_app_status 6)" != "not_installed" ]]; then
+            menu_items+=("3" "Configurar Netdata")
+        fi
+        if [[ "$(check_app_status 12)" != "not_installed" ]]; then
+            menu_items+=("4" "Configurar MiniDLNA")
+        fi
+        if [[ "$(check_app_status 10)" != "not_installed" ]]; then
+            menu_items+=("5" "Configurar Rclone")
+        fi
+
+        if [ ${#menu_items[@]} -eq 0 ]; then
+            dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" --msgbox "Nenhum aplicativo configurável foi instalado ainda." 8 60
+            break
+        fi
+
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" \
+            --menu "Selecione um aplicativo para configurar detalhes avançados (portas, usuários, etc.):" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT "${menu_items[@]}" 3>&1 1>&2 2>&3)
+
+        if [ $? -ne 0 ]; then
+            break
+        fi
+
+        case $choice in
+            1) configure_pihole_unbound ;;
+            2) configure_filebrowser ;;
+            3) configure_netdata ;;
+            4) configure_minidlna ;;
+            5) configure_rclone_service ;;
+        esac
     done
 }
 
