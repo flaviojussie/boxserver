@@ -2971,12 +2971,12 @@ configure_wireguard_vpn() {
         local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração WireGuard VPN" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Verificar status do WireGuard" \
             "2" "Gerar novo cliente" \
-            "3" "Listar clientes existentes" \
-            "4" "Remover cliente" \
-            "5" "Regenerar chaves do servidor" \
-            "6" "Configurar interface de rede" \
-            "7" "Testar conectividade VPN" \
-            "8" "Exportar configuração cliente" \
+            "3" "Ver/Exportar Configuração de Cliente" \
+            "4" "Listar todos os clientes" \
+            "5" "Remover cliente" \
+            "6" "Regenerar chaves do servidor" \
+            "7" "Configurar interface de rede" \
+            "8" "Testar conectividade VPN" \
             "9" "Configurações avançadas" \
             "10" "Voltar" \
             3>&1 1>&2 2>&3)
@@ -2988,14 +2988,14 @@ configure_wireguard_vpn() {
         case $choice in
             1) check_wireguard_status ;;
             2) generate_wireguard_client ;;
-            3) list_wireguard_clients ;;
-            4) remove_wireguard_client ;;
-            5) regenerate_server_keys ;;
-            6) configure_network_interface ;;
-            7) test_vpn_connectivity ;;
-            8) export_client_config ;;
+            3) show_wireguard_client ;;
+            4) list_wireguard_clients ;;
+            5) remove_wireguard_client ;;
+            6) regenerate_server_keys ;;
+            7) configure_network_interface ;;
+            8) test_vpn_connectivity ;;
             9) wireguard_advanced_settings ;;
-            10|"")
+            10|"") 
                 break
                 ;;
         esac
@@ -3115,6 +3115,52 @@ EOF
         echo -e "$dialog_text" | dialog "${DIALOG_OPTS[@]}" --title "Cliente WireGuard: $client_name" --textbox - 25 80
     else
         dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\n(Instale 'qrencode' para gerar QR codes)" 12 60
+    fi
+}
+
+# IMPLEMENTAÇÃO: Função para mostrar configuração e QR Code de um cliente existente
+show_wireguard_client() {
+    if [[ ! -d "/etc/wireguard/clients" ]] || [[ -z "$(ls -A /etc/wireguard/clients/*.conf 2>/dev/null)" ]]; then
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Nenhum cliente encontrado." 6 50
+        return 1
+    fi
+
+    local client_list=()
+    for client_file in /etc/wireguard/clients/*.conf; do
+        if [[ -f "$client_file" ]]; then
+            local client_name=$(basename "$client_file" .conf)
+            client_list+=("$client_name" "")
+        fi
+    done
+
+    local client_to_show=$(dialog "${DIALOG_OPTS[@]}" --title "Ver Cliente" --menu "Selecione o cliente para ver a configuração:" 15 50 8 "${client_list[@]}" 3>&1 1>&2 2>&3)
+
+    if [[ -z "$client_to_show" ]]; then
+        return 0
+    fi
+
+    local client_config_path="/etc/wireguard/clients/${client_to_show}.conf"
+
+    if ! command -v qrencode &>/dev/null; then
+        dialog "${DIALOG_OPTS[@]}" --title "Configuração: $client_to_show" --textbox "$client_config_path" 20 80
+        return 0
+    fi
+
+    # Exibir configuração e QR Code
+    local client_config_content=$(cat "$client_config_path")
+    local qr_code_terminal=$(qrencode -t ansiutf8 <<< "$client_config_content")
+    
+    local dialog_text="Configuração do Cliente '$client_to_show':\n\n"
+    dialog_text+="Arquivo: $client_config_path\n\n"
+    dialog_text+="--- Conteúdo do Arquivo ---\n"
+    dialog_text+="$client_config_content\n"
+    dialog_text+="--- QR Code (role para baixo) ---\n\n"
+    dialog_text+="$qr_code_terminal"
+
+    echo -e "$dialog_text" | dialog "${DIALOG_OPTS[@]}" --title "Cliente: $client_to_show" --textbox - 25 80
+
+    if dialog "${DIALOG_OPTS[@]}" --title "Exportar" --yesno "Deseja exportar este arquivo de configuração?" 7 60; then
+        export_client_config "$client_to_show"
     fi
 }
 
@@ -3338,28 +3384,32 @@ test_vpn_connectivity() {
 }
 
 # Exportar configuração de cliente
-export_client_config() {
-    if [[ ! -d "/etc/wireguard/clients" ]] || [[ -z "$(ls -A /etc/wireguard/clients 2>/dev/null)" ]]; then
-        dialog --title "Erro" --msgbox "Nenhum cliente encontrado para exportar." 6 50
-        return 1
-    fi
-    
-    # Criar lista de clientes
-    local client_list=()
-    for client_file in /etc/wireguard/clients/*.conf; do
-        if [[ -f "$client_file" ]]; then
-            local client_name=$(basename "$client_file" .conf)
-            client_list+=("$client_name" "")
-        fi
-    done
-    
-    local client_to_export=$(dialog "${DIALOG_OPTS[@]}" --title "Exportar Cliente" --menu "Selecione o cliente para exportar:" 15 50 8 "${client_list[@]}" 3>&1 1>&2 2>&3)
-    
+export_client_config() {    
+    local client_to_export="$1"
+
+    # Se nenhum cliente foi passado como argumento, perguntar qual exportar
     if [[ -z "$client_to_export" ]]; then
-        return 0
+        if [[ ! -d "/etc/wireguard/clients" ]] || [[ -z "$(ls -A /etc/wireguard/clients/*.conf 2>/dev/null)" ]]; then
+            dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Nenhum cliente encontrado para exportar." 6 50
+            return 1
+        fi
+        
+        local client_list=()
+        for client_file in /etc/wireguard/clients/*.conf; do
+            if [[ -f "$client_file" ]]; then
+                local client_name=$(basename "$client_file" .conf)
+                client_list+=("$client_name" "")
+            fi
+        done
+        
+        client_to_export=$(dialog "${DIALOG_OPTS[@]}" --title "Exportar Cliente" --menu "Selecione o cliente para exportar:" 15 50 8 "${client_list[@]}" 3>&1 1>&2 2>&3)
+        
+        if [[ -z "$client_to_export" ]]; then
+            return 0
+        fi
     fi
     
-    local export_path=$(dialog "${DIALOG_OPTS[@]}" --title "Local de Exportação" --inputbox "Caminho para exportar:" 8 60 "/tmp/${client_to_export}.conf" 3>&1 1>&2 2>&3)
+    local export_path=$(dialog "${DIALOG_OPTS[@]}" --title "Local de Exportação" --inputbox "Caminho para salvar o arquivo .conf:" 8 60 "/tmp/${client_to_export}.conf" 3>&1 1>&2 2>&3)
     
     if [[ -z "$export_path" ]]; then
         return 0
@@ -3369,7 +3419,7 @@ export_client_config() {
     if cp "/etc/wireguard/clients/${client_to_export}.conf" "$export_path"; then
         dialog "${DIALOG_OPTS[@]}" --title "Exportação Concluída" --msgbox "Configuração do cliente '$client_to_export' exportada para:\n$export_path" 8 70
     else
-        dialog --title "Erro" --msgbox "Falha ao exportar configuração!" 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao exportar configuração!" 6 40
     fi
 }
 
@@ -4459,6 +4509,37 @@ manage_services_menu() {
             esac
         fi
     done
+}
+
+# IMPLEMENTAÇÃO: Função para gerenciar um único serviço
+manage_single_service() {
+    local app_id="$1"
+    local service_name=$(get_service_name "$app_id")
+    local app_name=$(echo "${APPS[$app_id]}" | cut -d'|' -f1)
+
+    if [ -z "$service_name" ]; then
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Nenhum serviço associado a '$app_name'." 6 50
+        return
+    fi
+
+    local action=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciar: $app_name" --menu "Escolha uma ação:" 15 50 4 \
+        "start" "Iniciar" \
+        "stop" "Parar" \
+        "restart" "Reiniciar" \
+        "status" "Ver Status" \
+        3>&1 1>&2 2>&3)
+
+    case $action in
+        start|stop|restart)
+            systemctl "$action" "$service_name"
+            dialog "${DIALOG_OPTS[@]}" --title "Ação Executada" --infobox "Comando '$action' executado para $app_name." 5 50
+            sleep 1
+            ;;
+        status)
+            local status_output=$(systemctl status "$service_name" --no-pager -l)
+            dialog "${DIALOG_OPTS[@]}" --title "Status: $app_name" --msgbox "$status_output" 20 80
+            ;;
+    esac
 }
 
 # IMPLEMENTAÇÃO: Menu para configurar aplicativos específicos
