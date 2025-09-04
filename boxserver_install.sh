@@ -116,7 +116,7 @@ setup_directories() {
 # Função para validar números de porta
 validate_port_number() {
     local port="$1"
-    if [[ ! "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1 ]] || [[ "$port" -gt 65535 ]]; then
+    if ! echo "$port" | grep -qE '^[0-9]+$' || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
         return 1
     fi
     return 0
@@ -125,14 +125,14 @@ validate_port_number() {
 # Função para validar endereços IP
 validate_ip_address() {
     local ip="$1"
-    if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    if ! echo "$ip" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
         return 1
     fi
     
     # Verificar cada octeto
     IFS='.' read -r -a octets <<< "$ip"
     for octet in "${octets[@]}"; do
-        if [[ "$octet" -lt 0 ]] || [[ "$octet" -gt 255 ]]; then
+        if [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ]; then
             return 1
         fi
     done
@@ -143,7 +143,7 @@ validate_ip_address() {
 # Função para validar domínios
 validate_domain_name() {
     local domain="$1"
-    if [[ ! "$domain" =~ ^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
+    if ! echo "$domain" | grep -qE '^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'; then
         return 1
     fi
     return 0
@@ -153,12 +153,12 @@ validate_domain_name() {
 validate_file_path() {
     local path="$1"
     # Verificar se o caminho não contém caracteres perigosos
-    if [[ "$path" =~ [;\|\&\`\$\(\)] ]]; then
+    if echo "$path" | grep -q '[;|\&`$()]'; then
         return 1
     fi
     
     # Verificar se é um caminho absoluto ou relativo válido
-    if [[ ! "$path" =~ ^(/|\.|~) ]]; then
+    if ! echo "$path" | grep -qE '^(/|\.|~)'; then
         return 1
     fi
     
@@ -343,7 +343,7 @@ check_system_resources() {
     local rk322x_detected=false
     # A detecção agora verifica o conteúdo de 'board_info' OU faz um fallback para /proc/cpuinfo
     # O 'grep' só é executado se 'board_info' estiver vazio, tornando o processo mais eficiente.
-    if [[ "$board_info" =~ "rk322x" ]] || [[ "$board_info" =~ "rk3229" ]] || grep -q -E "rk322x|rk3229" /proc/cpuinfo 2>/dev/null; then
+    if echo "$board_info" | grep -q -E "rk322x|rk3229" || grep -q -E "rk322x|rk3229" /proc/cpuinfo 2>/dev/null; then
         rk322x_detected=true
         log_message "INFO" "Hardware RK322x/RK3229 detectado. Informações da placa: $board_info"
     else
@@ -527,7 +527,7 @@ run_system_checks() {
     dialog "${DIALOG_OPTS[@]}" --title "Otimização RK322x" --infobox "Aplicando otimizações para MXQ-4K..." 5 40
     
     # Detectar e otimizar para hardware específico
-    if [[ "$board_info" =~ "RK3229" ]] || [[ "$board_info" =~ "R329Q" ]]; then
+    if echo "$board_info" | grep -qE "RK3229|R329Q"; then
         log_message "INFO" "Detectado RK3229 R329Q V3.0 - aplicando otimizações específicas"
         # Otimizar para NAND 8GB
         optimize_for_nand
@@ -744,7 +744,7 @@ select_applications() {
                     break
                     ;;
                 *)
-                    if [[ "$choice" =~ ^[0-9]+$ ]] && [ -n "${APPS[$choice]}" ]; then
+                    if echo "$choice" | grep -qE '^[0-9]+$' && [ -n "${APPS[$choice]}" ]; then
                         selected_apps+=("$choice")
                         process_choices=true
                     fi
