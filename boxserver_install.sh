@@ -3377,7 +3377,7 @@ wireguard_advanced_settings() {
             "5" "Backup/Restore configurações" \
             "6" "Logs e diagnósticos" \
             "7" "Voltar" \
-            3>&1 1>&2 2>&3) # Faltava esta linha
+            3>&1 1>&2 2>&3)
         
         case $choice in
             1) change_wireguard_port ;;
@@ -4012,6 +4012,10 @@ manage_filebrowser_users() {
         "5" "Voltar" \
         3>&1 1>&2 2>&3)
     
+    if [ $? -ne 0 ]; then
+        break
+    fi
+
     case $choice in
         1)
             local users=$(filebrowser -d /var/lib/filebrowser/filebrowser.db users ls 2>/dev/null || echo "Erro ao listar usuários")
@@ -4109,6 +4113,10 @@ configure_minidlna_dirs() {
         "6" "Voltar" \
         3>&1 1>&2 2>&3)
     
+    if [ $? -ne 0 ]; then
+        break
+    fi
+
     case $choice in
         1)
             local dirs=$(grep "media_dir" /etc/minidlna.conf | head -10)
