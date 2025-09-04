@@ -1950,8 +1950,8 @@ install_fail2ban() {
     
     # Verificar e adicionar jail para Pi-hole se estiver instalado
     if systemctl list-unit-files | grep -q "pihole-FTL" && systemctl is-enabled --quiet pihole-FTL 2>/dev/null; then
-        jail_config+=\"[pihole-web]\nenabled = true\nport = $PIHOLE_PORT,443\nlogpath = /var/log/pihole.log\nmaxretry = 5\nfilter = pihole-web\n\n\"
-        log_message \"INFO\" \"Fail2Ban: Proteção do Pi-hole habilitada\"
+        jail_config+="[pihole-web]\nenabled = true\nport = $PIHOLE_PORT,443\nlogpath = /var/log/pihole.log\nmaxretry = 5\nfilter = pihole-web\n\n"
+        log_message "INFO" "Fail2Ban: Proteção do Pi-hole habilitada"
     fi
     
     # Verificar e adicionar jail para WireGuard se estiver instalado
