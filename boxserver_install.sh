@@ -4561,14 +4561,14 @@ configure_apps_menu() {
 # IMPLEMENTAÇÃO: Menu de diagnóstico
 diagnostics_menu() {
     while true; do
-        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Diagnóstico e Testes" --menu "Selecione um teste para executar:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Diagnóstico e Manutenção" --menu "Selecione uma tarefa para executar:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Relatório de Saúde Completo (boxserver-health)" \
             "2" "Testar Conectividade de Rede" \
             "3" "Testar Resolução DNS (Pi-hole & Unbound)" \
-            "4" "Verificar Status do Firewall (UFW)" \
-            "5" "Verificar Status do Fail2Ban" \
-            "6" "Verificar Status da VPN (WireGuard)" \
-            "7" "Voltar" \
+            "4" "Manutenção (Limpeza, Backups)" \
+            "5" "Verificar Status de um Serviço" \
+            "6" "Ver Logs de Instalação" \
+            "7" "Voltar ao Menu Principal" \
             3>&1 1>&2 2>&3)
 
         case $choice in
@@ -4577,26 +4577,53 @@ diagnostics_menu() {
                 dialog "${DIALOG_OPTS[@]}" --title "Relatório de Saúde" --msgbox "$health_report" 25 80
                 ;;
             2)
-                test_connectivity
-                dialog "${DIALOG_OPTS[@]}" --title "Conectividade" --msgbox "Teste de conectividade concluído." 6 50
+                if test_connectivity; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Conectividade" --msgbox "Teste de conectividade com a internet foi bem-sucedido." 6 60
+                fi
                 ;;
             3)
                 test_dns_resolution
                 ;;
             4)
-                local ufw_status=$(ufw status verbose)
-                dialog "${DIALOG_OPTS[@]}" --title "Status UFW" --msgbox "$ufw_status" 20 80
+                maintenance_menu
                 ;;
             5)
-                local f2b_status=$(systemctl status fail2ban --no-pager -l)
-                dialog "${DIALOG_OPTS[@]}" --title "Status Fail2Ban" --msgbox "$f2b_status" 20 80
+                # Reutiliza o menu de gerenciamento para mostrar o status
+                manage_services_menu
                 ;;
             6)
-                check_wireguard_status
+                show_installation_logs
                 ;;
             7|"")
                 break
                 ;;
+        esac
+    done
+}
+
+# IMPLEMENTAÇÃO: Menu de Manutenção
+maintenance_menu() {
+    while true; do
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Manutenção e Backups" --menu "Escolha uma tarefa de manutenção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Executar Limpeza do Sistema (apt, logs)" \
+            "2" "Fazer Backup das Configurações" \
+            "3" "Ver Backups Existentes" \
+            "4" "Voltar" \
+            3>&1 1>&2 2>&3)
+
+        case $choice in
+            1)
+                /etc/cron.weekly/cleanup-boxserver
+                dialog "${DIALOG_OPTS[@]}" --title "Limpeza" --msgbox "Script de limpeza executado com sucesso." 6 50
+                ;;
+            2)
+                backup_configurations
+                ;;
+            3)
+                local backups=$(ls -lh "$BACKUP_DIR" | awk '{print $9, $5}')
+                dialog "${DIALOG_OPTS[@]}" --title "Backups" --msgbox "Backups disponíveis em $BACKUP_DIR:\n\n$backups" 15 60
+                ;;
+            4|"") break ;;
         esac
     done
 }
@@ -4613,14 +4640,13 @@ configure_rclone_service() {
         if systemctl is-active --quiet rclone-webui 2>/dev/null; then
             webui_status="ATIVO"
         fi
-
-        local choice=$(dialog --title "Configuração Rclone" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração Rclone" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Configurar um novo 'remote' (rclone config)" \
             "2" "Listar 'remotes' configurados" \
             "3" "Habilitar/Iniciar Web-GUI (Status: $webui_status)" \
             "4" "Parar/Desabilitar Web-GUI" \
-            "5" "Ver status da Web-GUI" \
-            "6" "Alterar senha da Web-GUI" \
+            "5" "Alterar senha da Web-GUI" \
             "6" "Executar script de backup manual" \
             "7" "Voltar" \
             3>&1 1>&2 2>&3)
@@ -4643,17 +4669,6 @@ configure_rclone_service() {
                 systemctl stop rclone-webui 2>/dev/null
                 systemctl disable rclone-webui 2>/dev/null
                 dialog "${DIALOG_OPTS[@]}" --title "Web-GUI" --msgbox "Interface Web do Rclone parada e desabilitada." 6 50
-                ;;
-            6)
-                local new_pass=$(dialog "${DIALOG_OPTS[@]}" --title "Nova Senha" --passwordbox "Digite a nova senha para a Web-GUI do Rclone:" 8 60 3>&1 1>&2 2>&3)
-                if [ -n "$new_pass" ]; then
-                    # Parar, alterar a senha no arquivo de serviço e reiniciar
-                    systemctl stop rclone-webui
-                    sed -i "s/--rc-pass [^ ]*/--rc-pass $new_pass/" /etc/systemd/system/rclone-webui.service
-                    systemctl daemon-reload
-                    systemctl start rclone-webui
-                    dialog "${DIALOG_OPTS[@]}" --title "Senha Alterada" --msgbox "Senha da Web-GUI alterada com sucesso!" 6 50
-                fi
                 ;;
             5)
                 local status=$(systemctl status rclone-webui --no-pager -l)
