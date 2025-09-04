@@ -6,7 +6,7 @@
 # Baseado na base de conhecimento do projeto Boxserver Arandutec
 #
 # Autor: Boxserver Team
-# Versão: 2.0
+# Versão: 1.0
 # Data: $(date +%Y-%m-%d)
 #
 #
@@ -61,6 +61,13 @@ declare -A APPS=(
     [14]="Chrony|Sincronização de tempo (NTP)|Serviço em background"
     [15]="Interface Web|Dashboard unificado com Nginx|Porta 80"
 )
+
+# Função de logging
+log_message() {
+    local level="$1"
+    local message="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
+}
 
 # Função para criar diretórios necessários
 setup_directories() {
@@ -362,7 +369,7 @@ check_app_status() {
 # Função para configurações avançadas
 configure_advanced_settings() {
     while true; do
-        local choice=$(dialog --title "Configurações Avançadas" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configurações Avançadas" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Configurar IP do Servidor" \
             "2" "Configurar Rede VPN" \
             "3" "Configurar Portas dos Serviços" \
@@ -372,18 +379,18 @@ configure_advanced_settings() {
         
         case $choice in
             1)
-                SERVER_IP=$(dialog --title "IP do Servidor" --inputbox "Digite o IP do servidor:" 8 50 "$SERVER_IP" 3>&1 1>&2 2>&3)
+                SERVER_IP=$(dialog "${DIALOG_OPTS[@]}" --title "IP do Servidor" --inputbox "Digite o IP do servidor:" 8 50 "$SERVER_IP" 3>&1 1>&2 2>&3)
                 ;;
             2)
-                VPN_NETWORK=$(dialog --title "Rede VPN" --inputbox "Digite a rede VPN (CIDR):" 8 50 "$VPN_NETWORK" 3>&1 1>&2 2>&3)
-                VPN_PORT=$(dialog --title "Porta VPN" --inputbox "Digite a porta do WireGuard:" 8 50 "$VPN_PORT" 3>&1 1>&2 2>&3)
+                VPN_NETWORK=$(dialog "${DIALOG_OPTS[@]}" --title "Rede VPN" --inputbox "Digite a rede VPN (CIDR):" 8 50 "$VPN_NETWORK" 3>&1 1>&2 2>&3)
+                VPN_PORT=$(dialog "${DIALOG_OPTS[@]}" --title "Porta VPN" --inputbox "Digite a porta do WireGuard:" 8 50 "$VPN_PORT" 3>&1 1>&2 2>&3)
                 ;;
             3)
-                FILEBROWSER_PORT=$(dialog --title "Porta FileBrowser" --inputbox "Digite a porta do FileBrowser:" 8 50 "$FILEBROWSER_PORT" 3>&1 1>&2 2>&3)
-                COCKPIT_PORT=$(dialog --title "Porta Cockpit" --inputbox "Digite a porta do Cockpit:" 8 50 "$COCKPIT_PORT" 3>&1 1>&2 2>&3)
+                FILEBROWSER_PORT=$(dialog "${DIALOG_OPTS[@]}" --title "Porta FileBrowser" --inputbox "Digite a porta do FileBrowser:" 8 50 "$FILEBROWSER_PORT" 3>&1 1>&2 2>&3)
+                COCKPIT_PORT=$(dialog "${DIALOG_OPTS[@]}" --title "Porta Cockpit" --inputbox "Digite a porta do Cockpit:" 8 50 "$COCKPIT_PORT" 3>&1 1>&2 2>&3)
                 ;;
             4)
-                PIHOLE_PASSWORD=$(dialog --title "Senha Pi-hole" --passwordbox "Digite a senha do Pi-hole:" 8 50 3>&1 1>&2 2>&3)
+                PIHOLE_PASSWORD=$(dialog "${DIALOG_OPTS[@]}" --title "Senha Pi-hole" --passwordbox "Digite a senha do Pi-hole:" 8 50 3>&1 1>&2 2>&3)
                 ;;
             5|"")
                 break
@@ -411,7 +418,7 @@ show_app_details() {
             5) details+="Configurações:\n• Porta: $FILEBROWSER_PORT\n• Gerenciamento de arquivos\n• Interface web" ;;
         esac
         
-        dialog --title "Detalhes: $name" --msgbox "$details" 15 70
+        dialog "${DIALOG_OPTS[@]}" --title "Detalhes: $name" --msgbox "$details" 15 70
     fi
 }
 
@@ -586,7 +593,7 @@ select_applications() {
     done
     
     if [ ${#selected_apps[@]} -eq 0 ]; then
-        dialog --title "Nenhum Aplicativo" --msgbox "Nenhum aplicativo foi selecionado." 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Nenhum Aplicativo" --msgbox "Nenhum aplicativo foi selecionado." 6 40
         return 1
     fi
     
@@ -755,7 +762,7 @@ EOF
     ) | dialog "${DIALOG_OPTS[@]}" --title "Instalação em Andamento" --mixedgauge "Progresso da instalação..." 20 70 0
 
     if [ $? -ne 0 ]; then
-        dialog "${DIALOG_OPTS[@]}" --title "Erro na Instalação" --msgbox "A instalação falhou. Verifique os logs em $LOG_FILE para mais detalhes." 8 60
+        dialog --title "Erro na Instalação" --msgbox "A instalação falhou. Verifique os logs em $LOG_FILE para mais detalhes." 8 60
         exit 1
     fi
 
@@ -772,7 +779,7 @@ EOF
     generate_installation_summary "${apps_to_install[@]}"
     
     # Oferecer menu pós-instalação
-    post_installation_menu
+    dialog --title "Instalação Finalizada" --msgbox "Instalação e configuração concluídas com sucesso!\n\nVocê retornará ao menu principal, onde poderá gerenciar os serviços." 10 60
 }
 
 # MELHORIA: Função para obter o nome do serviço systemd de um app
@@ -1523,7 +1530,7 @@ EOF
 EOF
     
     # MELHORIA: Informar o usuário sobre como fazer login
-    dialog --title "Login Cockpit" --msgbox "O login no Cockpit é feito com o seu usuário e senha do sistema Linux (ex: root ou seu usuário sudo)." 8 70
+    dialog "${DIALOG_OPTS[@]}" --title "Login Cockpit" --msgbox "O login no Cockpit é feito com o seu usuário e senha do sistema Linux (ex: root ou seu usuário sudo)." 8 70
 
     # Habilitar e iniciar serviços
     systemctl enable cockpit.socket
@@ -1603,7 +1610,7 @@ EOF
     if systemctl is-active --quiet filebrowser; then
         log_message "INFO" "FileBrowser instalado com sucesso na porta $FILEBROWSER_PORT"
         log_message "INFO" "Acesse via: http://$SERVER_IP:$FILEBROWSER_PORT"
-        dialog --title "FileBrowser Instalado" --msgbox "FileBrowser instalado com sucesso!\n\nAcesse: http://$SERVER_IP:$FILEBROWSER_PORT\n\nLogin: admin\nSenha: $fb_password\n\n(A senha foi salva em $LOG_FILE)" 12 70
+        dialog "${DIALOG_OPTS[@]}" --title "FileBrowser Instalado" --msgbox "FileBrowser instalado com sucesso!\n\nAcesse: http://$SERVER_IP:$FILEBROWSER_PORT\n\nLogin: admin\nSenha: $fb_password\n\n(A senha foi salva em $LOG_FILE)" 12 70
     else
         log_message "ERROR" "Erro na configuração do FileBrowser"
         return 1
@@ -2361,7 +2368,7 @@ cloudflare_login() {
     login_url=$(cloudflared tunnel login 2>&1 | grep -Eo 'https://dash\.cloudflare\.com/[-a-zA-Z0-9()@:%_\+.~#?&=]*' | head -1)
 
     if [ -z "$login_url" ]; then
-        dialog --title "Erro de Login" --msgbox "Não foi possível obter a URL de login do Cloudflare.\n\nVerifique sua conexão e tente novamente." 8 60
+        dialog "${DIALOG_OPTS[@]}" --title "Erro de Login" --msgbox "Não foi possível obter a URL de login do Cloudflare.\n\nVerifique sua conexão e tente novamente." 8 60
         log_message "ERROR" "Falha ao obter a URL de login do Cloudflare."
         return 1
     fi
@@ -2374,7 +2381,7 @@ cloudflare_login() {
     while [[ $count -lt $timeout ]]; do
         # O login bem-sucedido cria o arquivo cert.pem no diretório home do usuário
         if [[ -f "$HOME/.cloudflared/cert.pem" ]]; then
-            dialog --title "Login Concluído" --msgbox "Login realizado com sucesso!\n\nCertificado salvo em: ~/.cloudflared/cert.pem" 8 60
+            dialog "${DIALOG_OPTS[@]}" --title "Login Concluído" --msgbox "Login realizado com sucesso!\n\nCertificado salvo em: ~/.cloudflared/cert.pem" 8 60
             log_message "INFO" "Login no Cloudflare realizado com sucesso"
             return 0
         fi
@@ -2383,7 +2390,7 @@ cloudflare_login() {
     done
     
     # Se chegou aqui, o login falhou
-    dialog --title "Erro de Login" --msgbox "Falha no login do Cloudflare.\n\nPossíveis causas:\n- Login não foi completado no navegador\n- Domínio não foi selecionado\n- Problemas de conectividade\n\nTente novamente." 12 60
+    dialog "${DIALOG_OPTS[@]}" --title "Erro de Login" --msgbox "Falha no login do Cloudflare.\n\nPossíveis causas:\n- Login não foi completado no navegador\n- Domínio não foi selecionado\n- Problemas de conectividade\n\nTente novamente." 12 60
     log_message "ERROR" "Falha no login do Cloudflare - timeout ou erro"
     return 1
 }
@@ -2416,19 +2423,19 @@ cloudflare_create_tunnel() {
                 cp "$cred_file" "/etc/cloudflared/"
                 chown cloudflared:cloudflared "/etc/cloudflared/${tunnel_id}.json"
                 
-                dialog --title "Túnel Criado" --msgbox "Túnel criado com sucesso!\n\nID: $tunnel_id\n\nAgora configure os domínios." 10 60
+                dialog "${DIALOG_OPTS[@]}" --title "Túnel Criado" --msgbox "Túnel criado com sucesso!\n\nID: $tunnel_id\n\nAgora configure os domínios." 10 60
                 log_message "INFO" "Túnel Cloudflare criado: $tunnel_id"
                 
                 # Oferecer configuração automática
-                if dialog --title "Configuração Automática" --yesno "Deseja configurar automaticamente\nos serviços detectados?" 8 50; then
+                if dialog "${DIALOG_OPTS[@]}" --title "Configuração Automática" --yesno "Deseja configurar automaticamente\nos serviços detectados?" 8 50; then
                     auto_configure_services
                 fi
             else
-                dialog --title "Erro" --msgbox "Arquivo de credenciais do túnel não encontrado:\n$cred_file" 8 60
+                dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Arquivo de credenciais do túnel não encontrado:\n$cred_file" 8 60
                 log_message "ERROR" "Arquivo de credenciais do túnel não encontrado: $cred_file"
             fi
         else
-            dialog --title "Erro" --msgbox "Erro ao obter ID do túnel." 6 40
+            dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Erro ao obter ID do túnel." 6 40
             log_message "ERROR" "Erro ao obter ID do túnel Cloudflare"
         fi
     else
@@ -2440,7 +2447,7 @@ cloudflare_create_tunnel() {
 # Função para configurar domínios e serviços
 cloudflare_configure_domains() {
     # Verificar se o túnel existe
-    if ! cloudflared tunnel list | grep -q "boxserver-tunnel"; then
+    if ! cloudflared tunnel list 2>/dev/null | grep -q "boxserver-tunnel"; then
         dialog --title "Erro" --msgbox "Túnel não encontrado.\n\nCrie o túnel primeiro." 8 40
         return 1
     fi
@@ -2476,7 +2483,7 @@ configure_service_domain() {
     local subdomain="$2"
     local port="$3"
     
-    local domain=$(dialog --title "Domínio $service_name" --inputbox "Digite o domínio completo para $service_name:\n\nExemplo: $subdomain.seudominio.com" 10 60 "$subdomain.example.com" 3>&1 1>&2 2>&3)
+    local domain=$(dialog "${DIALOG_OPTS[@]}" --title "Domínio $service_name" --inputbox "Digite o domínio completo para $service_name:\n\nExemplo: $subdomain.seudominio.com" 10 60 "$subdomain.example.com" 3>&1 1>&2 2>&3)
     
     if [ -n "$domain" ]; then
         # Atualizar config.yml
@@ -2488,8 +2495,8 @@ configure_service_domain() {
 
 # Função para configurar domínio customizado
 configure_custom_domain() {
-    local domain=$(dialog --title "Domínio Customizado" --inputbox "Digite o domínio:" 8 50 3>&1 1>&2 2>&3)
-    local port=$(dialog --title "Porta do Serviço" --inputbox "Digite a porta do serviço:" 8 50 3>&1 1>&2 2>&3)
+    local domain=$(dialog "${DIALOG_OPTS[@]}" --title "Domínio Customizado" --inputbox "Digite o domínio:" 8 50 3>&1 1>&2 2>&3)
+    local port=$(dialog "${DIALOG_OPTS[@]}" --title "Porta do Serviço" --inputbox "Digite a porta do serviço:" 8 50 3>&1 1>&2 2>&3)
     
     if [ -n "$domain" ] && [ -n "$port" ]; then
         update_ingress_rule "$domain" "$port"
@@ -2566,7 +2573,7 @@ apply_dns_records() {
         
         dialog --title "DNS Aplicado" --msgbox "Registros DNS criados com sucesso!\n\nOs domínios podem levar alguns minutos\npara propagar." 8 50
     else
-        dialog --title "Erro" --msgbox "ID do túnel não encontrado." 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "ID do túnel não encontrado." 6 40
     fi
 }
 
@@ -2604,7 +2611,7 @@ cloudflare_test_tunnel() {
         test_results+="✗ Túnel: NÃO ENCONTRADO\n"
     fi
     
-    dialog --title "Resultados dos Testes" --msgbox "$test_results" 12 50
+    dialog "${DIALOG_OPTS[@]}" --title "Resultados dos Testes" --msgbox "$test_results" 12 50
 }
 
 # Função para ver status do túnel
@@ -2636,7 +2643,7 @@ cloudflare_tunnel_status() {
         status_info+="✗ Métricas: Indisponíveis\n"
     fi
     
-    dialog --title "Status do Túnel" --msgbox "$status_info" 15 60
+    dialog "${DIALOG_OPTS[@]}" --title "Status do Túnel" --msgbox "$status_info" 15 60
 }
 
 # Função para configuração avançada
@@ -2675,17 +2682,17 @@ edit_config_manually() {
         
         # Validar configuração
         if cloudflared tunnel --config /etc/cloudflared/config.yml validate >/dev/null 2>&1; then
-            dialog --title "Configuração Válida" --msgbox "Configuração salva e validada com sucesso!" 6 50
+            dialog "${DIALOG_OPTS[@]}" --title "Configuração Válida" --msgbox "Configuração salva e validada com sucesso!" 6 50
             log_message "INFO" "Configuração Cloudflare editada manualmente"
         else
-            dialog --title "Erro de Configuração" --yesno "A configuração contém erros.\n\nDeseja restaurar o backup?" 8 50
+            dialog "${DIALOG_OPTS[@]}" --title "Erro de Configuração" --yesno "A configuração contém erros.\n\nDeseja restaurar o backup?" 8 50
             if [ $? -eq 0 ]; then
                 mv /etc/cloudflared/config.yml.backup /etc/cloudflared/config.yml
-                dialog --title "Restaurado" --msgbox "Backup restaurado com sucesso." 6 40
+                dialog "${DIALOG_OPTS[@]}" --title "Restaurado" --msgbox "Backup restaurado com sucesso." 6 40
             fi
         fi
     else
-        dialog --title "Erro" --msgbox "Arquivo de configuração não encontrado." 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Arquivo de configuração não encontrado." 6 40
     fi
 }
 
@@ -2699,18 +2706,18 @@ configure_protocol() {
     
     if [ -n "$protocol" ]; then
         sed -i "s/protocol: .*/protocol: $protocol/g" /etc/cloudflared/config.yml
-        dialog --title "Protocolo Configurado" --msgbox "Protocolo alterado para: $protocol\n\nReinicie o serviço para aplicar." 8 50
+        dialog "${DIALOG_OPTS[@]}" --title "Protocolo Configurado" --msgbox "Protocolo alterado para: $protocol\n\nReinicie o serviço para aplicar." 8 50
         log_message "INFO" "Protocolo Cloudflare alterado para: $protocol"
     fi
 }
 
 # Função para configurar métricas
 configure_metrics() {
-    local metrics_addr=$(dialog --title "Métricas" --inputbox "Digite o endereço para métricas:\n\nFormato: IP:PORTA" 10 50 "127.0.0.1:8080" 3>&1 1>&2 2>&3)
+    local metrics_addr=$(dialog "${DIALOG_OPTS[@]}" --title "Métricas" --inputbox "Digite o endereço para métricas:\n\nFormato: IP:PORTA" 10 50 "127.0.0.1:8080" 3>&1 1>&2 2>&3)
     
     if [ -n "$metrics_addr" ]; then
         sed -i "s/metrics: .*/metrics: $metrics_addr/g" /etc/cloudflared/config.yml
-        dialog --title "Métricas Configuradas" --msgbox "Métricas configuradas para: $metrics_addr\n\nAcesse: http://$metrics_addr/metrics" 8 60
+        dialog "${DIALOG_OPTS[@]}" --title "Métricas Configuradas" --msgbox "Métricas configuradas para: $metrics_addr\n\nAcesse: http://$metrics_addr/metrics" 8 60
         log_message "INFO" "Métricas Cloudflare configuradas: $metrics_addr"
     fi
 }
@@ -2736,7 +2743,7 @@ manage_certificates() {
     cert_info+="- Renovar: cloudflared tunnel login\n"
     cert_info+="- Verificar: cloudflared tunnel list"
     
-    dialog --title "Gerenciar Certificados" --msgbox "$cert_info" 15 60
+    dialog "${DIALOG_OPTS[@]}" --title "Gerenciar Certificados" --msgbox "$cert_info" 15 60
 }
 
 # Função para reiniciar serviço
@@ -2747,17 +2754,17 @@ restart_cloudflared_service() {
     sleep 2
     
     if systemctl is-active --quiet cloudflared; then
-        dialog --title "Serviço Reiniciado" --msgbox "Cloudflared reiniciado com sucesso!" 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Serviço Reiniciado" --msgbox "Cloudflared reiniciado com sucesso!" 6 40
         log_message "INFO" "Serviço Cloudflared reiniciado"
     else
-        dialog --title "Erro" --msgbox "Falha ao reiniciar o serviço.\n\nVerifique os logs." 8 40
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar o serviço.\n\nVerifique os logs." 8 40
         log_message "ERROR" "Falha ao reiniciar Cloudflared"
     fi
 }
 
 # Função para mostrar logs
 show_cloudflared_logs() {
-    dialog --title "Logs do Cloudflared" --msgbox "Os logs serão exibidos em uma nova janela.\n\nPressione 'q' para sair da visualização." 8 50
+    dialog "${DIALOG_OPTS[@]}" --title "Logs do Cloudflared" --msgbox "Os logs serão exibidos em uma nova janela.\n\nPressione 'q' para sair da visualização." 8 50
     
     # Mostrar logs em tempo real
     journalctl -u cloudflared -f --no-pager
@@ -2773,8 +2780,8 @@ auto_configure_services() {
     # Detectar Pi-hole
     if systemctl is-active --quiet pihole-FTL; then
         detected_services+="✓ Pi-hole (porta 80)\n"
-        if dialog --title "Pi-hole Detectado" --yesno "Configurar Pi-hole no subdomínio 'pihole'?\n\nExemplo: pihole.seudominio.com" 8 50; then
-            local domain=$(dialog --title "Domínio Pi-hole" --inputbox "Digite o domínio completo:" 8 50 "pihole.example.com" 3>&1 1>&2 2>&3)
+        if dialog "${DIALOG_OPTS[@]}" --title "Pi-hole Detectado" --yesno "Configurar Pi-hole no subdomínio 'pihole'?\n\nExemplo: pihole.seudominio.com" 8 50; then
+            local domain=$(dialog "${DIALOG_OPTS[@]}" --title "Domínio Pi-hole" --inputbox "Digite o domínio completo:" 8 50 "pihole.example.com" 3>&1 1>&2 2>&3)
             if [ -n "$domain" ]; then
                 update_ingress_rule "$domain" "80"
                 config_applied=true
@@ -2786,8 +2793,8 @@ auto_configure_services() {
     # Detectar Cockpit
     if systemctl is-active --quiet cockpit; then
         detected_services+="✓ Cockpit (porta 9090)\n"
-        if dialog --title "Cockpit Detectado" --yesno "Configurar Cockpit no subdomínio 'admin'?\n\nExemplo: admin.seudominio.com" 8 50; then
-            local domain=$(dialog --title "Domínio Cockpit" --inputbox "Digite o domínio completo:" 8 50 "admin.example.com" 3>&1 1>&2 2>&3)
+        if dialog "${DIALOG_OPTS[@]}" --title "Cockpit Detectado" --yesno "Configurar Cockpit no subdomínio 'admin'?\n\nExemplo: admin.seudominio.com" 8 50; then
+            local domain=$(dialog "${DIALOG_OPTS[@]}" --title "Domínio Cockpit" --inputbox "Digite o domínio completo:" 8 50 "admin.example.com" 3>&1 1>&2 2>&3)
             if [ -n "$domain" ]; then
                 update_ingress_rule "$domain" "9090"
                 config_applied=true
@@ -2799,8 +2806,8 @@ auto_configure_services() {
     # Detectar WireGuard
     if systemctl is-active --quiet wg-quick@wg0; then
         detected_services+="✓ WireGuard (porta 51820)\n"
-        if dialog --title "WireGuard Detectado" --yesno "Configurar interface web WireGuard?\n\nExemplo: vpn.seudominio.com" 8 50; then
-            local domain=$(dialog --title "Domínio WireGuard" --inputbox "Digite o domínio completo:" 8 50 "vpn.example.com" 3>&1 1>&2 2>&3)
+        if dialog "${DIALOG_OPTS[@]}" --title "WireGuard Detectado" --yesno "Configurar interface web WireGuard?\n\nExemplo: vpn.seudominio.com" 8 50; then
+            local domain=$(dialog "${DIALOG_OPTS[@]}" --title "Domínio WireGuard" --inputbox "Digite o domínio completo:" 8 50 "vpn.example.com" 3>&1 1>&2 2>&3)
             if [ -n "$domain" ]; then
                 update_ingress_rule "$domain" "51820"
                 config_applied=true
@@ -2813,14 +2820,14 @@ auto_configure_services() {
     detect_additional_services
     
     if [ "$config_applied" = true ]; then
-        dialog --title "Configuração Concluída" --msgbox "Serviços configurados automaticamente!\n\nLembre-se de aplicar os registros DNS\nno menu de configuração de domínios." 10 50
+        dialog "${DIALOG_OPTS[@]}" --title "Configuração Concluída" --msgbox "Serviços configurados automaticamente!\n\nLembre-se de aplicar os registros DNS\nno menu de configuração de domínios." 10 50
         
         # Oferecer aplicação automática de DNS
-        if dialog --title "Aplicar DNS" --yesno "Deseja aplicar os registros DNS\nautomaticamente agora?" 8 50; then
+        if dialog "${DIALOG_OPTS[@]}" --title "Aplicar DNS" --yesno "Deseja aplicar os registros DNS\nautomaticamente agora?" 8 50; then
             apply_dns_records
         fi
     else
-        dialog --title "Nenhum Serviço" --msgbox "Nenhum serviço foi configurado\nautomaticamente.\n\nUse o menu manual para\nconfigurar domínios customizados." 10 50
+        dialog "${DIALOG_OPTS[@]}" --title "Nenhum Serviço" --msgbox "Nenhum serviço foi configurado\nautomaticamente.\n\nUse o menu manual para\nconfigurar domínios customizados." 10 50
     fi
 }
 
@@ -2828,8 +2835,8 @@ auto_configure_services() {
 detect_additional_services() {
     # Detectar FileBrowser (porta comum 8080)
     if netstat -tlnp 2>/dev/null | grep -q ":8080"; then
-        if dialog --title "Serviço na Porta 8080" --yesno "Detectado serviço na porta 8080.\n\nConfigurar como FileBrowser?" 8 50; then
-            local domain=$(dialog --title "Domínio Arquivos" --inputbox "Digite o domínio completo:" 8 50 "files.example.com" 3>&1 1>&2 2>&3)
+        if dialog "${DIALOG_OPTS[@]}" --title "Serviço na Porta 8080" --yesno "Detectado serviço na porta 8080.\n\nConfigurar como FileBrowser?" 8 50; then
+            local domain=$(dialog "${DIALOG_OPTS[@]}" --title "Domínio Arquivos" --inputbox "Digite o domínio completo:" 8 50 "files.example.com" 3>&1 1>&2 2>&3)
             if [ -n "$domain" ]; then
                 update_ingress_rule "$domain" "8080"
                 log_message "INFO" "Auto-configurado FileBrowser: $domain"
@@ -2839,8 +2846,8 @@ detect_additional_services() {
     
     # Detectar Portainer (porta comum 9000)
     if netstat -tlnp 2>/dev/null | grep -q ":9000"; then
-        if dialog --title "Serviço na Porta 9000" --yesno "Detectado serviço na porta 9000.\n\nConfigurar como Portainer?" 8 50; then
-            local domain=$(dialog --title "Domínio Portainer" --inputbox "Digite o domínio completo:" 8 50 "docker.example.com" 3>&1 1>&2 2>&3)
+        if dialog "${DIALOG_OPTS[@]}" --title "Serviço na Porta 9000" --yesno "Detectado serviço na porta 9000.\n\nConfigurar como Portainer?" 8 50; then
+            local domain=$(dialog "${DIALOG_OPTS[@]}" --title "Domínio Portainer" --inputbox "Digite o domínio completo:" 8 50 "docker.example.com" 3>&1 1>&2 2>&3)
             if [ -n "$domain" ]; then
                 update_ingress_rule "$domain" "9000"
                 log_message "INFO" "Auto-configurado Portainer: $domain"
@@ -2850,8 +2857,8 @@ detect_additional_services() {
     
     # Detectar Grafana (porta comum 3000)
     if netstat -tlnp 2>/dev/null | grep -q ":3000"; then
-        if dialog --title "Serviço na Porta 3000" --yesno "Detectado serviço na porta 3000.\n\nConfigurar como Grafana?" 8 50; then
-            local domain=$(dialog --title "Domínio Grafana" --inputbox "Digite o domínio completo:" 8 50 "monitor.example.com" 3>&1 1>&2 2>&3)
+        if dialog "${DIALOG_OPTS[@]}" --title "Serviço na Porta 3000" --yesno "Detectado serviço na porta 3000.\n\nConfigurar como Grafana?" 8 50; then
+            local domain=$(dialog "${DIALOG_OPTS[@]}" --title "Domínio Grafana" --inputbox "Digite o domínio completo:" 8 50 "monitor.example.com" 3>&1 1>&2 2>&3)
             if [ -n "$domain" ]; then
                 update_ingress_rule "$domain" "3000"
                 log_message "INFO" "Auto-configurado Grafana: $domain"
@@ -2914,11 +2921,11 @@ validate_tunnel_configuration() {
     
     if [ "$errors_found" = true ]; then
         validation_results+="\n❌ CONFIGURAÇÃO COM ERROS\n\nCorreja os problemas antes de iniciar."
-        dialog --title "Validação Falhou" --msgbox "$validation_results" 15 60
+        dialog "${DIALOG_OPTS[@]}" --title "Validação Falhou" --msgbox "$validation_results" 15 60
         return 1
     else
         validation_results+="\n✅ CONFIGURAÇÃO VÁLIDA\n\nTúnel pronto para uso!"
-        dialog --title "Validação Bem-sucedida" --msgbox "$validation_results" 15 60
+        dialog "${DIALOG_OPTS[@]}" --title "Validação Bem-sucedida" --msgbox "$validation_results" 15 60
         return 0
     fi
 }
@@ -2926,22 +2933,15 @@ validate_tunnel_configuration() {
 # Menu pós-instalação
 post_installation_menu() {
     while true; do
-        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento do Boxserver" --menu "Instalação concluída. O que deseja fazer agora?" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento do Boxserver" --menu "Instalação concluída. O que deseja fazer agora?" 20 70 13 \
             "1" "Gerenciamento de Serviços" \
             "2" "Configurar WireGuard VPN" \
             "3" "Configurar Túnel Cloudflare" \
             "4" "Diagnóstico e Testes" \
             "5" "Manutenção e Backups" \
             "6" "Segurança (Firewall & Fail2Ban)" \
-            "6" "Configurar Pi-hole + Unbound" \
-            "7" "Configurar Fail2Ban" \
-            "8" "Configurar Netdata" \
-            "9" "Configurar FileBrowser" \
-            "10" "Configurar MiniDLNA" \
-            "11" "Configurar Rclone" \
-            "11" "Configurar outros serviços" \
-            "12" "Backup das configurações" \
-            "13" "Sair" \
+            "7" "Configurar Aplicativos" \
+            "8" "Sair" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -2951,15 +2951,8 @@ post_installation_menu() {
             4) diagnostics_menu ;;
             5) maintenance_menu ;;
             6) security_menu ;;
-            6) configure_pihole_unbound ;;
-            7) configure_fail2ban ;;
-            8) configure_netdata ;;
-            9) configure_filebrowser ;;
-            10) configure_minidlna ;;
-            11) configure_rclone_service ;;
-            11) configure_other_services ;;
-            12) backup_configurations ;;
-            13|""|"Sair")
+            7) configure_apps_menu ;;
+            8|""|"Sair")
                 break
                 ;;
         esac
@@ -2969,7 +2962,7 @@ post_installation_menu() {
 # Configuração do WireGuard VPN
 configure_wireguard_vpn() {
     while true; do
-        local choice=$(dialog --title "Configuração WireGuard VPN" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração WireGuard VPN" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Verificar status do WireGuard" \
             "2" "Gerar novo cliente" \
             "3" "Listar clientes existentes" \
@@ -3035,12 +3028,12 @@ check_wireguard_status() {
         status_info+="✗ NAT/Masquerade: NÃO CONFIGURADO\n"
     fi
     
-    dialog --title "Status WireGuard" --msgbox "$status_info" 20 70
+    dialog "${DIALOG_OPTS[@]}" --title "Status WireGuard" --msgbox "$status_info" 20 70
 }
 
 # Gerar novo cliente WireGuard
 generate_wireguard_client() {
-    local client_name=$(dialog --title "Novo Cliente" --inputbox "Nome do cliente:" 8 40 3>&1 1>&2 2>&3)
+    local client_name=$(dialog "${DIALOG_OPTS[@]}" --title "Novo Cliente" --inputbox "Nome do cliente:" 8 40 3>&1 1>&2 2>&3)
 
     if [[ -z "$client_name" ]]; then
         dialog --title "Erro" --msgbox "Nome do cliente é obrigatório!" 6 40
@@ -3049,7 +3042,7 @@ generate_wireguard_client() {
 
     # Verificar se cliente já existe
     if [[ -f "/etc/wireguard/clients/${client_name}.conf" ]]; then
-        dialog --title "Erro" --msgbox "Cliente '$client_name' já existe!" 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Cliente '$client_name' já existe!" 6 40
         return 1
     fi
 
@@ -3109,9 +3102,9 @@ EOF
         qr_terminal_text+="$(qrencode -t ansiutf8 < "$client_config_path")"
         qr_terminal_text+="\n\nSe o QR code aparecer quebrado, você pode usar o arquivo de imagem salvo em:\n$qr_file"
         
-        dialog --title "Cliente Criado: $client_name" --textbox <(echo -e "$qr_terminal_text") 25 80
+        dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado: $client_name" --textbox <(echo -e "$qr_terminal_text") 25 80
     else
-        dialog --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\n(Instale 'qrencode' para gerar QR codes)" 12 60
+        dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\n(Instale 'qrencode' para gerar QR codes)" 12 60
     fi
 }
 
@@ -3188,14 +3181,14 @@ remove_wireguard_client() {
         fi
     done
     
-    local client_to_remove=$(dialog --title "Remover Cliente" --menu "Selecione o cliente para remover:" 15 50 8 "${client_list[@]}" 3>&1 1>&2 2>&3)
+    local client_to_remove=$(dialog "${DIALOG_OPTS[@]}" --title "Remover Cliente" --menu "Selecione o cliente para remover:" 15 50 8 "${client_list[@]}" 3>&1 1>&2 2>&3)
     
     if [[ -z "$client_to_remove" ]]; then
         return 0
     fi
     
     # Confirmar remoção
-    if dialog --title "Confirmar Remoção" --yesno "Tem certeza que deseja remover o cliente '$client_to_remove'?" 7 50; then
+    if dialog "${DIALOG_OPTS[@]}" --title "Confirmar Remoção" --yesno "Tem certeza que deseja remover o cliente '$client_to_remove'?" 7 50; then
         # Obter chave pública do cliente
         local client_private_key=$(grep "PrivateKey" "/etc/wireguard/clients/${client_to_remove}.conf" | cut -d'=' -f2 | tr -d ' ')
         local client_public_key=$(echo "$client_private_key" | wg pubkey 2>/dev/null)
@@ -3214,13 +3207,13 @@ remove_wireguard_client() {
         rm -f "/etc/wireguard/clients/${client_to_remove}.conf"
         rm -f "/etc/wireguard/clients/${client_to_remove}.png"
         
-        dialog --title "Cliente Removido" --msgbox "Cliente '$client_to_remove' removido com sucesso!" 6 50
+        dialog "${DIALOG_OPTS[@]}" --title "Cliente Removido" --msgbox "Cliente '$client_to_remove' removido com sucesso!" 6 50
     fi
 }
 
 # Regenerar chaves do servidor
 regenerate_server_keys() {
-    if dialog --title "Regenerar Chaves" --yesno "ATENÇÃO: Regenerar as chaves do servidor invalidará TODOS os clientes existentes.\n\nDeseja continuar?" 10 60; then
+    if dialog "${DIALOG_OPTS[@]}" --title "Regenerar Chaves" --yesno "ATENÇÃO: Regenerar as chaves do servidor invalidará TODOS os clientes existentes.\n\nDeseja continuar?" 10 60; then
         dialog --title "Regenerando Chaves" --infobox "Gerando novas chaves do servidor..." 5 40
         
         # Parar o serviço
@@ -3246,14 +3239,14 @@ regenerate_server_keys() {
         # Reiniciar o serviço
         systemctl start wg-quick@wg0
         
-        dialog --title "Chaves Regeneradas" --msgbox "Chaves do servidor regeneradas com sucesso!\n\nNova chave pública: ${new_public_key:0:30}...\n\nTodos os clientes precisam ser recriados." 12 70
+        dialog "${DIALOG_OPTS[@]}" --title "Chaves Regeneradas" --msgbox "Chaves do servidor regeneradas com sucesso!\n\nNova chave pública: ${new_public_key:0:30}...\n\nTodos os clientes precisam ser recriados." 12 70
     fi
 }
 
 # Configurar interface de rede
 configure_network_interface() {
     local current_interface=$(ip route | grep default | awk '{print $5}' | head -1)
-    local new_interface=$(dialog --title "Interface de Rede" --inputbox "Interface de rede para WireGuard:" 8 50 "$current_interface" 3>&1 1>&2 2>&3)
+    local new_interface=$(dialog "${DIALOG_OPTS[@]}" --title "Interface de Rede" --inputbox "Interface de rede para WireGuard:" 8 50 "$current_interface" 3>&1 1>&2 2>&3)
     
     if [[ -z "$new_interface" ]]; then
         return 0
@@ -3279,7 +3272,7 @@ configure_network_interface() {
         iptables-save > /etc/iptables/rules.v4 2>/dev/null
     fi
     
-    dialog --title "Interface Configurada" --msgbox "Interface de rede atualizada para: $new_interface" 6 60
+    dialog "${DIALOG_OPTS[@]}" --title "Interface Configurada" --msgbox "Interface de rede atualizada para: $new_interface" 6 60
 }
 
 # Testar conectividade VPN
@@ -3331,7 +3324,7 @@ test_vpn_connectivity() {
         test_results+="✗ Conectividade Externa: FALHOU\n"
     fi
     
-    dialog --title "Resultados dos Testes" --msgbox "$test_results" 18 60
+    dialog "${DIALOG_OPTS[@]}" --title "Resultados dos Testes" --msgbox "$test_results" 18 60
 }
 
 # Exportar configuração de cliente
@@ -3350,13 +3343,13 @@ export_client_config() {
         fi
     done
     
-    local client_to_export=$(dialog --title "Exportar Cliente" --menu "Selecione o cliente para exportar:" 15 50 8 "${client_list[@]}" 3>&1 1>&2 2>&3)
+    local client_to_export=$(dialog "${DIALOG_OPTS[@]}" --title "Exportar Cliente" --menu "Selecione o cliente para exportar:" 15 50 8 "${client_list[@]}" 3>&1 1>&2 2>&3)
     
     if [[ -z "$client_to_export" ]]; then
         return 0
     fi
     
-    local export_path=$(dialog --title "Local de Exportação" --inputbox "Caminho para exportar:" 8 60 "/tmp/${client_to_export}.conf" 3>&1 1>&2 2>&3)
+    local export_path=$(dialog "${DIALOG_OPTS[@]}" --title "Local de Exportação" --inputbox "Caminho para exportar:" 8 60 "/tmp/${client_to_export}.conf" 3>&1 1>&2 2>&3)
     
     if [[ -z "$export_path" ]]; then
         return 0
@@ -3364,7 +3357,7 @@ export_client_config() {
     
     # Copiar arquivo de configuração
     if cp "/etc/wireguard/clients/${client_to_export}.conf" "$export_path"; then
-        dialog --title "Exportação Concluída" --msgbox "Configuração do cliente '$client_to_export' exportada para:\n$export_path" 8 70
+        dialog "${DIALOG_OPTS[@]}" --title "Exportação Concluída" --msgbox "Configuração do cliente '$client_to_export' exportada para:\n$export_path" 8 70
     else
         dialog --title "Erro" --msgbox "Falha ao exportar configuração!" 6 40
     fi
@@ -3373,7 +3366,7 @@ export_client_config() {
 # Configurações avançadas do WireGuard
 wireguard_advanced_settings() {
     while true; do
-        local choice=$(dialog --title "Configurações Avançadas" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configurações Avançadas" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Alterar porta do servidor" \
             "2" "Configurar DNS personalizado" \
             "3" "Alterar rede VPN" \
@@ -3400,7 +3393,7 @@ wireguard_advanced_settings() {
 # Alterar porta do WireGuard
 change_wireguard_port() {
     local current_port=$(grep "ListenPort" /etc/wireguard/wg0.conf | cut -d'=' -f2 | tr -d ' ' || echo "51820")
-    local new_port=$(dialog --title "Alterar Porta" --inputbox "Nova porta para WireGuard:" 8 40 "$current_port" 3>&1 1>&2 2>&3)
+    local new_port=$(dialog "${DIALOG_OPTS[@]}" --title "Alterar Porta" --inputbox "Nova porta para WireGuard:" 8 40 "$current_port" 3>&1 1>&2 2>&3)
     
     if [[ -z "$new_port" ]] || [[ "$new_port" == "$current_port" ]]; then
         return 0
@@ -3408,13 +3401,13 @@ change_wireguard_port() {
     
     # Validar porta
     if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [[ "$new_port" -lt 1024 ]] || [[ "$new_port" -gt 65535 ]]; then
-        dialog --title "Erro" --msgbox "Porta inválida! Use um número entre 1024 e 65535." 6 50
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Porta inválida! Use um número entre 1024 e 65535." 6 50
         return 1
     fi
     
     # Verificar se a porta está em uso
     if ss -ulnp | grep -q ":$new_port"; then
-        dialog --title "Erro" --msgbox "Porta $new_port já está em uso!" 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Porta $new_port já está em uso!" 6 40
         return 1
     fi
     
@@ -3437,13 +3430,13 @@ change_wireguard_port() {
     # Reiniciar o serviço
     systemctl start wg-quick@wg0
     
-    dialog --title "Porta Alterada" --msgbox "Porta do WireGuard alterada para: $new_port\n\nTodos os clientes foram atualizados automaticamente." 8 60
+    dialog "${DIALOG_OPTS[@]}" --title "Porta Alterada" --msgbox "Porta do WireGuard alterada para: $new_port\n\nTodos os clientes foram atualizados automaticamente." 8 60
 }
 
 # Configuração Pi-hole + Unbound
 configure_pihole_unbound() {
     while true; do
-        local choice=$(dialog --title "Configuração Pi-hole + Unbound" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração Pi-hole + Unbound" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Verificar status dos serviços" \
             "2" "Configurar integração Pi-hole/Unbound" \
             "3" "Gerenciar listas de bloqueio" \
@@ -3520,7 +3513,7 @@ check_dns_services_status() {
         status_info+="✗ Trust Anchor DNSSEC: NÃO CONFIGURADO\n"
     fi
     
-    dialog --title "Status DNS" --msgbox "$status_info" 18 70
+    dialog "${DIALOG_OPTS[@]}" --title "Status DNS" --msgbox "$status_info" 18 70
 }
 
 # Configurar integração Pi-hole/Unbound
@@ -3611,16 +3604,16 @@ EOF
     # Verificar se a integração funcionou
     sleep 3
     if systemctl is-active --quiet unbound && systemctl is-active --quiet pihole-FTL; then
-        dialog --title "Integração Configurada" --msgbox "Integração Pi-hole + Unbound configurada com sucesso!\n\nUnbound: porta 5335\nPi-hole: porta 53 (usando Unbound como upstream)" 10 70
+        dialog "${DIALOG_OPTS[@]}" --title "Integração Configurada" --msgbox "Integração Pi-hole + Unbound configurada com sucesso!\n\nUnbound: porta 5335\nPi-hole: porta 53 (usando Unbound como upstream)" 10 70
     else
-        dialog --title "Erro" --msgbox "Falha na configuração da integração!\nVerifique os logs dos serviços." 8 50
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha na configuração da integração!\nVerifique os logs dos serviços." 8 50
     fi
 }
 
 # Gerenciar listas de bloqueio
 manage_blocklists() {
     while true; do
-        local choice=$(dialog --title "Gerenciar Listas de Bloqueio" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciar Listas de Bloqueio" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Ver listas ativas" \
             "2" "Adicionar lista personalizada" \
             "3" "Remover lista" \
@@ -3670,7 +3663,7 @@ show_active_blocklists() {
         blocklists_info+="\nTotal de domínios bloqueados: $blocked_domains\n"
     fi
     
-    dialog --title "Listas de Bloqueio" --msgbox "$blocklists_info" 20 80
+    dialog "${DIALOG_OPTS[@]}" --title "Listas de Bloqueio" --msgbox "$blocklists_info" 20 80
 }
 
 # Função para executar testes do sistema
@@ -3701,7 +3694,7 @@ run_system_tests() {
         test_results+="⚠ Entropia: BAIXA ($entropy)\n"
     fi
     
-    dialog --title "Resultados dos Testes" --msgbox "$test_results" 12 50
+    dialog "${DIALOG_OPTS[@]}" --title "Resultados dos Testes" --msgbox "$test_results" 12 50
 }
 
 # Função para mostrar status dos serviços
@@ -3718,13 +3711,13 @@ show_services_status() {
         fi
     done
     
-    dialog --title "Status dos Serviços" --msgbox "$status_info" 12 50
+    dialog "${DIALOG_OPTS[@]}" --title "Status dos Serviços" --msgbox "$status_info" 12 50
 }
 
 # Função para mostrar logs
 show_installation_logs() {
     if [ -f "$LOG_FILE" ]; then
-        dialog --title "Logs de Instalação" --textbox "$LOG_FILE" 20 80
+        dialog "${DIALOG_OPTS[@]}" --title "Logs de Instalação" --textbox "$LOG_FILE" 20 80
     else
         dialog --title "Logs" --msgbox "Arquivo de log não encontrado." 6 40
     fi
@@ -3732,13 +3725,13 @@ show_installation_logs() {
 
 # Função para configurar clientes VPN
 configure_vpn_clients() {
-    dialog --title "Configuração VPN" --msgbox "Para configurar clientes VPN:\n\n1. Gere chaves para o cliente\n2. Adicione a configuração no servidor\n3. Crie arquivo .conf para o cliente\n\nConsulte a documentação para detalhes." 10 60
+    dialog "${DIALOG_OPTS[@]}" --title "Configuração VPN" --msgbox "Para configurar clientes VPN:\n\n1. Gere chaves para o cliente\n2. Adicione a configuração no servidor\n3. Crie arquivo .conf para o cliente\n\nConsulte a documentação para detalhes." 10 60
 }
 
 # IMPLEMENTAÇÃO: Configuração do Netdata
 configure_netdata() {
     while true; do
-        local choice=$(dialog --title "Configuração Netdata" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração Netdata" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Ver status do Netdata" \
             "2" "Configurar plugins" \
             "3" "Configurar alertas" \
@@ -3765,7 +3758,7 @@ configure_netdata() {
 # IMPLEMENTAÇÃO: Configuração do FileBrowser
 configure_filebrowser() {
     while true; do
-        local choice=$(dialog --title "Configuração FileBrowser" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração FileBrowser" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Ver status do FileBrowser" \
             "2" "Gerenciar usuários" \
             "3" "Configurar diretórios" \
@@ -3794,7 +3787,7 @@ configure_filebrowser() {
 # IMPLEMENTAÇÃO: Configuração do MiniDLNA
 configure_minidlna() {
     while true; do
-        local choice=$(dialog --title "Configuração MiniDLNA" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração MiniDLNA" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Ver status do MiniDLNA" \
             "2" "Configurar diretórios de mídia" \
             "3" "Configurar nome do servidor" \
@@ -3829,9 +3822,9 @@ backup_configurations() {
     tar -czf "$backup_file" -C / etc/boxserver etc/pihole etc/wireguard etc/unbound etc/netdata etc/minidlna /var/lib/filebrowser 2>/dev/null
     
     if [ $? -eq 0 ]; then
-        dialog --title "Backup Concluído" --msgbox "Backup criado com sucesso:\n\n$backup_file" 8 60
+        dialog "${DIALOG_OPTS[@]}" --title "Backup Concluído" --msgbox "Backup criado com sucesso:\n\n$backup_file" 8 60
     else
-        dialog --title "Erro no Backup" --msgbox "Erro ao criar backup." 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Erro no Backup" --msgbox "Erro ao criar backup." 6 40
     fi
 }
 
@@ -3856,7 +3849,7 @@ check_netdata_status() {
     local memory_usage=$(ps -o pid,vsz,rss,comm -p $(pgrep netdata) 2>/dev/null | tail -1 | awk '{print $3}' || echo "N/A")
     status_info+="📊 Uso de RAM: ${memory_usage}KB\n"
     
-    dialog --title "Status Netdata" --msgbox "$status_info" 15 60
+    dialog "${DIALOG_OPTS[@]}" --title "Status Netdata" --msgbox "$status_info" 15 60
 }
 
 configure_netdata_plugins() {
@@ -3867,7 +3860,7 @@ configure_netdata_plugins() {
         return 1
     fi
     
-    local choice=$(dialog --title "Plugins Netdata" --menu "Configurar plugins:" 15 60 8 \
+    local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Plugins Netdata" --menu "Configurar plugins:" 15 60 8 \
         "1" "Desabilitar plugins pesados" \
         "2" "Habilitar monitoramento de rede" \
         "3" "Configurar alertas de CPU" \
@@ -3883,17 +3876,17 @@ configure_netdata_plugins() {
             sed -i 's/^.*apps = yes/    apps = no/' "$current_config"
             sed -i 's/^.*cgroups = yes/    cgroups = no/' "$current_config"
             sed -i 's/^.*python.d = yes/    python.d = no/' "$current_config"
-            dialog --title "Plugins" --msgbox "Plugins pesados desabilitados para otimizar ARM." 6 50
+            dialog "${DIALOG_OPTS[@]}" --title "Plugins" --msgbox "Plugins pesados desabilitados para otimizar ARM." 6 50
             systemctl restart netdata
             ;;
         2)
             sed -i 's/^.*proc:/proc/net/dev = no/    \/proc\/net\/dev = yes/' "$current_config"
-            dialog --title "Plugins" --msgbox "Monitoramento de rede habilitado." 6 40
+            dialog "${DIALOG_OPTS[@]}" --title "Plugins" --msgbox "Monitoramento de rede habilitado." 6 40
             systemctl restart netdata
             ;;
         5)
             local active_plugins=$(grep -E "^[[:space:]]*[^#].*= yes" "$current_config" | head -10)
-            dialog --title "Plugins Ativos" --msgbox "$active_plugins" 15 70
+            dialog "${DIALOG_OPTS[@]}" --title "Plugins Ativos" --msgbox "$active_plugins" 15 70
             ;;
         6)
             cp "$current_config" "$current_config.backup"
@@ -3911,7 +3904,7 @@ configure_netdata_plugins() {
     python.d = no
     charts.d = no
 EOF
-            dialog --title "Configuração" --msgbox "Configuração padrão restaurada." 6 40
+            dialog "${DIALOG_OPTS[@]}" --title "Configuração" --msgbox "Configuração padrão restaurada." 6 40
             systemctl restart netdata
             ;;
     esac
@@ -3949,7 +3942,7 @@ optimize_netdata_arm() {
 EOF
     
     systemctl restart netdata
-    dialog --title "Otimização" --msgbox "Netdata otimizado para ARM RK322x.\n\nRAM reduzida, plugins pesados desabilitados." 8 60
+    dialog "${DIALOG_OPTS[@]}" --title "Otimização" --msgbox "Netdata otimizado para ARM RK322x.\n\nRAM reduzida, plugins pesados desabilitados." 8 60
 }
 
 restart_netdata_service() {
@@ -3958,14 +3951,14 @@ restart_netdata_service() {
     sleep 2
     
     if systemctl is-active --quiet netdata; then
-        dialog --title "Serviço" --msgbox "Netdata reiniciado com sucesso!" 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "Netdata reiniciado com sucesso!" 6 40
     else
-        dialog --title "Erro" --msgbox "Falha ao reiniciar Netdata." 6 30
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar Netdata." 6 30
     fi
 }
 
 show_netdata_logs() {
-    dialog --title "Logs do Netdata" --msgbox "Os logs serão exibidos em uma nova janela.\n\nPressione 'q' para sair." 8 50
+    dialog "${DIALOG_OPTS[@]}" --title "Logs do Netdata" --msgbox "Os logs serão exibidos em uma nova janela.\n\nPressione 'q' para sair." 8 50
     journalctl -u netdata -f --no-pager
 }
 
@@ -3992,11 +3985,11 @@ check_filebrowser_status() {
     
     status_info+="\n🌐 Acesso: http://$SERVER_IP:$FILEBROWSER_PORT"
     
-    dialog --title "Status FileBrowser" --msgbox "$status_info" 12 60
+    dialog "${DIALOG_OPTS[@]}" --title "Status FileBrowser" --msgbox "$status_info" 12 60
 }
 
 manage_filebrowser_users() {
-    local choice=$(dialog --title "Gerenciar Usuários" --menu "Escolha uma opção:" 12 50 5 \
+    local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciar Usuários" --menu "Escolha uma opção:" 12 50 5 \
         "1" "Listar usuários" \
         "2" "Adicionar usuário" \
         "3" "Remover usuário" \
@@ -4007,39 +4000,39 @@ manage_filebrowser_users() {
     case $choice in
         1)
             local users=$(filebrowser -d /var/lib/filebrowser/filebrowser.db users ls 2>/dev/null || echo "Erro ao listar usuários")
-            dialog --title "Usuários" --msgbox "$users" 15 60
+            dialog "${DIALOG_OPTS[@]}" --title "Usuários" --msgbox "$users" 15 60
             ;;
         2)
-            local username=$(dialog --title "Novo Usuário" --inputbox "Nome do usuário:" 8 40 3>&1 1>&2 2>&3)
-            local password=$(dialog --title "Nova Senha" --passwordbox "Senha:" 8 40 3>&1 1>&2 2>&3)
+            local username=$(dialog "${DIALOG_OPTS[@]}" --title "Novo Usuário" --inputbox "Nome do usuário:" 8 40 3>&1 1>&2 2>&3)
+            local password=$(dialog "${DIALOG_OPTS[@]}" --title "Nova Senha" --passwordbox "Senha:" 8 40 3>&1 1>&2 2>&3)
             
             if [ -n "$username" ] && [ -n "$password" ]; then
                 filebrowser -d /var/lib/filebrowser/filebrowser.db users add "$username" "$password"
-                dialog --title "Usuário" --msgbox "Usuário '$username' criado com sucesso!" 6 50
+                dialog "${DIALOG_OPTS[@]}" --title "Usuário" --msgbox "Usuário '$username' criado com sucesso!" 6 50
             fi
             ;;
         3)
-            local username=$(dialog --title "Remover Usuário" --inputbox "Nome do usuário:" 8 40 3>&1 1>&2 2>&3)
+            local username=$(dialog "${DIALOG_OPTS[@]}" --title "Remover Usuário" --inputbox "Nome do usuário:" 8 40 3>&1 1>&2 2>&3)
             if [ -n "$username" ]; then
                 filebrowser -d /var/lib/filebrowser/filebrowser.db users rm "$username"
-                dialog --title "Usuário" --msgbox "Usuário '$username' removido." 6 40
+                dialog "${DIALOG_OPTS[@]}" --title "Usuário" --msgbox "Usuário '$username' removido." 6 40
             fi
             ;;
         4)
-            local username=$(dialog --title "Alterar Senha" --inputbox "Nome do usuário:" 8 40 3>&1 1>&2 2>&3)
-            local password=$(dialog --title "Nova Senha" --passwordbox "Nova senha:" 8 40 3>&1 1>&2 2>&3)
+            local username=$(dialog "${DIALOG_OPTS[@]}" --title "Alterar Senha" --inputbox "Nome do usuário:" 8 40 3>&1 1>&2 2>&3)
+            local password=$(dialog "${DIALOG_OPTS[@]}" --title "Nova Senha" --passwordbox "Nova senha:" 8 40 3>&1 1>&2 2>&3)
             
             if [ -n "$username" ] && [ -n "$password" ]; then
                 filebrowser -d /var/lib/filebrowser/filebrowser.db users update "$username" --password "$password"
-                dialog --title "Senha" --msgbox "Senha alterada com sucesso!" 6 40
+                dialog "${DIALOG_OPTS[@]}" --title "Senha" --msgbox "Senha alterada com sucesso!" 6 40
             fi
             ;;
     esac
 }
 
 change_filebrowser_port() {
-    local current_port=$(grep -o 'port.*' /etc/systemd/system/filebrowser.service | cut -d' ' -f2 || echo "$FILEBROWSER_PORT")
-    local new_port=$(dialog --title "Alterar Porta" --inputbox "Nova porta para FileBrowser:" 8 40 "$current_port" 3>&1 1>&2 2>&3)
+    local current_port=$(filebrowser -d /var/lib/filebrowser/filebrowser.db config cat | grep port | awk '{print $2}' || echo "$FILEBROWSER_PORT")
+    local new_port=$(dialog "${DIALOG_OPTS[@]}" --title "Alterar Porta" --inputbox "Nova porta para FileBrowser:" 8 40 "$current_port" 3>&1 1>&2 2>&3)
     
     if [ -n "$new_port" ] && [ "$new_port" != "$current_port" ]; then
         # Atualizar configuração
@@ -4051,7 +4044,7 @@ change_filebrowser_port() {
         # Atualizar variável global
         FILEBROWSER_PORT="$new_port"
         
-        dialog --title "Porta Alterada" --msgbox "Porta do FileBrowser alterada para: $new_port\n\nNovo acesso: http://$SERVER_IP:$new_port" 8 60
+        dialog "${DIALOG_OPTS[@]}" --title "Porta Alterada" --msgbox "Porta do FileBrowser alterada para: $new_port\n\nNovo acesso: http://$SERVER_IP:$new_port" 8 60
     fi
 }
 
@@ -4061,9 +4054,9 @@ restart_filebrowser_service() {
     sleep 2
     
     if systemctl is-active --quiet filebrowser; then
-        dialog --title "Serviço" --msgbox "FileBrowser reiniciado com sucesso!" 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "FileBrowser reiniciado com sucesso!" 6 40
     else
-        dialog --title "Erro" --msgbox "Falha ao reiniciar FileBrowser." 6 30
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar FileBrowser." 6 30
     fi
 }
 
@@ -4088,11 +4081,11 @@ check_minidlna_status() {
     
     status_info+="\n🌐 Interface: http://$SERVER_IP:8200"
     
-    dialog --title "Status MiniDLNA" --msgbox "$status_info" 12 60
+    dialog "${DIALOG_OPTS[@]}" --title "Status MiniDLNA" --msgbox "$status_info" 12 60
 }
 
 configure_minidlna_dirs() {
-    local choice=$(dialog --title "Diretórios de Mídia" --menu "Configurar diretórios:" 12 60 6 \
+    local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Diretórios de Mídia" --menu "Configurar diretórios:" 12 60 6 \
         "1" "Ver diretórios atuais" \
         "2" "Adicionar diretório de vídeos" \
         "3" "Adicionar diretório de música" \
@@ -4104,33 +4097,33 @@ configure_minidlna_dirs() {
     case $choice in
         1)
             local dirs=$(grep "media_dir" /etc/minidlna.conf | head -10)
-            dialog --title "Diretórios" --msgbox "$dirs" 15 70
+            dialog "${DIALOG_OPTS[@]}" --title "Diretórios" --msgbox "$dirs" 15 70
             ;;
         2)
-            local dir=$(dialog --title "Diretório de Vídeos" --inputbox "Caminho completo:" 8 60 "/media/dlna/videos" 3>&1 1>&2 2>&3)
+            local dir=$(dialog "${DIALOG_OPTS[@]}" --title "Diretório de Vídeos" --inputbox "Caminho completo:" 8 60 "/media/dlna/videos" 3>&1 1>&2 2>&3)
             if [ -n "$dir" ]; then
                 echo "media_dir=V,$dir" >> /etc/minidlna.conf
                 mkdir -p "$dir"
                 chown minidlna:minidlna "$dir"
-                dialog --title "Diretório" --msgbox "Diretório de vídeos adicionado: $dir" 6 60
+                dialog "${DIALOG_OPTS[@]}" --title "Diretório" --msgbox "Diretório de vídeos adicionado: $dir" 6 60
             fi
             ;;
         3)
-            local dir=$(dialog --title "Diretório de Música" --inputbox "Caminho completo:" 8 60 "/media/dlna/music" 3>&1 1>&2 2>&3)
+            local dir=$(dialog "${DIALOG_OPTS[@]}" --title "Diretório de Música" --inputbox "Caminho completo:" 8 60 "/media/dlna/music" 3>&1 1>&2 2>&3)
             if [ -n "$dir" ]; then
                 echo "media_dir=A,$dir" >> /etc/minidlna.conf
                 mkdir -p "$dir"
                 chown minidlna:minidlna "$dir"
-                dialog --title "Diretório" --msgbox "Diretório de música adicionado: $dir" 6 60
+                dialog "${DIALOG_OPTS[@]}" --title "Diretório" --msgbox "Diretório de música adicionado: $dir" 6 60
             fi
             ;;
         4)
-            local dir=$(dialog --title "Diretório de Fotos" --inputbox "Caminho completo:" 8 60 "/media/dlna/pictures" 3>&1 1>&2 2>&3)
+            local dir=$(dialog "${DIALOG_OPTS[@]}" --title "Diretório de Fotos" --inputbox "Caminho completo:" 8 60 "/media/dlna/pictures" 3>&1 1>&2 2>&3)
             if [ -n "$dir" ]; then
                 echo "media_dir=P,$dir" >> /etc/minidlna.conf
                 mkdir -p "$dir"
                 chown minidlna:minidlna "$dir"
-                dialog --title "Diretório" --msgbox "Diretório de fotos adicionado: $dir" 6 60
+                dialog "${DIALOG_OPTS[@]}" --title "Diretório" --msgbox "Diretório de fotos adicionado: $dir" 6 60
             fi
             ;;
     esac
@@ -4138,12 +4131,12 @@ configure_minidlna_dirs() {
 
 configure_minidlna_name() {
     local current_name=$(grep "friendly_name" /etc/minidlna.conf | cut -d'=' -f2 || echo "Boxserver DLNA")
-    local new_name=$(dialog --title "Nome do Servidor" --inputbox "Nome amigável do servidor DLNA:" 8 50 "$current_name" 3>&1 1>&2 2>&3)
+    local new_name=$(dialog "${DIALOG_OPTS[@]}" --title "Nome do Servidor" --inputbox "Nome amigável do servidor DLNA:" 8 50 "$current_name" 3>&1 1>&2 2>&3)
     
     if [ -n "$new_name" ]; then
         sed -i "s/^friendly_name=.*/friendly_name=$new_name/" /etc/minidlna.conf
         systemctl restart minidlna
-        dialog --title "Nome Alterado" --msgbox "Nome do servidor alterado para: $new_name" 6 50
+        dialog "${DIALOG_OPTS[@]}" --title "Nome Alterado" --msgbox "Nome do servidor alterado para: $new_name" 6 50
     fi
 }
 
@@ -4160,7 +4153,7 @@ rescan_minidlna_library() {
     systemctl start minidlna
     
     sleep 3
-    dialog --title "Biblioteca" --msgbox "Biblioteca reescaneada com sucesso!\n\nNovos arquivos serão detectados em alguns minutos." 8 60
+    dialog "${DIALOG_OPTS[@]}" --title "Biblioteca" --msgbox "Biblioteca reescaneada com sucesso!\n\nNovos arquivos serão detectados em alguns minutos." 8 60
 }
 
 restart_minidlna_service() {
@@ -4169,9 +4162,9 @@ restart_minidlna_service() {
     sleep 2
     
     if systemctl is-active --quiet minidlna; then
-        dialog --title "Serviço" --msgbox "MiniDLNA reiniciado com sucesso!" 6 40
+        dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "MiniDLNA reiniciado com sucesso!" 6 40
     else
-        dialog --title "Erro" --msgbox "Falha ao reiniciar MiniDLNA." 6 30
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar MiniDLNA." 6 30
     fi
 }
 
@@ -4181,7 +4174,7 @@ configure_netdata_alerts() {
 }
 
 configure_netdata_access() {
-    local choice=$(dialog --title "Acesso Remoto" --menu "Configurar acesso:" 10 50 4 \
+    local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Acesso Remoto" --menu "Configurar acesso:" 10 50 4 \
         "1" "Permitir acesso de qualquer IP" \
         "2" "Restringir a rede local" \
         "3" "Configurar senha" \
@@ -4192,15 +4185,15 @@ configure_netdata_access() {
         1)
             sed -i 's/bind to = .*/bind to = */' /etc/netdata/netdata.conf
             systemctl restart netdata
-            dialog --title "Acesso" --msgbox "Acesso liberado para qualquer IP." 6 40
+            dialog "${DIALOG_OPTS[@]}" --title "Acesso" --msgbox "Acesso liberado para qualquer IP." 6 40
             ;;
         2)
             sed -i 's/bind to = .*/bind to = 192.168.*/' /etc/netdata/netdata.conf
             systemctl restart netdata
-            dialog --title "Acesso" --msgbox "Acesso restrito à rede local." 6 40
+            dialog "${DIALOG_OPTS[@]}" --title "Acesso" --msgbox "Acesso restrito à rede local." 6 40
             ;;
         3)
-            dialog --title "Senha" --msgbox "Configuração de senha será implementada\nem versão futura." 8 50
+            dialog "${DIALOG_OPTS[@]}" --title "Senha" --msgbox "Configuração de senha será implementada\nem versão futura." 8 50
             ;;
     esac
 }
@@ -4233,31 +4226,31 @@ backup_restore_filebrowser() {
         1)
             local backup_file="/tmp/filebrowser-backup-$(date +%Y%m%d_%H%M%S).db"
             cp /var/lib/filebrowser/filebrowser.db "$backup_file"
-            dialog --title "Backup" --msgbox "Backup criado: $backup_file" 6 60
+            dialog "${DIALOG_OPTS[@]}" --title "Backup" --msgbox "Backup criado: $backup_file" 6 60
             ;;
         2)
-            local backup_file=$(dialog --title "Restaurar" --inputbox "Caminho do arquivo de backup:" 8 60 3>&1 1>&2 2>&3)
+            local backup_file=$(dialog "${DIALOG_OPTS[@]}" --title "Restaurar" --inputbox "Caminho do arquivo de backup:" 8 60 3>&1 1>&2 2>&3)
             if [ -f "$backup_file" ]; then
                 systemctl stop filebrowser
                 cp "$backup_file" /var/lib/filebrowser/filebrowser.db
                 chown filebrowser:filebrowser /var/lib/filebrowser/filebrowser.db
                 systemctl start filebrowser
-                dialog --title "Restaurar" --msgbox "Configuração restaurada com sucesso!" 6 50
+                dialog "${DIALOG_OPTS[@]}" --title "Restaurar" --msgbox "Configuração restaurada com sucesso!" 6 50
             else
-                dialog --title "Erro" --msgbox "Arquivo de backup não encontrado." 6 40
+                dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Arquivo de backup não encontrado." 6 40
             fi
             ;;
     esac
 }
 
 show_filebrowser_logs() {
-    dialog --title "Logs do FileBrowser" --msgbox "Os logs serão exibidos em uma nova janela.\n\nPressione 'q' para sair." 8 50
+    dialog "${DIALOG_OPTS[@]}" --title "Logs do FileBrowser" --msgbox "Os logs serão exibidos em uma nova janela.\n\nPressione 'q' para sair." 8 50
     journalctl -u filebrowser -f --no-pager
 }
 
 change_minidlna_port() {
-    local current_port=$(grep "port=" /etc/minidlna.conf | cut -d'=' -f2 || echo "8200")
-    local new_port=$(dialog --title "Alterar Porta" --inputbox "Nova porta para MiniDLNA:" 8 40 "$current_port" 3>&1 1>&2 2>&3)
+    local current_port=$(grep "^port=" /etc/minidlna.conf | cut -d'=' -f2 | xargs || echo "8200")
+    local new_port=$(dialog "${DIALOG_OPTS[@]}" --title "Alterar Porta" --inputbox "Nova porta para MiniDLNA:" 8 40 "$current_port" 3>&1 1>&2 2>&3)
     
     if [ -n "$new_port" ] && [ "$new_port" != "$current_port" ]; then
         sed -i "s/^port=.*/port=$new_port/" /etc/minidlna.conf
@@ -4267,11 +4260,11 @@ change_minidlna_port() {
 }
 
 configure_minidlna_filetypes() {
-    dialog --title "Tipos de Arquivo" --msgbox "Tipos de arquivo suportados:\n\n📹 Vídeos: .mp4, .avi, .mkv, .mov, .wmv\n🎵 Áudio: .mp3, .flac, .wav, .aac, .ogg\n🖼️ Imagens: .jpg, .png, .gif, .bmp\n\nPara adicionar novos tipos, edite:\n/etc/minidlna.conf" 14 60
+    dialog "${DIALOG_OPTS[@]}" --title "Tipos de Arquivo" --msgbox "Tipos de arquivo suportados:\n\n📹 Vídeos: .mp4, .avi, .mkv, .mov, .wmv\n🎵 Áudio: .mp3, .flac, .wav, .aac, .ogg\n🖼️ Imagens: .jpg, .png, .gif, .bmp\n\nPara adicionar novos tipos, edite:\n/etc/minidlna.conf" 14 60
 }
 
 show_minidlna_logs() {
-    dialog --title "Logs do MiniDLNA" --msgbox "Os logs serão exibidos em uma nova janela.\n\nPressione 'q' para sair." 8 50
+    dialog "${DIALOG_OPTS[@]}" --title "Logs do MiniDLNA" --msgbox "Os logs serão exibidos em uma nova janela.\n\nPressione 'q' para sair." 8 50
     journalctl -u minidlna -f --no-pager
 }
 
@@ -4301,7 +4294,7 @@ configure_other_services() {
 }
 
 configure_ufw_service() {
-    local choice=$(dialog --title "UFW Firewall" --menu "Configurar firewall:" 12 50 5 \
+    local choice=$(dialog "${DIALOG_OPTS[@]}" --title "UFW Firewall" --menu "Configurar firewall:" 12 50 5 \
         "1" "Ver status do UFW" \
         "2" "Ver regras ativas" \
         "3" "Adicionar regra personalizada" \
@@ -4312,28 +4305,28 @@ configure_ufw_service() {
     case $choice in
         1)
             local ufw_status=$(ufw status verbose)
-            dialog --title "Status UFW" --msgbox "$ufw_status" 20 80
+            dialog "${DIALOG_OPTS[@]}" --title "Status UFW" --msgbox "$ufw_status" 20 80
             ;;
         2)
             local ufw_rules=$(ufw status numbered)
-            dialog --title "Regras UFW" --msgbox "$ufw_rules" 20 80
+            dialog "${DIALOG_OPTS[@]}" --title "Regras UFW" --msgbox "$ufw_rules" 20 80
             ;;
         3)
-            local port=$(dialog --title "Nova Regra" --inputbox "Porta ou serviço:" 8 40 3>&1 1>&2 2>&3)
-            local action=$(dialog --title "Ação" --menu "Escolha a ação:" 10 40 2 \
+            local port=$(dialog "${DIALOG_OPTS[@]}" --title "Nova Regra" --inputbox "Porta ou serviço:" 8 40 3>&1 1>&2 2>&3)
+            local action=$(dialog "${DIALOG_OPTS[@]}" --title "Ação" --menu "Escolha a ação:" 10 40 2 \
                 "allow" "Permitir" \
                 "deny" "Negar" \
                 3>&1 1>&2 2>&3)
             
             if [ -n "$port" ] && [ -n "$action" ]; then
                 ufw $action $port
-                dialog --title "Regra" --msgbox "Regra adicionada: $action $port" 6 40
+                dialog "${DIALOG_OPTS[@]}" --title "Regra" --msgbox "Regra adicionada: $action $port" 6 40
             fi
             ;;
         4)
-            if dialog --title "Resetar UFW" --yesno "Tem certeza que deseja resetar todas as regras?" 6 50; then
+            if dialog "${DIALOG_OPTS[@]}" --title "Resetar UFW" --yesno "Tem certeza que deseja resetar todas as regras?" 6 50; then
                 ufw --force reset
-                dialog --title "Reset" --msgbox "UFW resetado. Configure novamente se necessário." 6 50
+                dialog "${DIALOG_OPTS[@]}" --title "Reset" --msgbox "UFW resetado. Configure novamente se necessário." 6 50
             fi
             ;;
     esac
@@ -4352,19 +4345,19 @@ show_all_services_status() {
         fi
     done
     
-    dialog --title "Status dos Serviços" --msgbox "$services_status" 20 60
+    dialog "${DIALOG_OPTS[@]}" --title "Status dos Serviços" --msgbox "$services_status" 20 60
 }
 
 configure_rng_service() {
-    dialog --title "RNG-tools" --msgbox "RNG-tools Status:\n\n$(systemctl status rng-tools --no-pager -l | head -10)\n\nEntropia atual: $(cat /proc/sys/kernel/random/entropy_avail)" 15 70
+    dialog "${DIALOG_OPTS[@]}" --title "RNG-tools" --msgbox "RNG-tools Status:\n\n$(systemctl status rng-tools --no-pager -l | head -10)\n\nEntropia atual: $(cat /proc/sys/kernel/random/entropy_avail)" 15 70
 }
 
 configure_rclone_service() {
-    dialog --title "Rclone" --msgbox "Para configurar Rclone:\n\n1. Execute: rclone config\n2. Configure seus provedores de nuvem\n3. Use: /usr/local/bin/boxserver-backup\n\nConsulte a documentação para detalhes." 12 60
+    dialog "${DIALOG_OPTS[@]}" --title "Rclone" --msgbox "Para configurar Rclone:\n\n1. Execute: rclone config\n2. Configure seus provedores de nuvem\n3. Use: /usr/local/bin/boxserver-backup\n\nConsulte a documentação para detalhes." 12 60
 }
 
 configure_rsync_service() {
-    dialog --title "Rsync" --msgbox "Rsync configurado para backup local:\n\n• Script: /usr/local/bin/boxserver-sync\n• Agendamento: diário às 02:00\n• Destino: /var/backups/boxserver/\n\nExecute manualmente: sudo /usr/local/bin/boxserver-sync" 12 70
+    dialog "${DIALOG_OPTS[@]}" --title "Rsync" --msgbox "Rsync configurado para backup local:\n\n• Script: /usr/local/bin/boxserver-sync\n• Agendamento: diário às 02:00\n• Destino: /var/backups/boxserver/\n\nExecute manualmente: sudo /usr/local/bin/boxserver-sync" 12 70
 }
 
 configure_cockpit_service() {
@@ -4380,7 +4373,7 @@ configure_cockpit_service() {
     cockpit_status+="👤 Login: usuário do sistema\n"
     cockpit_status+="🔧 Funcionalidades: gerenciamento completo do sistema"
     
-    dialog --title "Cockpit" --msgbox "$cockpit_status" 12 60
+    dialog "${DIALOG_OPTS[@]}" --title "Cockpit" --msgbox "$cockpit_status" 12 60
 }
 
 # IMPLEMENTAÇÃO: Menu de gerenciamento de serviços
@@ -4506,14 +4499,14 @@ configure_rclone_service() {
 
         case $choice in
             1)
-                dialog --title "Configurar Rclone" --msgbox "Você será levado para a configuração interativa do Rclone.\n\nSiga as instruções no terminal." 8 60
+                dialog "${DIALOG_OPTS[@]}" --title "Configurar Rclone" --msgbox "Você será levado para a configuração interativa do Rclone.\n\nSiga as instruções no terminal." 8 60
                 clear
                 rclone config
-                dialog --title "Concluído" --msgbox "Configuração do Rclone finalizada.\nPressione ENTER para voltar ao menu." 6 50
+                dialog "${DIALOG_OPTS[@]}" --title "Concluído" --msgbox "Configuração do Rclone finalizada.\nPressione ENTER para voltar ao menu." 6 50
                 ;;
             2)
                 local remotes=$(rclone listremotes)
-                dialog --title "Remotes Configurados" --msgbox "Remotes:\n\n$remotes" 15 60
+                dialog "${DIALOG_OPTS[@]}" --title "Remotes Configurados" --msgbox "Remotes:\n\n$remotes" 15 60
                 ;;
             3)
                 setup_rclone_webui
@@ -4521,22 +4514,22 @@ configure_rclone_service() {
             4)
                 systemctl stop rclone-webui 2>/dev/null
                 systemctl disable rclone-webui 2>/dev/null
-                dialog --title "Web-GUI" --msgbox "Interface Web do Rclone parada e desabilitada." 6 50
+                dialog "${DIALOG_OPTS[@]}" --title "Web-GUI" --msgbox "Interface Web do Rclone parada e desabilitada." 6 50
                 ;;
             6)
-                local new_pass=$(dialog --title "Nova Senha" --passwordbox "Digite a nova senha para a Web-GUI do Rclone:" 8 60 3>&1 1>&2 2>&3)
+                local new_pass=$(dialog "${DIALOG_OPTS[@]}" --title "Nova Senha" --passwordbox "Digite a nova senha para a Web-GUI do Rclone:" 8 60 3>&1 1>&2 2>&3)
                 if [ -n "$new_pass" ]; then
                     # Parar, alterar a senha no arquivo de serviço e reiniciar
                     systemctl stop rclone-webui
                     sed -i "s/--rc-pass [^ ]*/--rc-pass $new_pass/" /etc/systemd/system/rclone-webui.service
                     systemctl daemon-reload
                     systemctl start rclone-webui
-                    dialog --title "Senha Alterada" --msgbox "Senha da Web-GUI alterada com sucesso!" 6 50
+                    dialog "${DIALOG_OPTS[@]}" --title "Senha Alterada" --msgbox "Senha da Web-GUI alterada com sucesso!" 6 50
                 fi
                 ;;
             5)
                 local status=$(systemctl status rclone-webui --no-pager -l)
-                dialog --title "Status Web-GUI" --msgbox "Status do serviço rclone-webui:\n\n$status" 20 80
+                dialog "${DIALOG_OPTS[@]}" --title "Status Web-GUI" --msgbox "Status do serviço rclone-webui:\n\n$status" 20 80
                 ;;
             6)
                 /usr/local/bin/boxserver-backup
@@ -4578,10 +4571,10 @@ EOF
     systemctl start rclone-webui
 
     if systemctl is-active --quiet rclone-webui; then
-        dialog --title "Web-GUI Ativada" --msgbox "Interface Web do Rclone está ativa!\n\nAcesse: http://$SERVER_IP:5572\n\nLogin: admin\nSenha: $rclone_password\n\n(A senha foi salva em $LOG_FILE)" 12 70
+        dialog "${DIALOG_OPTS[@]}" --title "Web-GUI Ativada" --msgbox "Interface Web do Rclone está ativa!\n\nAcesse: http://$SERVER_IP:5572\n\nLogin: admin\nSenha: $rclone_password\n\n(A senha foi salva em $LOG_FILE)" 12 70
         log_message "INFO" "Serviço Rclone Web-GUI iniciado com sucesso."
     else
-        dialog --title "Erro" --msgbox "Falha ao iniciar a Web-GUI do Rclone.\nVerifique os logs com 'journalctl -u rclone-webui'." 8 60
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao iniciar a Web-GUI do Rclone.\nVerifique os logs com 'journalctl -u rclone-webui'." 8 60
         log_message "ERROR" "Falha ao iniciar o serviço Rclone Web-GUI."
     fi
 }
@@ -4793,11 +4786,11 @@ setup_headless_environment() {
 install_script_globally() {
     local install_path="/usr/local/bin/boxserver"
     
-    if dialog --title "Instalação Global" --yesno "Deseja instalar este script como um comando global ('boxserver')?\n\nIsso permitirá que você o execute de qualquer lugar no terminal." 10 70; then
+    if dialog "${DIALOG_OPTS[@]}" --title "Instalação Global" --yesno "Deseja instalar este script como um comando global ('boxserver')?\n\nIsso permitirá que você o execute de qualquer lugar no terminal." 10 70; then
         log_message "INFO" "Instalando script em $install_path..."
         
         if cp "$0" "$install_path" && chmod +x "$install_path"; then
-            dialog --title "Instalação Concluída" --msgbox "Script instalado com sucesso!\n\nAgora você pode executá-lo a qualquer momento digitando:\n\nboxserver" 10 60
+            dialog "${DIALOG_OPTS[@]}" --title "Instalação Concluída" --msgbox "Script instalado com sucesso!\n\nAgora você pode executá-lo a qualquer momento digitando:\n\nboxserver" 10 60
             log_message "INFO" "Script instalado globalmente. Reiniciando a partir do novo local."
             
             # Reiniciar o script a partir do novo local para continuar a execução
@@ -4845,7 +4838,7 @@ main() {
     fi
     
     # Mostrar tela de boas-vindas
-    dialog --title "Bem-vindo" --msgbox "Boxserver TUI Installer v1.0\n\nInstalador automatizado para MXQ-4K\n\nEste assistente irá guiá-lo através da\ninstalação e configuração do seu\nservidor doméstico.\n\nPressione ENTER para continuar..." 12 50
+    dialog "${DIALOG_OPTS[@]}" --title "Bem-vindo" --msgbox "Boxserver TUI Installer v1.0\n\nInstalador automatizado para MXQ-4K\n\nEste assistente irá guiá-lo através da\ninstalação e configuração do seu\nservidor doméstico.\n\nPressione ENTER para continuar..." 12 50
     
     # Iniciar menu principal
     main_menu
