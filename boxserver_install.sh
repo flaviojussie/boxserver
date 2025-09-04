@@ -94,6 +94,7 @@ check_system_resources() {
     # MELHORIA: Detecção genérica de hardware RK322x
     local board_info=""
     if [ -f /proc/device-tree/model ]; then
+        board_info=$(cat /proc/device-tree/model)
     elif [ -f /sys/firmware/devicetree/base/model ]; then
         board_info=$(cat /sys/firmware/devicetree/base/model)
     fi
