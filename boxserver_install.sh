@@ -510,7 +510,7 @@ check_app_status() {
         1) [[ -f "/etc/pihole/setupVars.conf" ]] && is_installed=true ;;
         2) [[ -f "/etc/unbound/unbound.conf" ]] && is_installed=true ;;
         3) [[ -f "/etc/wireguard/wg0.conf" ]] && is_installed=true ;;
-        4) command -v cockpit-ws &>/dev/null && is_installed=true ;;
+        4) [[ -f "/etc/cockpit/cockpit.conf" ]] && is_installed=true ;;
         5) command -v filebrowser &>/dev/null && is_installed=true ;;
         6) [[ -f "/etc/netdata/netdata.conf" ]] && is_installed=true ;;
         7) command -v fail2ban-client &>/dev/null && is_installed=true ;;
@@ -521,6 +521,7 @@ check_app_status() {
         12) [[ -f "/etc/minidlna.conf" ]] && is_installed=true ;;
         13) command -v cloudflared &>/dev/null && is_installed=true ;;
         14) command -v chronyd &>/dev/null && is_installed=true ;;
+        15) [[ -f "/etc/nginx/sites-available/boxserver" ]] && is_installed=true ;;
     esac
 
     if [ "$is_installed" = false ]; then
@@ -2108,29 +2109,18 @@ install_web_interface() {
     fi
 
     # Criar diretório web
-    mkdir -p /var/www/html
+    local web_root="/var/www/boxserver"
+    mkdir -p "$web_root"
 
     # Criar página de dashboard
-    cat > /var/www/html/index.html << 'EOF'
+    cat > "$web_root/index.html" << 'EOF'
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Boxserver Dashboard</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f9; color: #333; margin: 0; padding: 2em; }
-        .container { max-width: 960px; margin: auto; }
-        .header { text-align: center; margin-bottom: 2em; }
-        .header h1 { color: #2c3e50; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5em; }
-        .card { background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); padding: 1.5em; text-align: center; transition: transform 0.2s; }
-        .card:hover { transform: translateY(-5px); }
-        .card h3 { margin-top: 0; color: #34495e; }
-        .card p { color: #7f8c8d; }
-        .card a { display: inline-block; margin-top: 1em; padding: 0.7em 1.5em; background-color: #3498db; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; }
-        .card a:hover { background-color: #2980b9; }
-    </style>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body onload="startRealtimeUpdates()">
     <div class="container">
@@ -2139,48 +2129,84 @@ install_web_interface() {
             <p>Interface unificada para todos os serviços</p>
         </div>
         <div class="grid">
-            <div class="card" id="system-card"><h3>Sistema</h3><p>CPU: <span id="cpu-usage">--</span>% | RAM: <span id="ram-usage">--</span>%</p><a href="/netdata/" target="_blank">Ver Detalhes</a></div>
-            <div class="card" id="pihole-card" style="display:none;"><h3>Pi-hole</h3><p>Bloqueador de anúncios</p><a href="/pihole/admin/" target="_blank">Acessar</a></div>
-            <div class="card" id="cockpit-card" style="display:none;"><h3>Cockpit</h3><p>Painel de Administração</p><a href="/cockpit/" target="_blank">Acessar</a></div>
-            <div class="card" id="filebrowser-card" style="display:none;"><h3>FileBrowser</h3><p>Gerenciador de Arquivos</p><a href="/filebrowser/" target="_blank">Acessar</a></div>
-            <div class="card" id="rclone-card" style="display:none;"><h3>Rclone Web-GUI</h3><p>Gerenciador de Nuvem</p><a href="/rclone/" target="_blank">Acessar</a></div>
+            <!-- Cards de serviço serão inseridos dinamicamente aqui -->
         </div>
     </div>
-    <script>
-        function updateSystemInfo() {
-            // API do Netdata para CPU (user + system) e RAM (used)
-            const netdataUrl = 'http://' + window.location.hostname + ':19999/api/v1/data?chart=system.cpu&after=-1&points=1&group=average&format=json';
-            const ramUrl = 'http://' + window.location.hostname + ':19999/api/v1/data?chart=system.ram&dimension=used&after=-1&points=1&format=json';
-
-            fetch(netdataUrl).then(r => r.json()).then(data => {
-                document.getElementById('cpu-usage').textContent = data.data[0][1].toFixed(1);
-            }).catch(e => console.error('Error fetching CPU data:', e));
-
-            fetch(ramUrl).then(r => r.json()).then(data => {
-                document.getElementById('ram-usage').textContent = data.data[0][1].toFixed(1);
-            }).catch(e => console.error('Error fetching RAM data:', e));
-        }
-
-        function checkService(id, url) {
-             fetch(url, {method: 'HEAD', mode: 'no-cors'}).then(res => {
-                const card = document.getElementById(id);
-                if(card) card.style.display = 'block';
-            }).catch(err => {});
-        }
-
-        function startRealtimeUpdates() {
-            updateSystemInfo();
-            setInterval(updateSystemInfo, 3000); // Atualiza a cada 3 segundos
-
-            checkService('pihole-card', '/pihole/admin/');
-            checkService('cockpit-card', '/cockpit/');
-            checkService('filebrowser-card', '/filebrowser/');
-            checkService('rclone-card', '/rclone/');
-        };
-    </script>
+    <script src="script.js"></script>
 </body>
 </html>
 EOF'
+
+    # Criar arquivo CSS
+    cat > "$web_root/style.css" << 'EOF'
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f9; color: #333; margin: 0; padding: 2em; }
+.container { max-width: 960px; margin: auto; }
+.header { text-align: center; margin-bottom: 2em; }
+.header h1 { color: #2c3e50; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5em; }
+.card { background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); padding: 1.5em; text-align: center; transition: transform 0.2s; }
+.card:hover { transform: translateY(-5px); }
+.card h3 { margin-top: 0; color: #34495e; }
+.card p { color: #7f8c8d; }
+.card a { display: inline-block; margin-top: 1em; padding: 0.7em 1.5em; background-color: #3498db; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; }
+.card a:hover { background-color: #2980b9; }
+EOF
+
+    # Criar arquivo JavaScript dinâmico
+    cat > "$web_root/script.js" << 'EOF'
+const services = [
+    { id: 1, name: 'Pi-hole', desc: 'Bloqueador de anúncios', url: '/pihole/admin/' },
+    { id: 4, name: 'Cockpit', desc: 'Painel de Administração', url: '/cockpit/' },
+    { id: 5, name: 'FileBrowser', desc: 'Gerenciador de Arquivos', url: '/filebrowser/' },
+    { id: 6, name: 'Netdata', desc: 'Monitoramento Real-Time', url: '/netdata/' },
+    { id: 10, name: 'Rclone Web-GUI', desc: 'Gerenciador de Nuvem', url: '/rclone/' },
+    { id: 12, name: 'MiniDLNA', desc: 'Servidor de Mídia', url: 'http://' + window.location.hostname + ':8200' }
+];
+
+function createCard(service) {
+    return `
+        <div class="card" id="card-${service.id}">
+            <h3>${service.name}</h3>
+            <p>${service.desc}</p>
+            <a href="${service.url}" target="_blank">Acessar</a>
+        </div>
+    `;
+}
+
+function startRealtimeUpdates() {
+    const grid = document.querySelector('.grid');
+    
+    // Adicionar card do sistema se Netdata estiver disponível
+    fetch('http://' + window.location.hostname + ':19999/api/v1/info', { mode: 'cors' })
+        .then(res => {
+            if (res.ok) {
+                const systemCard = `<div class="card" id="system-card"><h3>Sistema</h3><p>CPU: <span id="cpu-usage">--</span>% | RAM: <span id="ram-usage">--</span>%</p><a href="/netdata/" target="_blank">Ver Detalhes</a></div>`;
+                grid.insertAdjacentHTML('afterbegin', systemCard);
+                setInterval(updateSystemInfo, 3000);
+            }
+        }).catch(() => {});
+
+    // Adicionar cards de serviços dinamicamente
+    services.forEach(service => {
+        fetch(service.url, { method: 'HEAD', mode: 'no-cors' })
+            .then(() => grid.insertAdjacentHTML('beforeend', createCard(service)))
+            .catch(() => {});
+    });
+}
+
+function updateSystemInfo() {
+    const netdataUrl = 'http://' + window.location.hostname + ':19999/api/v1/data?chart=system.cpu&after=-1&points=1&group=average&format=json';
+    const ramUrl = 'http://' + window.location.hostname + ':19999/api/v1/data?chart=system.ram&dimension=used&after=-1&points=1&format=json';
+
+    fetch(netdataUrl).then(r => r.json()).then(data => {
+        document.getElementById('cpu-usage').textContent = data.data[0][1].toFixed(1);
+    }).catch(e => console.error('Error fetching CPU data:', e));
+
+    fetch(ramUrl).then(r => r.json()).then(data => {
+        document.getElementById('ram-usage').textContent = data.data[0][1].toFixed(1);
+    }).catch(e => console.error('Error fetching RAM data:', e));
+}
+EOF
 
     # Criar configuração do Nginx
     cat > /etc/nginx/sites-available/boxserver << 'EOF'
@@ -2188,7 +2214,7 @@ server {
     listen 80 default_server;
     server_name _;
 
-    root /var/www/html;
+    root /var/www/boxserver;
     index index.html;
 
     location / {
@@ -2199,7 +2225,7 @@ server {
 }
 EOF
 
-    # Habilitar o site
+    # Habilitar o site e remover o padrão
     ln -sf /etc/nginx/sites-available/boxserver /etc/nginx/sites-enabled/
     rm -f /etc/nginx/sites-enabled/default
 
@@ -2218,11 +2244,11 @@ enable_nginx_proxy() {
     case $app_id in
         1) # Pi-hole
             sed -i "/# As localizações dos serviços/a \\\n    location /pihole/ {\\\n        proxy_pass http://127.0.0.1:$pihole_port/admin/;\\\n        proxy_set_header Host \\\$host;\\\n        proxy_set_header X-Real-IP \\\$remote_addr;\\\n    }" "$config_file"
-            ;;
+            log_message "INFO" "Nginx: Proxy para Pi-hole habilitado." ;;
         4) # Cockpit
             sed -i '/# As localizações dos serviços/a \
-    location /cockpit/ {\n        proxy_pass http://127.0.0.1:9090/cockpit/;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection "upgrade";\n    }' "$config_file"
-            ;;
+    location /cockpit/ {\n        proxy_pass http://127.0.0.1:9090/;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection "upgrade";\n    }' "$config_file"
+            log_message "INFO" "Nginx: Proxy para Cockpit habilitado." ;;
         5) # FileBrowser
             sed -i '/# As localizações dos serviços/a \
     location /filebrowser/ {\n        proxy_pass http://127.0.0.1:8080/;\n    }' "$config_file"
@@ -2515,16 +2541,19 @@ update_ingress_rule() {
     # Backup da configuração atual
     cp "$config_file" "$config_file.bak"
     
-    # MELHORIA: Lógica robusta para adicionar/atualizar regras de ingress
-    # Extrair a seção de ingress, remover a regra antiga, adicionar a nova e juntar tudo
-    local ingress_section=$(sed -n '/^ingress:/,/^[^ ]/p' "$config_file" | grep -v '^ingress:')
-    local other_configs=$(grep -v -E '(^ingress:|^  - hostname:|^    service:)' "$config_file")
+    # MELHORIA: Lógica robusta para adicionar/atualizar regras de ingress.
+    # Extrai a seção de ingress, remove a regra antiga, adiciona a nova e junta tudo.
+    # Isso evita problemas com sed em diferentes versões.
+    local ingress_section=$(awk '/^ingress:/ {p=1; next} p && /^[^ ]/ {p=0} p' "$config_file")
+    local other_configs=$(awk '/^ingress:/ {p=1; next} p && /^[^ ]/ {p=0} !p' "$config_file")
 
     # Remover a regra existente para o mesmo hostname
     local updated_ingress=""
     local skip_next=false
     while IFS= read -r line; do
-        if [[ "$line" == *"hostname: $domain"* ]]; then
+        # Limpar espaços em branco para uma comparação mais segura
+        local clean_line=$(echo "$line" | tr -d ' ')
+        if [[ "$clean_line" == "hostname:$domain" ]]; then
             skip_next=true
             continue
         fi
@@ -2535,8 +2564,11 @@ update_ingress_rule() {
         updated_ingress+="$line\n"
     done <<< "$ingress_section"
 
-    # Adicionar a nova regra e a regra catch-all
-    local new_ingress_section=$(printf "ingress:\n%b  - hostname: %s\n    service: http://127.0.0.1:%s\n  - service: http_status:404" "${updated_ingress}" "$domain" "$port")
+    # Remover a regra catch-all antiga para readicioná-la no final
+    updated_ingress=$(echo -e "$updated_ingress" | grep -v "service:http_status:404")
+
+    # Adicionar a nova regra e a regra catch-all no final
+    local new_ingress_section=$(printf "ingress:\n%b  - hostname: %s\n    service: http://127.0.0.1:%s\n  - service: http_status:404" "$(echo -e "$updated_ingress" | sed '/^$/d')" "$domain" "$port")
 
     # Recriar o arquivo de configuração
     echo -e "$other_configs\n$new_ingress_section" > "$config_file"
@@ -4384,16 +4416,17 @@ manage_services_menu() {
         for app_id in $(echo "${!APPS[@]}" | tr ' ' '\n' | sort -n); do
             local service_name=$(get_service_name "$app_id")
             if [ -n "$service_name" ]; then
+                local app_status=$(check_app_status "$app_id")
                 local app_name=$(echo "${APPS[$app_id]}" | cut -d'|' -f1)
-                local status_icon="?"
-                if systemctl list-unit-files | grep -q "^${service_name}"; then
-                    if systemctl is-active --quiet "$service_name"; then
-                        status_icon="✅"
-                    else
-                        status_icon="❌"
-                    fi
+                local status_icon="-" # Padrão para não instalado
+
+                if [[ "$app_status" == "installed_ok" ]]; then
+                    status_icon="✅"
+                elif [[ "$app_status" == "installed_error" ]]; then
+                    status_icon="❌"
                 else
-                    status_icon="-"
+                    # Se não estiver instalado, não adiciona ao menu de gerenciamento
+                    continue
                 fi
                 menu_items+=("$app_id" "$status_icon $app_name")
             fi
