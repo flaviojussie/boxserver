@@ -3075,19 +3075,19 @@ generate_wireguard_client() {
     local client_config_path="/etc/wireguard/clients/${client_name}.conf"
     cat > "$client_config_path" << EOF
 [Interface]
-PrivateKey = $client_private_key
-Address = $client_ip/24
+PrivateKey = ${client_private_key}
+Address = ${client_ip}/24
 DNS = ${VPN_NETWORK%.*}.1
 
 [Peer]
-PublicKey = $server_public_key
-Endpoint = $server_endpoint:$server_port
+PublicKey = ${server_public_key}
+Endpoint = ${server_endpoint}:${server_port}
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
 
     # Adicionar peer ao servidor
-    wg set wg0 peer "$client_public_key" allowed-ips "$client_ip/32"
+    wg set wg0 peer "${client_public_key}" allowed-ips "${client_ip}/32"
 
     # Salvar configuração no arquivo do servidor
     echo "" >> /etc/wireguard/wg0.conf
@@ -3098,19 +3098,17 @@ EOF
 
     # Gerar QR Code se qrencode estiver disponível
     if command -v qrencode &>/dev/null; then
-        local qr_file="/etc/wireguard/clients/${client_name}.png"
-        qrencode -t png -o "$qr_file" < "$client_config_path"
-
-        # MELHORIA: Exibir o QR code diretamente no terminal com fallback claro.
-        local qr_terminal_text="Configuração do Cliente '$client_name':\n\n"
-        qr_terminal_text+=$(cat "$client_config_path")
-        qr_terminal_text+="\n\n"
-        qr_terminal_text+="QR Code (aponte a câmera do seu app WireGuard aqui):\n\n"
-        qr_terminal_text+="$(qrencode -t ansiutf8 < "$client_config_path")"
-        qr_terminal_text+="\n\nSe o QR code aparecer quebrado, você pode usar o arquivo de imagem salvo em:\n$qr_file"
+        # CORREÇÃO: Gerar QR Code e texto para exibição no dialog
+        local client_config_content=$(cat "$client_config_path")
+        local qr_code_terminal=$(qrencode -t ansiutf8 <<< "$client_config_content")
         
-        # Usar --textbox para melhor renderização de caracteres especiais, lendo da stdin
-        echo -e "$qr_terminal_text" | dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado: $client_name" --textbox - 25 80
+        local dialog_text="Cliente '$client_name' criado com sucesso.\n\n"
+        dialog_text+="Aponte a câmera do seu app WireGuard para o QR Code abaixo:\n\n"
+        dialog_text+="$qr_code_terminal"
+        dialog_text+="\n\nAlternativamente, o arquivo de configuração foi salvo em:\n$client_config_path"
+
+        # Exibir o QR Code e as informações no dialog
+        echo -e "$dialog_text" | dialog "${DIALOG_OPTS[@]}" --title "Cliente WireGuard Criado" --prgbox " " 25 80
     else
         dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\n(Instale 'qrencode' para gerar QR codes)" 12 60
     fi
