@@ -3778,11 +3778,11 @@ configure_filebrowser() {
             1) check_filebrowser_status ;;
             2) manage_filebrowser_users ;;
             3) configure_filebrowser_dirs ;;
-            4) change_filebrowser_port ;;
+            4) change_filebrowser_port ;; # Esta função precisa ser criada
             5) configure_filebrowser_permissions ;;
             6) backup_restore_filebrowser ;;
             7) restart_filebrowser_service ;;
-            8) show_filebrowser_logs ;;
+            8) show_filebrowser_logs ;; # Esta função precisa ser criada
             9|"") break ;;
         esac
     done
@@ -3810,7 +3810,7 @@ configure_minidlna() {
             4) change_minidlna_port ;;
             5) rescan_minidlna_library ;;
             6) configure_minidlna_filetypes ;;
-            7) restart_minidlna_service ;;
+            7) restart_minidlna_service ;; # Esta função precisa ser criada
             8) show_minidlna_logs ;;
             9|"") break ;;
         esac
@@ -4298,7 +4298,7 @@ configure_other_services() {
 }
 
 configure_ufw_service() {
-    local choice=$(dialog "${DIALOG_OPTS[@]}" --title "UFW Firewall" --menu "Configurar firewall:" 12 50 5 \
+    local choice=$(dialog "${DIALOG_OPTS[@]}" --title "UFW Firewall" --menu "Configurar firewall:" 15 60 5 \
         "1" "Ver status do UFW" \
         "2" "Ver regras ativas" \
         "3" "Adicionar regra personalizada" \
@@ -4317,7 +4317,7 @@ configure_ufw_service() {
             ;;
         3)
             local port=$(dialog "${DIALOG_OPTS[@]}" --title "Nova Regra" --inputbox "Porta ou serviço:" 8 40 3>&1 1>&2 2>&3)
-            local action=$(dialog "${DIALOG_OPTS[@]}" --title "Ação" --menu "Escolha a ação:" 10 40 2 \
+            local action=$(dialog "${DIALOG_OPTS[@]}" --title "Ação" --menu "Escolha a ação:" 12 40 2 \
                 "allow" "Permitir" \
                 "deny" "Negar" \
                 3>&1 1>&2 2>&3)
@@ -4328,7 +4328,7 @@ configure_ufw_service() {
             fi
             ;;
         4)
-            if dialog "${DIALOG_OPTS[@]}" --title "Resetar UFW" --yesno "Tem certeza que deseja resetar todas as regras?" 6 50; then
+            if dialog "${DIALOG_OPTS[@]}" --title "Resetar UFW" --yesno "Tem certeza que deseja resetar todas as regras?\n\nIsso pode expor seu servidor a riscos." 8 60; then
                 ufw --force reset
                 dialog "${DIALOG_OPTS[@]}" --title "Reset" --msgbox "UFW resetado. Configure novamente se necessário." 6 50
             fi
@@ -4357,7 +4357,7 @@ configure_rng_service() {
 }
 
 configure_rclone_service() {
-    dialog "${DIALOG_OPTS[@]}" --title "Rclone" --msgbox "Para configurar Rclone:\n\n1. Execute: rclone config\n2. Configure seus provedores de nuvem\n3. Use: /usr/local/bin/boxserver-backup\n\nConsulte a documentação para detalhes." 12 60
+    dialog "${DIALOG_OPTS[@]}" --title "Rclone" --msgbox "Para configurar Rclone:\n\n1. Execute: rclone config\n2. Configure seus provedores de nuvem\n3. Use o script de backup manual\n\nConsulte a documentação para detalhes." 12 60
 }
 
 configure_rsync_service() {
@@ -4520,20 +4520,26 @@ configure_apps_menu() {
     while true; do
         local menu_items=()
         # Adiciona apenas aplicativos instalados que têm um menu de configuração
-        if [[ "$(check_app_status 1)" != "not_installed" || "$(check_app_status 2)" != "not_installed" ]]; then
+        if [[ "$(check_app_status 1)" != "not_installed" ]] || [[ "$(check_app_status 2)" != "not_installed" ]]; then
             menu_items+=("1" "Configurar Pi-hole & Unbound")
         fi
+        if [[ "$(check_app_status 3)" != "not_installed" ]]; then
+            menu_items+=("2" "Configurar WireGuard")
+        fi
         if [[ "$(check_app_status 5)" != "not_installed" ]]; then
-            menu_items+=("2" "Configurar FileBrowser")
+            menu_items+=("3" "Configurar FileBrowser")
         fi
         if [[ "$(check_app_status 6)" != "not_installed" ]]; then
-            menu_items+=("3" "Configurar Netdata")
+            menu_items+=("4" "Configurar Netdata")
         fi
         if [[ "$(check_app_status 12)" != "not_installed" ]]; then
-            menu_items+=("4" "Configurar MiniDLNA")
+            menu_items+=("5" "Configurar MiniDLNA")
         fi
         if [[ "$(check_app_status 10)" != "not_installed" ]]; then
-            menu_items+=("5" "Configurar Rclone")
+            menu_items+=("6" "Configurar Rclone")
+        fi
+        if [[ "$(check_app_status 13)" != "not_installed" ]]; then
+            menu_items+=("7" "Configurar Cloudflare Tunnel")
         fi
 
         if [ ${#menu_items[@]} -eq 0 ]; then
@@ -4550,10 +4556,12 @@ configure_apps_menu() {
 
         case $choice in
             1) configure_pihole_unbound ;;
-            2) configure_filebrowser ;;
-            3) configure_netdata ;;
-            4) configure_minidlna ;;
-            5) configure_rclone_service ;;
+            2) configure_wireguard_vpn ;;
+            3) configure_filebrowser ;;
+            4) configure_netdata ;;
+            5) configure_minidlna ;;
+            6) configure_rclone_service ;;
+            7) configure_cloudflare_tunnel ;;
         esac
     done
 }
@@ -4565,10 +4573,8 @@ diagnostics_menu() {
             "1" "Relatório de Saúde Completo (boxserver-health)" \
             "2" "Testar Conectividade de Rede" \
             "3" "Testar Resolução DNS (Pi-hole & Unbound)" \
-            "4" "Manutenção (Limpeza, Backups)" \
-            "5" "Verificar Status de um Serviço" \
-            "6" "Ver Logs de Instalação" \
-            "7" "Voltar ao Menu Principal" \
+            "4" "Ver Logs de Instalação" \
+            "5" "Voltar ao Menu Principal" \
             3>&1 1>&2 2>&3)
 
         case $choice in
@@ -4585,16 +4591,13 @@ diagnostics_menu() {
                 test_dns_resolution
                 ;;
             4)
-                maintenance_menu
-                ;;
-            5)
                 # Reutiliza o menu de gerenciamento para mostrar o status
                 manage_services_menu
                 ;;
-            6)
+            5)
                 show_installation_logs
                 ;;
-            7|"")
+            6|"")
                 break
                 ;;
         esac
@@ -4624,6 +4627,34 @@ maintenance_menu() {
                 dialog "${DIALOG_OPTS[@]}" --title "Backups" --msgbox "Backups disponíveis em $BACKUP_DIR:\n\n$backups" 15 60
                 ;;
             4|"") break ;;
+        esac
+    done
+}
+
+# IMPLEMENTAÇÃO: Menu de Segurança
+security_menu() {
+    while true; do
+        local ufw_status=$(ufw status | grep -q "Status: active" && echo "✅ Ativo" || echo "❌ Inativo")
+        local f2b_status=$(systemctl is-active --quiet fail2ban && echo "✅ Ativo" || echo "❌ Inativo")
+
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Segurança" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Gerenciar Firewall (UFW) - Status: $ufw_status" \
+            "2" "Gerenciar Proteção (Fail2Ban) - Status: $f2b_status" \
+            "3" "Voltar" \
+            3>&1 1>&2 2>&3)
+
+        case $choice in
+            1)
+                configure_ufw_service
+                ;;
+            2)
+                # Adicionar um menu para Fail2Ban se necessário, por enquanto status é suficiente
+                local f2b_status_details=$(systemctl status fail2ban --no-pager -l)
+                dialog "${DIALOG_OPTS[@]}" --title "Status Fail2Ban" --msgbox "$f2b_status_details" 20 80
+                ;;
+            3|"")
+                break
+                ;;
         esac
     done
 }
@@ -4724,55 +4755,50 @@ EOF
 
 # MELHORIA: Menu principal com opção de modo silencioso
 main_menu() {
-    while true; do
-        local silent_status="Desabilitado" # Esta variável não é mais usada no menu principal
-        if [[ "$SILENT_MODE" == "true" ]]; then
-            silent_status="Habilitado"
-        fi
-        
+    while true; do        
         local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Boxserver TUI - Canivete Suíço" \
             --menu "Bem-vindo ao painel de controle do seu Boxserver.\n\nO que você gostaria de fazer?" \
             $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
-            "1" "Verificações do sistema" \
-            "2" "Selecionar e instalar aplicativos" \
-            "3" "Gerenciamento de Serviços" \
-            "4" "Configurações Gerais" \
-            "5" "Diagnóstico e Testes" \
+            "1" "Instalar / Desinstalar Aplicativos" \
+            "2" "Gerenciamento de Serviços (Start/Stop/Status)" \
+            "3" "Configuração de Aplicativos" \
+            "4" "Diagnóstico e Testes" \
+            "5" "Configurações Gerais do Servidor" \
             "6" "Manutenção e Backups" \
-            "7" "Segurança" \
+            "7" "Segurança (Firewall, Fail2Ban)" \
             "8" "Informações do Sistema" \
-            "9" "Sobre" \
+            "9" "Sobre o Boxserver TUI" \
             "10" "Sair" \
             3>&1 1>&2 2>&3)
         
         case $choice in
-            1)
-                run_system_checks
-                ;;
-            2)
+            1) # Instalar / Desinstalar Aplicativos
                 select_applications
                 ;;
-            3) 
+            2) # Gerenciamento de Serviços (Start/Stop/Status)
                 manage_services_menu
                 ;;
-            4)
-                configure_advanced_settings
+            3) # Configuração de Aplicativos
+                configure_apps_menu
                 ;;
-            5)
+            4) # Diagnóstico e Testes
                 diagnostics_menu
                 ;;
-            6)
+            5) # Configurações Gerais do Servidor
+                configure_advanced_settings
+                ;;
+            6) # Manutenção e Backups
                 maintenance_menu
                 ;;
-            7)
+            7) # Segurança (Firewall, Fail2Ban)
                 security_menu
                 ;;
-            8)
+            8) # Informações do Sistema
                 show_system_info
                 ;;
             9)
                 dialog --title "Sobre" --msgbox "Boxserver TUI Installer v1.0\n\nInstalador automatizado para servidor doméstico\nem dispositivos MXQ-4K com chip RK322x\n\nBaseado na base de conhecimento do\nprojeto Boxserver Arandutec\n\nDesenvolvido para hardware limitado\ncom otimizações específicas para ARM\n\n🔇 Modo Silencioso: Instalação com barra de progresso\n📋 Logs detalhados salvos automaticamente" 14 70
-                ;;
+                ;;            
             10|"")
                 if dialog --title "Confirmar Saída" --yesno "Deseja realmente sair?" 6 30; then
                     clear
