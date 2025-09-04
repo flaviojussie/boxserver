@@ -1675,6 +1675,9 @@ install_netdata() {
     /proc/sys/kernel/entropy_avail = yes
 EOF
     
+    # CORREÇÃO: Garantir que o usuário netdata tenha permissão para ler a configuração.
+    chown -R netdata:netdata /etc/netdata
+    
     # Reiniciar serviço
     systemctl restart netdata
     systemctl enable netdata
@@ -3095,17 +3098,19 @@ EOF
 
     # Gerar QR Code se qrencode estiver disponível
     if command -v qrencode &>/dev/null; then
-        # CORREÇÃO: Gerar QR Code e texto para exibição no dialog
+        # MELHORIA: Exibir a configuração e o QR Code juntos em uma caixa de texto rolável.
         local client_config_content=$(cat "$client_config_path")
         local qr_code_terminal=$(qrencode -t ansiutf8 <<< "$client_config_content")
         
         local dialog_text="Cliente '$client_name' criado com sucesso.\n\n"
-        dialog_text+="Aponte a câmera do seu app WireGuard para o QR Code abaixo:\n\n"
+        dialog_text+="Arquivo de configuração salvo em:\n$client_config_path\n\n"
+        dialog_text+="--- Configuração do Cliente (copie se necessário) ---\n"
+        dialog_text+="$client_config_content\n"
+        dialog_text+="--- QR Code (use as setas para rolar para baixo) ---\n\n"
         dialog_text+="$qr_code_terminal"
-        dialog_text+="\n\nAlternativamente, o arquivo de configuração foi salvo em:\n$client_config_path"
 
-        # Exibir o QR Code e as informações no dialog
-        echo -e "$dialog_text" | dialog "${DIALOG_OPTS[@]}" --title "Cliente WireGuard Criado" --prgbox " " 25 80
+        # Exibir o QR Code e as informações no dialog usando --textbox
+        echo -e "$dialog_text" | dialog "${DIALOG_OPTS[@]}" --title "Cliente WireGuard: $client_name" --textbox - 25 80
     else
         dialog "${DIALOG_OPTS[@]}" --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\n(Instale 'qrencode' para gerar QR codes)" 12 60
     fi
