@@ -10,12 +10,46 @@
 # Data: $(date +%Y-%m-%d)
 #
 #
+
+# MELHORIA: Configurações de erro rigorosas para aumentar robustez
+set -euo pipefail
+
 # Configurações globais do script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="/var/log/boxserver"
 CONFIG_DIR="/etc/boxserver"
 BACKUP_DIR="/var/backups/boxserver"
 LOG_FILE="$LOG_DIR/tui-installer.log"
+
+# MELHORIA: Funções para tratamento de erros robusto
+error_exit() {
+    local line_number="$1"
+    local error_code="${2:-1}"
+    local error_message="${3:-"Erro desconhecido"}"
+    log_message "ERROR" "Erro na linha $line_number com código $error_code: $error_message"
+    clear
+    echo "Erro fatal na linha $line_number: $error_message" >&2
+    exit "$error_code"
+}
+
+# Função para limpeza de recursos
+cleanup_on_exit() {
+    log_message "INFO" "Realizando limpeza de recursos..."
+    # Remover arquivos temporários, se existirem
+    rm -rf "/tmp/boxserver_*" 2>/dev/null || true
+    # Limpar tela e mostrar mensagem
+    clear
+    echo "Instalação interrompida ou concluída."
+}
+
+# Configurações globais de limpeza e tratamento de sinais
+trap 'cleanup_on_exit' EXIT
+trap 'error_exit $LINENO $?' ERR
+trap 'error_exit $LINENO 130 "Interrupção pelo usuário"' INT
+trap 'error_exit $LINENO 143 "Terminação solicitada"' TERM
+trap 'error_exit $LINENO 129 "Sinal SIGHUP recebido"' HUP
+trap 'error_exit $LINENO 131 "Sinal SIGQUIT recebido"' QUIT
+trap 'error_exit $LINENO 141 "PIPE quebrado"' PIPE
 
 # Cores para output
 RED='\033[0;31m'
@@ -39,6 +73,7 @@ SERVER_IP=""
 VPN_NETWORK="10.200.200.0/24"
 VPN_PORT="51820"
 PIHOLE_PASSWORD=""
+PIHOLE_PORT="8081"
 FILEBROWSER_PORT="8080"
 COCKPIT_PORT="9090"
 
@@ -75,11 +110,219 @@ setup_directories() {
     log_message "INFO" "Diretórios criados: $LOG_DIR, $CONFIG_DIR, $BACKUP_DIR"
 }
 
+# MELHORIA: Funções para validação de entradas
+# Função para validar números de porta
+validate_port_number() {
+    local port="$1"
+    if [[ ! "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1 ]] || [[ "$port" -gt 65535 ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Função para validar endereços IP
+validate_ip_address() {
+    local ip="$1"
+    if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        return 1
+    fi
+    
+    # Verificar cada octeto
+    IFS='.' read -r -a octets <<< "$ip"
+    for octet in "${octets[@]}"; do
+        if [[ "$octet" -lt 0 ]] || [[ "$octet" -gt 255 ]]; then
+            return 1
+        fi
+    done
+    
+    return 0
+}
+
+# Função para validar domínios
+validate_domain_name() {
+    local domain="$1"
+    if [[ ! "$domain" =~ ^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Função para validar caminhos de arquivo
+validate_file_path() {
+    local path="$1"
+    # Verificar se o caminho não contém caracteres perigosos
+    if [[ "$path" =~ [;\|\&\`\$\(\)] ]]; then
+        return 1
+    fi
+    
+    # Verificar se é um caminho absoluto ou relativo válido
+    if [[ ! "$path" =~ ^(/|\.|~) ]]; then
+        return 1
+    fi
+    
+    return 0
+}
+
 # Função para verificar privilégios de root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         dialog --title "Erro de Permissão" --msgbox "Este script deve ser executado como root.\n\nUse: sudo $0" 8 50
         exit 1
+    fi
+}
+
+# MELHORIA: Função para verificar dependências do sistema
+check_dependencies() {
+    local missing_deps=()
+    local deps=("dialog" "curl" "wget" "tar" "grep" "awk" "sed" "systemctl" "apt-get" "ss" "dig" "ping")
+    
+    log_message "INFO" "Verificando dependências do sistema..."
+    
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &>/dev/null; then
+            # Algumas dependências podem ter nomes alternativos
+            case "$dep" in
+                "dialog")
+                    # Tentar whiptail como alternativa
+                    if ! command -v "whiptail" &>/dev/null; then
+                        missing_deps+=("$dep")
+                    fi
+                    ;;
+                "dig")
+                    # Tentar nslookup como alternativa
+                    if ! command -v "nslookup" &>/dev/null; then
+                        missing_deps+=("$dep")
+                    fi
+                    ;;
+                "ss")
+                    # Tentar netstat como alternativa
+                    if ! command -v "netstat" &>/dev/null; then
+                        missing_deps+=("$dep")
+                    fi
+                    ;;
+                *)
+                    missing_deps+=("$dep")
+                    ;;
+            esac
+        fi
+    done
+    
+    # Verificar ferramentas específicas para serviços
+    local service_tools=("pihole" "unbound" "wg" "filebrowser" "netdata" "fail2ban-client" "ufw" "rngd" "rclone" "rsync" "minidlna" "cloudflared" "chronyd" "nginx")
+    for tool in "${service_tools[@]}"; do
+        # Apenas verificar se já estiverem instalados
+        if command -v "$tool" &>/dev/null; then
+            log_message "INFO" "Ferramenta $tool encontrada"
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        local dep_list=$(printf '%s ' "${missing_deps[@]}")
+        log_message "WARN" "Dependências faltando: $dep_list"
+        dialog "${DIALOG_OPTS[@]}" --title "Dependências Faltando" --msgbox "As seguintes dependências estão faltando:\n\n$dep_list\n\nO script tentará instalá-las automaticamente." 10 60
+        
+        # Tentar instalar dependências faltando
+        if ! apt-get update >/dev/null 2>&1; then
+            log_message "ERROR" "Falha ao atualizar lista de pacotes"
+            return 1
+        fi
+        
+        local apt_deps=()
+        for dep in "${missing_deps[@]}"; do
+            case "$dep" in
+                "dialog") apt_deps+=("dialog") ;;
+                "curl") apt_deps+=("curl") ;;
+                "wget") apt_deps+=("wget") ;;
+                "dig") apt_deps+=("dnsutils") ;;
+                "ss") apt_deps+=("iproute2") ;;
+                "netstat") apt_deps+=("net-tools") ;;
+            esac
+        done
+        
+        if [ ${#apt_deps[@]} -gt 0 ]; then
+            if ! apt-get install -y "${apt_deps[@]}" >/dev/null 2>&1; then
+                log_message "ERROR" "Falha ao instalar dependências: ${apt_deps[*]}"
+                dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao instalar dependências necessárias.\n\nInstale manualmente: ${apt_deps[*]}" 8 60
+                return 1
+            else
+                log_message "INFO" "Dependências instaladas com sucesso: ${apt_deps[*]}"
+                dialog "${DIALOG_OPTS[@]}" --title "Sucesso" --msgbox "Dependências instaladas com sucesso!\n\n${apt_deps[*]}" 8 60
+            fi
+        fi
+    else
+        log_message "INFO" "Todas as dependências principais estão presentes"
+    fi
+    
+    return 0
+}
+
+# MELHORIA: Função para criar locks e evitar condições de corrida
+create_lock() {
+    local lock_name="$1"
+    local lock_file="/var/lock/boxserver-${lock_name}.lock"
+    
+    # Criar diretório de locks se não existir
+    mkdir -p "/var/lock"
+    
+    # Tentar criar lock com timeout
+    local timeout=30
+    local count=0
+    
+    while [ $count -lt $timeout ]; do
+        if mkdir "$lock_file" 2>/dev/null; then
+            log_message "INFO" "Lock criado: $lock_name"
+            echo $ > "$lock_file/pid"
+            return 0
+        fi
+        
+        # Verificar se processo dono do lock ainda existe
+        if [ -f "$lock_file/pid" ]; then
+            local lock_pid=$(cat "$lock_file/pid")
+            if ! kill -0 "$lock_pid" 2>/dev/null; then
+                # Processo não existe mais, remover lock órfão
+                log_message "WARN" "Removendo lock órfão: $lock_name (PID: $lock_pid)"
+                rm -rf "$lock_file"
+                continue
+            fi
+        fi
+        
+        sleep 1
+        ((count++))
+    done
+    
+    log_message "ERROR" "Timeout ao criar lock: $lock_name"
+    return 1
+}
+
+# Função para remover locks
+remove_lock() {
+    local lock_name="$1"
+    local lock_file="/var/lock/boxserver-${lock_name}.lock"
+    
+    if [ -d "$lock_file" ]; then
+        rm -rf "$lock_file"
+        log_message "INFO" "Lock removido: $lock_name"
+    fi
+}
+
+# Função para executar com lock
+execute_with_lock() {
+    local lock_name="$1"
+    shift
+    local command_to_run="$@"
+    
+    if create_lock "$lock_name"; then
+        # Executar comando
+        local result=0
+        eval "$command_to_run" || result=$?
+        
+        # Remover lock
+        remove_lock "$lock_name"
+        
+        return $result
+    else
+        log_message "ERROR" "Não foi possível obter lock para: $lock_name"
+        return 1
     fi
 }
 
@@ -375,20 +618,49 @@ configure_advanced_settings() {
             "2" "Configurar Rede VPN" \
             "3" "Configurar Portas dos Serviços" \
             "4" "Configurar Senhas" \
-            "6" "Voltar ao Menu Principal" \
+            "5" "Voltar ao Menu Principal" \
             3>&1 1>&2 2>&3)
         
         case $choice in
             1)
-                SERVER_IP=$(dialog "${DIALOG_OPTS[@]}" --title "IP do Servidor" --inputbox "Digite o IP do servidor:" 8 50 "$SERVER_IP" 3>&1 1>&2 2>&3)
+                local new_ip=$(dialog "${DIALOG_OPTS[@]}" --title "IP do Servidor" --inputbox "Digite o IP do servidor:" 8 50 "$SERVER_IP" 3>&1 1>&2 2>&3)
+                if [ -n "$new_ip" ]; then
+                    if validate_ip_address "$new_ip"; then
+                        SERVER_IP="$new_ip"
+                    else
+                        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "IP inválido! Por favor, digite um endereço IP válido." 6 50
+                    fi
+                fi
                 ;;
             2)
                 VPN_NETWORK=$(dialog "${DIALOG_OPTS[@]}" --title "Rede VPN" --inputbox "Digite a rede VPN (CIDR):" 8 50 "$VPN_NETWORK" 3>&1 1>&2 2>&3)
-                VPN_PORT=$(dialog "${DIALOG_OPTS[@]}" --title "Porta VPN" --inputbox "Digite a porta do WireGuard:" 8 50 "$VPN_PORT" 3>&1 1>&2 2>&3)
+                local new_port=$(dialog "${DIALOG_OPTS[@]}" --title "Porta VPN" --inputbox "Digite a porta do WireGuard:" 8 50 "$VPN_PORT" 3>&1 1>&2 2>&3)
+                if [ -n "$new_port" ]; then
+                    if validate_port_number "$new_port"; then
+                        VPN_PORT="$new_port"
+                    else
+                        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Porta inválida! Use um número entre 1 e 65535." 6 50
+                    fi
+                fi
                 ;;
             3)
-                FILEBROWSER_PORT=$(dialog "${DIALOG_OPTS[@]}" --title "Porta FileBrowser" --inputbox "Digite a porta do FileBrowser:" 8 50 "$FILEBROWSER_PORT" 3>&1 1>&2 2>&3)
-                COCKPIT_PORT=$(dialog "${DIALOG_OPTS[@]}" --title "Porta Cockpit" --inputbox "Digite a porta do Cockpit:" 8 50 "$COCKPIT_PORT" 3>&1 1>&2 2>&3)
+                local new_fb_port=$(dialog "${DIALOG_OPTS[@]}" --title "Porta FileBrowser" --inputbox "Digite a porta do FileBrowser:" 8 50 "$FILEBROWSER_PORT" 3>&1 1>&2 2>&3)
+                if [ -n "$new_fb_port" ]; then
+                    if validate_port_number "$new_fb_port"; then
+                        FILEBROWSER_PORT="$new_fb_port"
+                    else
+                        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Porta inválida! Use um número entre 1 e 65535." 6 50
+                    fi
+                fi
+                
+                local new_cockpit_port=$(dialog "${DIALOG_OPTS[@]}" --title "Porta Cockpit" --inputbox "Digite a porta do Cockpit:" 8 50 "$COCKPIT_PORT" 3>&1 1>&2 2>&3)
+                if [ -n "$new_cockpit_port" ]; then
+                    if validate_port_number "$new_cockpit_port"; then
+                        COCKPIT_PORT="$new_cockpit_port"
+                    else
+                        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Porta inválida! Use um número entre 1 e 65535." 6 50
+                    fi
+                fi
                 ;;
             4)
                 PIHOLE_PASSWORD=$(dialog "${DIALOG_OPTS[@]}" --title "Senha Pi-hole" --passwordbox "Digite a senha do Pi-hole:" 8 50 3>&1 1>&2 2>&3)
@@ -731,8 +1003,8 @@ reconfigure_service_integrations() {
             log_message "INFO" "Reconfigurando regras do UFW para serviços ativos..."
             
             # Adicionar regras para serviços que podem ter sido instalados antes do UFW
-            if systemctl is-active --quiet pihole-FTL 2>/dev/null && ! ufw status | grep -q "80/tcp"; then
-                ufw allow 80/tcp comment 'Pi-hole Web'
+            if systemctl is-active --quiet pihole-FTL 2>/dev/null && ! ufw status | grep -q "$PIHOLE_PORT/tcp"; then
+                ufw allow $PIHOLE_PORT/tcp comment 'Pi-hole Web'
                 ufw allow 443/tcp comment 'Pi-hole Web SSL'
                 ufw allow 53 comment 'Pi-hole DNS'
                 log_message "INFO" "UFW: Regras do Pi-hole adicionadas pós-instalação"
@@ -773,7 +1045,7 @@ reconfigure_service_integrations() {
                 jail_config+="[sshd]\nenabled = true\nport = ssh\nlogpath = %(sshd_log)s\nmaxretry = 3\n\n"
                 
                 if systemctl is-active --quiet pihole-FTL 2>/dev/null; then
-                    jail_config+="[pihole-web]\nenabled = true\nport = 80,443\nlogpath = /var/log/pihole.log\nmaxretry = 5\nfilter = pihole-web\n\n"
+                    jail_config+="[pihole-web]\nenabled = true\nport = $PIHOLE_PORT,443\nlogpath = /var/log/pihole.log\nmaxretry = 5\nfilter = pihole-web\n\n"
                 fi
                 
                 if systemctl is-active --quiet wg-quick@wg0 2>/dev/null; then
@@ -820,32 +1092,59 @@ get_nginx_service_name() {
 # MELHORIA: Função segura para baixar e executar scripts externos
 download_and_run_script() {
     local url="$1"
-    local script_path="/tmp/external_script_$(date +%s).sh"
-
+    # Usar mktemp para criar arquivo temporário seguro
+    local script_path=$(mktemp)
+    
+    # Garantir permissões restritas
+    chmod 700 "$script_path"
+    
     log_message "INFO" "Baixando script de: $url"
-    if ! curl -sSL -o "$script_path" "$url"; then
+    
+    # Verificar URL antes de fazer download
+    if [[ ! "$url" =~ ^https:// ]]; then
+        log_message "ERROR" "URL inválida ou não segura: $url"
+        rm -f "$script_path"
+        return 1
+    fi
+    
+    # Adicionar timeout e verificação de certificado
+    if ! curl -sSL --fail --connect-timeout 30 --max-time 300 --retry 3 --retry-delay 2 -o "$script_path" "$url"; then
         log_message "ERROR" "Falha ao baixar o script de $url"
         rm -f "$script_path"
         return 1
     fi
-
-    # Verificação de segurança aprimorada (evita falsos positivos)
-    # Procura por 'rm -rf /' como um comando exato, não como parte de uma variável.
-    # O padrão `\s` garante que haja espaços ao redor, tornando a detecção mais precisa.
-    if grep -qE '\s+rm\s+-rf\s+/\s*' "$script_path"; then
-        log_message "ERROR" "Script contém comando perigoso 'rm -rf /'. Abortando."
+    
+    # Verificar se o arquivo não está vazio
+    if [ ! -s "$script_path" ]; then
+        log_message "ERROR" "Script baixado está vazio: $url"
         rm -f "$script_path"
         return 1
     fi
-
+    
+    # Verificação de segurança aprimorada
+    # Procura por comandos perigosos
+    local dangerous_commands=("rm -rf /" "rm -fr /" "rm -f /" "rm -r /" "rm -f /*" ":(){ :|:& };:")
+    for cmd in "${dangerous_commands[@]}"; do
+        if grep -qF "$cmd" "$script_path"; then
+            log_message "ERROR" "Script contém comando perigoso '$cmd'. Abortando."
+            rm -f "$script_path"
+            return 1
+        fi
+    done
+    
+    # Verificar shellbang para garantir que é um script shell
+    if ! head -n 1 "$script_path" | grep -qE "^#!.*(bash|sh)"; then
+        log_message "WARN" "Script pode não ter shellbang correto, continuando com verificação adicional..."
+    fi
+    
     log_message "INFO" "Executando script baixado: $script_path"
-    # Executa o script com bash
-    if ! bash "$script_path"; then
+    # Executa o script com bash e timeout
+    if ! timeout 300 bash "$script_path"; then
         log_message "ERROR" "Falha na execução do script de $url"
         rm -f "$script_path"
         return 1
     fi
-
+    
     log_message "INFO" "Script executado com sucesso."
     rm -f "$script_path"
     return 0
@@ -908,7 +1207,49 @@ EOF
     # MELHORIA: Configurar logrotate para Pi-hole conforme documentação
     setup_logrotate
     
-    log_message "INFO" "Pi-hole instalado e configurado com sucesso"
+    # MELHORIA: Configurar Pi-hole para usar porta personalizada (8081)
+    log_message "INFO" "Configurando Pi-hole para usar porta $PIHOLE_PORT"
+    
+    # Verificar se o arquivo de configuração do lighttpd existe
+    if [ -f "/etc/lighttpd/lighttpd.conf" ]; then
+        # Alterar a porta do servidor web do Pi-hole
+        sed -i 's/server.port = 80/server.port = '"$PIHOLE_PORT"'/' /etc/lighttpd/lighttpd.conf
+        log_message "INFO" "Porta do servidor web do Pi-hole alterada para $PIHOLE_PORT"
+    else
+        # Criar arquivo de configuração do lighttpd
+        mkdir -p /etc/lighttpd
+        cat > /etc/lighttpd/lighttpd.conf << EOF
+server.modules = (
+    "mod_access",
+    "mod_accesslog",
+    "mod_auth",
+    "mod_expire",
+    "mod_compress",
+    "mod_redirect",
+    "mod_setenv"
+)
+
+server.document-root = "/var/www/html"
+server.upload-dirs = ( "/var/cache/lighttpd/uploads" )
+server.errorlog = "/var/log/lighttpd/error.log"
+server.pid-file = "/var/run/lighttpd.pid"
+server.username = "www-data"
+server.groupname = "www-data"
+server.port = $PIHOLE_PORT
+
+# Configurações do Pi-hole
+include "/etc/lighttpd/conf-enabled/*.conf"
+EOF
+        log_message "INFO" "Arquivo de configuração do lighttpd criado com porta $PIHOLE_PORT"
+    fi
+    
+    # Reiniciar lighttpd se estiver instalado
+    if systemctl is-active --quiet lighttpd 2>/dev/null; then
+        systemctl restart lighttpd
+        log_message "INFO" "Lighttpd reiniciado com nova configuração de porta"
+    fi
+    
+    log_message "INFO" "Pi-hole instalado e configurado com sucesso na porta $PIHOLE_PORT"
 }
 
 # Função para instalação do Unbound (baseada em INSTALAÇÃO APPS.md)
@@ -1426,14 +1767,26 @@ EOF
 install_filebrowser() {
     log_message "INFO" "Instalando FileBrowser..."
     
-    # Baixar FileBrowser para ARM
+    # Baixar FileBrowser para ARM com verificação
     FILEBROWSER_VERSION="v2.24.2"
-    wget -O /tmp/filebrowser.tar.gz "https://github.com/filebrowser/filebrowser/releases/download/${FILEBROWSER_VERSION}/linux-armv7-filebrowser.tar.gz"
+    local temp_file=$(mktemp)
     
-    if [ $? -ne 0 ]; then
+    # Usar curl com timeout e verificação
+    if ! curl -sSL --fail --connect-timeout 30 --max-time 300 --retry 3 --retry-delay 2 -o "$temp_file" "https://github.com/filebrowser/filebrowser/releases/download/${FILEBROWSER_VERSION}/linux-armv7-filebrowser.tar.gz"; then
         log_message "ERROR" "Falha no download do FileBrowser"
+        rm -f "$temp_file"
         return 1
     fi
+    
+    # Verificar se o arquivo não está vazio
+    if [ ! -s "$temp_file" ]; then
+        log_message "ERROR" "Arquivo baixado do FileBrowser está vazio"
+        rm -f "$temp_file"
+        return 1
+    fi
+    
+    # Mover arquivo temporário para local correto
+    mv "$temp_file" "/tmp/filebrowser.tar.gz"
     
     # Extrair e instalar
     tar -xzf /tmp/filebrowser.tar.gz -C /tmp/
@@ -1441,7 +1794,9 @@ install_filebrowser() {
     chmod +x /usr/local/bin/filebrowser
     
     # Criar usuário e diretórios
-    useradd -r -s /bin/false filebrowser
+    if ! id "filebrowser" &>/dev/null; then
+        useradd -r -s /bin/false filebrowser
+    fi
     mkdir -p /etc/filebrowser /var/lib/filebrowser
     
     # Configurar banco de dados e usuário admin
@@ -1593,8 +1948,8 @@ install_fail2ban() {
     
     # Verificar e adicionar jail para Pi-hole se estiver instalado
     if systemctl list-unit-files | grep -q "pihole-FTL" && systemctl is-enabled --quiet pihole-FTL 2>/dev/null; then
-        jail_config+="[pihole-web]\nenabled = true\nport = 80,443\nlogpath = /var/log/pihole.log\nmaxretry = 5\nfilter = pihole-web\n\n"
-        log_message "INFO" "Fail2Ban: Proteção do Pi-hole habilitada"
+        jail_config+=\"[pihole-web]\nenabled = true\nport = $PIHOLE_PORT,443\nlogpath = /var/log/pihole.log\nmaxretry = 5\nfilter = pihole-web\n\n\"
+        log_message \"INFO\" \"Fail2Ban: Proteção do Pi-hole habilitada\"
     fi
     
     # Verificar e adicionar jail para WireGuard se estiver instalado
@@ -2115,7 +2470,7 @@ EOF
 # IMPLEMENTAÇÃO: Função para habilitar proxy no Nginx para um serviço
 enable_nginx_proxy() {
     local app_id="$1"
-    local pihole_port=${PIHOLE_PORT_OVERRIDE:-80}
+    local pihole_port=${PIHOLE_PORT_OVERRIDE:-$PIHOLE_PORT}
     local nginx_service=$(get_nginx_service_name)
     local config_file="/etc/nginx/sites-available/boxserver"
 
@@ -2164,19 +2519,45 @@ install_cloudflared() {
         log_message "INFO" "Arquitetura ARM (32-bit) detectada. Baixando cloudflared-linux-arm.deb"
     fi
     
-    wget -O /tmp/cloudflared.deb "$download_url"
+    # Usar curl com timeout e verificação em vez de wget
+    local temp_file=$(mktemp)
+    if ! curl -sSL --fail --connect-timeout 30 --max-time 300 --retry 3 --retry-delay 2 -o "$temp_file" "$download_url"; then
+        log_message "ERROR" "Falha no download do Cloudflared de $download_url"
+        rm -f "$temp_file"
+        return 1
+    fi
     
-    if [ $? -ne 0 ]; then
-        log_message "ERROR" "Falha no download do Cloudflared"
+    # Verificar se o arquivo não está vazio
+    if [ ! -s "$temp_file" ]; then
+        log_message "ERROR" "Arquivo baixado do Cloudflared está vazio"
+        rm -f "$temp_file"
+        return 1
+    fi
+    
+    # Mover arquivo temporário para local correto
+    mv "$temp_file" "/tmp/cloudflared.deb"
+    
+    # Verificar integridade do pacote Debian
+    if ! dpkg-deb --info /tmp/cloudflared.deb >/dev/null 2>&1; then
+        log_message "ERROR" "Arquivo baixado não é um pacote Debian válido"
+        rm -f /tmp/cloudflared.deb
         return 1
     fi
     
     # Instalar pacote
-    dpkg -i /tmp/cloudflared.deb
-    apt-get install -f -y  # Corrigir dependências se necessário
+    if ! dpkg -i /tmp/cloudflared.deb; then
+        log_message "WARN" "Falha na instalação direta do Cloudflared, tentando corrigir dependências..."
+        if ! apt-get install -f -y; then
+            log_message "ERROR" "Falha ao corrigir dependências do Cloudflared"
+            rm -f /tmp/cloudflared.deb
+            return 1
+        fi
+    fi
     
-    # Criar usuário para cloudflared
-    useradd -r -s /bin/false -d /etc/cloudflared cloudflared 2>/dev/null || true
+    # Criar usuário para cloudflared se não existir
+    if ! id "cloudflared" &>/dev/null; then
+        useradd -r -s /bin/false -d /etc/cloudflared cloudflared 2>/dev/null || true
+    fi
     
     # Criar configuração básica
     mkdir -p /etc/cloudflared
@@ -2374,7 +2755,7 @@ cloudflare_configure_domains() {
             3>&1 1>&2 2>&3)
         
         case $choice in
-            1) configure_service_domain "Pi-hole" "pihole" "80" ;;
+            1) configure_service_domain "Pi-hole" "pihole" "$PIHOLE_PORT" ;;
             2) configure_service_domain "Cockpit" "cockpit" "9090" ;;
             3) configure_service_domain "FileBrowser" "files" "8080" ;;
             4) configure_service_domain "WireGuard" "vpn" "51820" ;;
@@ -2991,10 +3372,10 @@ display_qr_code_modern() {
     local client_config_content=$(cat "$client_config_path")
     
     # Gerar QR Code
-    local qr_code_terminal=$(qrencode -t ansiutf8 <<< "$client_config_content")
+    local qr_code_terminal=$(qrencode -t ansiutf8 -s 2 -m 2 <<< "$client_config_content")
     
-    # Criar interface moderna com guias
-    local temp_file="/tmp/wg_client_${client_name}.txt"
+    # Criar interface moderna com guias usando mktemp
+    local temp_file=$(mktemp)
     
     {
         echo "==========================================="
@@ -3002,7 +3383,7 @@ display_qr_code_modern() {
         echo "==========================================="
         echo
         echo "SCAN QR CODE:"
-        echo
+        echo "Aponte a câmera do app WireGuard para o código abaixo."
         echo "$qr_code_terminal"
         echo
         echo "==========================================="
@@ -3028,11 +3409,6 @@ display_qr_code_modern() {
     
     # Exibir conteúdo em um diálogo com scroll
     dialog "${DIALOG_OPTS[@]}" --title "WireGuard Client: $client_name" --textbox "$temp_file" 30 80
-    
-    # Perguntar se deseja exportar o arquivo
-    if dialog "${DIALOG_OPTS[@]}" --title "Export Configuration" --yesno "Would you like to export this configuration file?\n\nYou can export it to a USB drive or network location." 8 60; then
-        export_client_config "$client_name"
-    fi
     
     # Limpar arquivo temporário
     rm -f "$temp_file"
@@ -3487,9 +3863,9 @@ change_wireguard_port() {
         return 0
     fi
     
-    # Validar porta
-    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [[ "$new_port" -lt 1024 ]] || [[ "$new_port" -gt 65535 ]]; then
-        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Porta inválida! Use um número entre 1024 e 65535." 6 50
+    # Validar porta usando a função específica
+    if ! validate_port_number "$new_port"; then
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Porta inválida! Use um número entre 1 e 65535." 6 50
         return 1
     fi
     
@@ -4138,7 +4514,20 @@ change_filebrowser_port() {
     local current_port=$(filebrowser -d /var/lib/filebrowser/filebrowser.db config cat | grep port | awk '{print $2}' || echo "$FILEBROWSER_PORT")
     local new_port=$(dialog "${DIALOG_OPTS[@]}" --title "Alterar Porta" --inputbox "Nova porta para FileBrowser:" 8 40 "$current_port" 3>&1 1>&2 2>&3)
     
+    # Verificar se a porta foi alterada
     if [ -n "$new_port" ] && [ "$new_port" != "$current_port" ]; then
+        # Validar porta usando a função específica
+        if ! validate_port_number "$new_port"; then
+            dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Porta inválida! Use um número entre 1 e 65535." 6 50
+            return 1
+        fi
+        
+        # Verificar se a porta está em uso
+        if ss -tlnp | grep -q ":$new_port "; then
+            dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Porta $new_port já está em uso!" 6 40
+            return 1
+        fi
+        
         # Atualizar configuração
         filebrowser -d /var/lib/filebrowser/filebrowser.db config set --port "$new_port"
         
@@ -4154,13 +4543,16 @@ change_filebrowser_port() {
 
 restart_filebrowser_service() {
     dialog --title "Reiniciando FileBrowser" --infobox "Reiniciando serviço..." 5 30
-    systemctl restart filebrowser
-    sleep 2
+    if execute_with_lock "filebrowser_restart" "systemctl restart filebrowser"; then
+        sleep 2
 
-    if systemctl is-active --quiet filebrowser; then
-        dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "FileBrowser reiniciado com sucesso!" 6 40
+        if systemctl is-active --quiet filebrowser; then
+            dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "FileBrowser reiniciado com sucesso!" 6 40
+        else
+            dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar FileBrowser." 6 30
+        fi
     else
-        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar FileBrowser." 6 30
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao obter lock para reiniciar FileBrowser." 6 30
     fi
 }
 
@@ -4251,14 +4643,20 @@ configure_minidlna_name() {
 rescan_minidlna_library() {
     dialog --title "Reescaneando" --infobox "Reescaneando biblioteca de mídia..." 5 40
     
-    # Parar serviço
-    systemctl stop minidlna
+    # Parar serviço com lock
+    if ! execute_with_lock "minidlna_stop" "systemctl stop minidlna"; then
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao obter lock para parar MiniDLNA." 6 40
+        return 1
+    fi
     
     # Limpar cache
     rm -rf /var/cache/minidlna/*
     
-    # Reiniciar serviço
-    systemctl start minidlna
+    # Reiniciar serviço com lock
+    if ! execute_with_lock "minidlna_start" "systemctl start minidlna"; then
+        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao obter lock para iniciar MiniDLNA." 6 40
+        return 1
+    fi
     
     sleep 3
     dialog "${DIALOG_OPTS[@]}" --title "Biblioteca" --msgbox "Biblioteca reescaneada com sucesso!\n\nNovos arquivos serão detectados em alguns minutos." 8 60
@@ -4333,17 +4731,38 @@ backup_restore_filebrowser() {
     case $choice in
         1)
             local backup_file="/tmp/filebrowser-backup-$(date +%Y%m%d_%H%M%S).db"
-            cp /var/lib/filebrowser/filebrowser.db "$backup_file"
-            dialog "${DIALOG_OPTS[@]}" --title "Backup" --msgbox "Backup criado: $backup_file" 6 60
+            # Verificar se o diretório /tmp existe e é gravável
+            if [ ! -d "/tmp" ] || [ ! -w "/tmp" ]; then
+                dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Diretório /tmp não acessível." 6 40
+                return 1
+            fi
+            
+            if cp /var/lib/filebrowser/filebrowser.db "$backup_file"; then
+                chmod 600 "$backup_file"
+                dialog "${DIALOG_OPTS[@]}" --title "Backup" --msgbox "Backup criado: $backup_file" 6 60
+            else
+                dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao criar backup." 6 40
+            fi
             ;;
         2)
             local backup_file=$(dialog "${DIALOG_OPTS[@]}" --title "Restaurar" --inputbox "Caminho do arquivo de backup:" 8 60 3>&1 1>&2 2>&3)
-            if [ -f "$backup_file" ]; then
+            if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
+                # Validar caminho do arquivo
+                if ! validate_file_path "$backup_file"; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Caminho de arquivo inválido." 6 40
+                    return 1
+                fi
+                
                 systemctl stop filebrowser
-                cp "$backup_file" /var/lib/filebrowser/filebrowser.db
-                chown filebrowser:filebrowser /var/lib/filebrowser/filebrowser.db
-                systemctl start filebrowser
-                dialog "${DIALOG_OPTS[@]}" --title "Restaurar" --msgbox "Configuração restaurada com sucesso!" 6 50
+                if cp "$backup_file" /var/lib/filebrowser/filebrowser.db; then
+                    chown filebrowser:filebrowser /var/lib/filebrowser/filebrowser.db
+                    chmod 600 /var/lib/filebrowser/filebrowser.db
+                    systemctl start filebrowser
+                    dialog "${DIALOG_OPTS[@]}" --title "Restaurar" --msgbox "Configuração restaurada com sucesso!" 6 50
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao restaurar configuração." 6 40
+                    systemctl start filebrowser  # Tentar reiniciar mesmo em caso de erro
+                fi
             else
                 dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Arquivo de backup não encontrado." 6 40
             fi
@@ -4385,8 +4804,10 @@ configure_other_services() {
             "3" "Configurar Rclone" \
             "4" "Configurar Rsync" \
             "5" "Configurar Cockpit" \
-            "6" "Ver todos os serviços" \
-            "7" "Voltar" \
+            "6" "Configurar Fail2Ban" \
+            "7" "Configurar Chrony" \
+            "8" "Ver todos os serviços" \
+            "9" "Voltar" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -4395,8 +4816,10 @@ configure_other_services() {
             3) configure_rclone_service ;;
             4) configure_rsync_service ;;
             5) configure_cockpit_service ;;
-            6) show_all_services_status ;;
-            7|"") break ;;
+            6) configure_fail2ban_service ;;
+            7) configure_chrony_service ;;
+            8) show_all_services_status ;;
+            9|"") break ;;
         esac
     done
 }
@@ -4468,6 +4891,254 @@ configure_rsync_service() {
     dialog "${DIALOG_OPTS[@]}" --title "Rsync" --msgbox "Rsync configurado para backup local:\n\n• Script: /usr/local/bin/boxserver-sync\n• Agendamento: diário às 02:00\n• Destino: /var/backups/boxserver/\n\nExecute manualmente: sudo /usr/local/bin/boxserver-sync" 12 70
 }
 
+# IMPLEMENTAÇÃO: Configuração do Cockpit
+configure_cockpit_service() {
+    if ! command -v cockpit &>/dev/null; then
+        dialog --title "Erro" --msgbox "Cockpit não está instalado." 6 40
+        return 1
+    fi
+
+    while true; do
+        local cockpit_status=$(systemctl is-active --quiet cockpit.socket && echo "ATIVO" || echo "INATIVO")
+        local cockpit_port=$(grep "ListenStream" /etc/systemd/system/cockpit.socket.d/listen.conf 2>/dev/null | cut -d'=' -f2 || echo "9090")
+        
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração Cockpit" --menu "Status: $cockpit_status | Porta: $cockpit_port\nEscolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Ver status do Cockpit" \
+            "2" "Ver configuração atual" \
+            "3" "Alterar porta" \
+            "4" "Configurar timeouts" \
+            "5" "Reiniciar Cockpit" \
+            "6" "Voltar" \
+            3>&1 1>&2 2>&3)
+
+        case $choice in
+            1)
+                local status_output=$(systemctl status cockpit.socket --no-pager -l)
+                dialog "${DIALOG_OPTS[@]}" --title "Status Cockpit" --msgbox "$status_output" 20 80
+                ;;
+            2)
+                if [ -f "/etc/cockpit/cockpit.conf" ]; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração Cockpit" --textbox "/etc/cockpit/cockpit.conf" 20 80
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração Cockpit" --msgbox "Arquivo de configuração não encontrado." 6 50
+                fi
+                ;;
+            3)
+                local new_port=$(dialog "${DIALOG_OPTS[@]}" --title "Porta Cockpit" --inputbox "Digite a nova porta para o Cockpit:" 8 50 "$cockpit_port" 3>&1 1>&2 2>&3)
+                if [ -n "$new_port" ] && [ "$new_port" != "$cockpit_port" ]; then
+                    if [ "$new_port" != "9090" ]; then
+                        mkdir -p /etc/systemd/system/cockpit.socket.d
+                        cat > /etc/systemd/system/cockpit.socket.d/listen.conf << EOF
+[Socket]
+ListenStream=
+ListenStream=$new_port
+EOF
+                    else
+                        rm -f /etc/systemd/system/cockpit.socket.d/listen.conf
+                    fi
+                    systemctl daemon-reload
+                    systemctl restart cockpit.socket
+                    COCKPIT_PORT="$new_port"
+                    dialog "${DIALOG_OPTS[@]}" --title "Porta Alterada" --msgbox "Porta do Cockpit alterada para: $new_port\n\nReinicie o serviço para aplicar as mudanças." 8 60
+                fi
+                ;;
+            4)
+                local login_timeout=$(grep "LoginTimeout" /etc/cockpit/cockpit.conf 2>/dev/null | cut -d'=' -f2 | tr -d ' ' || echo "30")
+                local idle_timeout=$(grep "IdleTimeout" /etc/cockpit/cockpit.conf 2>/dev/null | cut -d'=' -f2 | tr -d ' ' || echo "15")
+                
+                local new_login=$(dialog "${DIALOG_OPTS[@]}" --title "Timeout de Login" --inputbox "Timeout de login (segundos):" 8 50 "$login_timeout" 3>&1 1>&2 2>&3)
+                local new_idle=$(dialog "${DIALOG_OPTS[@]}" --title "Timeout de Inatividade" --inputbox "Timeout de inatividade (minutos):" 8 50 "$idle_timeout" 3>&1 1>&2 2>&3)
+                
+                if [ -n "$new_login" ] || [ -n "$new_idle" ]; then
+                    mkdir -p /etc/cockpit
+                    cat > /etc/cockpit/cockpit.conf << EOF
+[WebService]
+AllowUnencrypted = true
+MaxStartups = 3
+LoginTimeout = ${new_login:-$login_timeout}
+
+[Session]
+IdleTimeout = ${new_idle:-$idle_timeout}
+EOF
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração Atualizada" --msgbox "Timeouts atualizados:\n• Login: ${new_login:-$login_timeout} segundos\n• Inatividade: ${new_idle:-$idle_timeout} minutos" 8 60
+                fi
+                ;;
+            5)
+                dialog --title "Reiniciando Cockpit" --infobox "Reiniciando serviço..." 5 30
+                if execute_with_lock "cockpit_restart" "systemctl restart cockpit.socket"; then
+                    sleep 2
+                    if systemctl is-active --quiet cockpit.socket; then
+                        dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "Cockpit reiniciado com sucesso!" 6 40
+                    else
+                        dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar Cockpit." 6 30
+                    fi
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao obter lock para reiniciar Cockpit." 6 40
+                fi
+                ;;
+            6|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# IMPLEMENTAÇÃO: Configuração do Interface Web
+configure_web_interface() {
+    if ! command -v nginx &>/dev/null; then
+        dialog --title "Erro" --msgbox "Interface Web (Nginx) não está instalada." 6 40
+        return 1
+    fi
+
+    while true; do
+        local nginx_status=$(systemctl is-active --quiet nginx && echo "ATIVO" || echo "INATIVO")
+        
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração Interface Web" --menu "Status: $nginx_status\nEscolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Ver status do Nginx" \
+            "2" "Ver configuração atual" \
+            "3" "Ver página inicial" \
+            "4" "Reiniciar Nginx" \
+            "5" "Voltar" \
+            3>&1 1>&2 2>&3)
+
+        case $choice in
+            1)
+                local status_output=$(systemctl status nginx --no-pager -l)
+                dialog "${DIALOG_OPTS[@]}" --title "Status Nginx" --msgbox "$status_output" 20 80
+                ;;
+            2)
+                if [ -f "/etc/nginx/sites-available/boxserver" ]; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração Nginx" --textbox "/etc/nginx/sites-available/boxserver" 20 80
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração Nginx" --msgbox "Arquivo de configuração não encontrado." 6 50
+                fi
+                ;;
+            3)
+                if [ -f "/var/www/boxserver/index.html" ]; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Página Inicial" --textbox "/var/www/boxserver/index.html" 20 80
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Página Inicial" --msgbox "Arquivo da página inicial não encontrado." 6 50
+                fi
+                ;;
+            4)
+                dialog --title "Reiniciando Nginx" --infobox "Reiniciando serviço..." 5 30
+                systemctl restart nginx
+                sleep 2
+                if systemctl is-active --quiet nginx; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "Nginx reiniciado com sucesso!" 6 40
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar Nginx." 6 30
+                fi
+                ;;
+            5|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# IMPLEMENTAÇÃO: Configuração do RNG-tools
+configure_rng_service() {
+    if ! command -v rngd &>/dev/null; then
+        dialog --title "Erro" --msgbox "RNG-tools não está instalado." 6 40
+        return 1
+    fi
+
+    while true; do
+        local rng_status=$(systemctl is-active --quiet rng-tools && echo "ATIVO" || echo "INATIVO")
+        local entropy=$(cat /proc/sys/kernel/random/entropy_avail 2>/dev/null || echo "N/A")
+        
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração RNG-tools" --menu "Status: $rng_status | Entropia: $entropy\nEscolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Ver status do RNG-tools" \
+            "2" "Ver configuração atual" \
+            "3" "Ver estatísticas de entropia" \
+            "4" "Reiniciar RNG-tools" \
+            "5" "Voltar" \
+            3>&1 1>&2 2>&3)
+
+        case $choice in
+            1)
+                local status_output=$(systemctl status rng-tools --no-pager -l)
+                dialog "${DIALOG_OPTS[@]}" --title "Status RNG-tools" --msgbox "$status_output" 20 80
+                ;;
+            2)
+                if [ -f "/etc/default/rng-tools" ]; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração RNG-tools" --textbox "/etc/default/rng-tools" 20 80
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração RNG-tools" --msgbox "Arquivo de configuração não encontrado." 6 50
+                fi
+                ;;
+            3)
+                local entropy_info="Estatísticas de Entropia:\n\n"
+                entropy_info+="Entropia disponível: $entropy\n"
+                entropy_info+="Tamanho do pool: $(cat /proc/sys/kernel/random/poolsize 2>/dev/null || echo "N/A")\n"
+                entropy_info+="Entropia máxima: $(cat /proc/sys/kernel/random/write_wakeup_threshold 2>/dev/null || echo "N/A")\n"
+                entropy_info+="Entropia mínima: $(cat /proc/sys/kernel/random/read_wakeup_threshold 2>/dev/null || echo "N/A")"
+                dialog "${DIALOG_OPTS[@]}" --title "Estatísticas de Entropia" --msgbox "$entropy_info" 12 60
+                ;;
+            4)
+                dialog --title "Reiniciando RNG-tools" --infobox "Reiniciando serviço..." 5 30
+                systemctl restart rng-tools
+                sleep 2
+                if systemctl is-active --quiet rng-tools; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "RNG-tools reiniciado com sucesso!" 6 40
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar RNG-tools." 6 30
+                fi
+                ;;
+            5|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# IMPLEMENTAÇÃO: Configuração do Rsync
+configure_rsync_service() {
+    while true; do
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração Rsync" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Ver informações do backup" \
+            "2" "Ver script de backup" \
+            "3" "Ver agendamento (crontab)" \
+            "4" "Executar backup manual" \
+            "5" "Voltar" \
+            3>&1 1>&2 2>&3)
+
+        case $choice in
+            1)
+                local backup_info="Informações do Backup Rsync:\n\n"
+                backup_info+="Script: /usr/local/bin/boxserver-sync\n"
+                backup_info+="Destino: /var/backups/boxserver/\n"
+                backup_info+="Agendamento: Diário às 02:00\n"
+                backup_info+="Última execução: $(ls -lt /var/log/boxserver-sync.log 2>/dev/null | head -1 | awk '{print $6, $7, $8}' || echo "Nunca")"
+                dialog "${DIALOG_OPTS[@]}" --title "Informações do Backup" --msgbox "$backup_info" 12 60
+                ;;
+            2)
+                if [ -f "/usr/local/bin/boxserver-sync" ]; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Script de Backup" --textbox "/usr/local/bin/boxserver-sync" 20 80
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Script de Backup" --msgbox "Script não encontrado." 6 40
+                fi
+                ;;
+            3)
+                local crontab_entry=$(crontab -l 2>/dev/null | grep "boxserver-sync" || echo "Não agendado")
+                dialog "${DIALOG_OPTS[@]}" --title "Agendamento" --msgbox "Entrada no crontab:\n\n$crontab_entry" 10 60
+                ;;
+            4)
+                dialog --title "Executando Backup" --infobox "Executando backup manual..." 5 40
+                if /usr/local/bin/boxserver-sync 2>/dev/null; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Backup" --msgbox "Backup executado com sucesso!\n\nVerifique o log em /var/log/boxserver-sync.log" 8 60
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao executar backup." 6 40
+                fi
+                ;;
+            5|"")
+                break
+                ;;
+        esac
+    done
+}
+
 configure_cockpit_service() {
     local cockpit_status="Status do Cockpit:\n\n"
     
@@ -4484,60 +5155,7 @@ configure_cockpit_service() {
     dialog "${DIALOG_OPTS[@]}" --title "Cockpit" --msgbox "$cockpit_status" 12 60
 }
 
-# IMPLEMENTAÇÃO: Menu de gerenciamento de serviços
-manage_services_menu() {
-    while true; do
-        local menu_items=()
-        for app_id in $(echo "${!APPS[@]}" | tr ' ' '\n' | sort -n); do
-            local service_name=$(get_service_name "$app_id")
-            if [ -n "$service_name" ]; then
-                local app_status=$(check_app_status "$app_id")
-                local app_name=$(echo "${APPS[$app_id]}" | cut -d'|' -f1)
-                local status_icon="-" # Padrão para não instalado
 
-                if [[ "$app_status" == "installed_ok" ]]; then
-                    status_icon="✅"
-                elif [[ "$app_status" == "installed_error" ]]; then
-                    status_icon="❌"
-                else
-                    # Se não estiver instalado, não adiciona ao menu de gerenciamento
-                    continue
-                fi
-                menu_items+=("$app_id" "$status_icon $app_name")
-            fi
-        done
-
-        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Serviços" --menu "Selecione um serviço para gerenciar:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT "${menu_items[@]}" 3>&1 1>&2 2>&3)
-
-        if [ $? -ne 0 ]; then
-            break
-        fi
-
-        local service_name=$(get_service_name "$choice")
-        local app_name=$(echo "${APPS[$choice]}" | cut -d'|' -f1)
-
-        if [ -n "$service_name" ]; then
-            local action=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciar: $app_name" --menu "Escolha uma ação:" 15 50 4 \
-                "start" "Iniciar" \
-                "stop" "Parar" \
-                "restart" "Reiniciar" \
-                "status" "Ver Status" \
-                3>&1 1>&2 2>&3)
-
-            case $action in
-                start|stop|restart)
-                    systemctl "$action" "$service_name"
-                    dialog "${DIALOG_OPTS[@]}" --title "Ação Executada" --infobox "Comando '$action' executado para $app_name." 5 50
-                    sleep 1
-                    ;;
-                status)
-                    local status_output=$(systemctl status "$service_name" --no-pager -l)
-                    dialog "${DIALOG_OPTS[@]}" --title "Status: $app_name" --msgbox "$status_output" 20 80
-                    ;;
-            esac
-        fi
-    done
-}
 
 # IMPLEMENTAÇÃO: Função para gerenciar um único serviço
 manage_single_service() {
@@ -4570,51 +5188,7 @@ manage_single_service() {
     esac
 }
 
-# IMPLEMENTAÇÃO: Menu para configurar aplicativos específicos
-configure_apps_menu() {
-    while true; do
-        local menu_items=()
-        # Adiciona apenas aplicativos instalados que têm um menu de configuração
-        if [[ "$(check_app_status 1)" != "not_installed" || "$(check_app_status 2)" != "not_installed" ]]; then
-            menu_items+=("1" "Configurar Pi-hole & Unbound")
-        fi
-        if [[ "$(check_app_status 5)" != "not_installed" ]]; then
-            menu_items+=("2" "Configurar FileBrowser")
-        fi
-        if [[ "$(check_app_status 6)" != "not_installed" ]]; then
-            menu_items+=("3" "Configurar Netdata")
-        fi
-        if [[ "$(check_app_status 12)" != "not_installed" ]]; then
-            menu_items+=("4" "Configurar MiniDLNA")
-        fi
-        if [[ "$(check_app_status 10)" != "not_installed" ]]; then
-            menu_items+=("5" "Configurar Rclone")
-        fi
-        if [[ "$(check_app_status 13)" != "not_installed" ]]; then
-            menu_items+=("6" "Configurar Cloudflare Tunnel")
-        fi
 
-        if [ ${#menu_items[@]} -eq 0 ]; then
-            dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" --msgbox "Nenhum aplicativo configurável foi instalado ainda." 8 60
-            break
-        fi
-
-        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" --menu "Selecione um aplicativo para configurar:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT "${menu_items[@]}" 3>&1 1>&2 2>&3)
-
-        if [ $? -ne 0 ]; then
-            break
-        fi
-
-        case $choice in
-            1) configure_pihole_unbound ;;
-            2) configure_filebrowser ;;
-            3) configure_netdata ;;
-            4) configure_minidlna ;;
-            5) configure_rclone_service ;;
-            6) configure_cloudflare_tunnel ;;
-        esac
-    done
-}
 
 # IMPLEMENTAÇÃO: Menu de gerenciamento de serviços
 manage_services_menu() {
@@ -4680,6 +5254,15 @@ configure_apps_menu() {
         if [[ "$(check_app_status 13)" != "not_installed" ]]; then
             menu_items+=("7" "Configurar Cloudflare Tunnel")
         fi
+        if [[ "$(check_app_status 7)" != "not_installed" ]]; then
+            menu_items+=("8" "Configurar Fail2Ban")
+        fi
+        if [[ "$(check_app_status 14)" != "not_installed" ]]; then
+            menu_items+=("9" "Configurar Chrony")
+        fi
+        if [[ "$(check_app_status 15)" != "not_installed" ]]; then
+            menu_items+=("10" "Configurar Interface Web")
+        fi
 
         if [ ${#menu_items[@]} -eq 0 ]; then
             dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" --msgbox "Nenhum aplicativo configurável foi instalado ainda." 8 60
@@ -4701,6 +5284,9 @@ configure_apps_menu() {
             5) configure_minidlna ;;
             6) configure_rclone_service ;;
             7) configure_cloudflare_tunnel ;;
+            8) configure_fail2ban_service ;;
+            9) configure_chrony_service ;;
+            10) configure_web_interface ;;
         esac
     done
 }
@@ -4787,9 +5373,7 @@ security_menu() {
                 configure_ufw_service
                 ;;
             2)
-                # Adicionar um menu para Fail2Ban se necessário, por enquanto status é suficiente
-                local f2b_status_details=$(systemctl status fail2ban --no-pager -l)
-                dialog "${DIALOG_OPTS[@]}" --title "Status Fail2Ban" --msgbox "$f2b_status_details" 20 80
+                configure_fail2ban_service
                 ;;
             3|"")
                 break
@@ -5702,6 +6286,114 @@ EOF
     log_message "INFO" "Orientações de segurança adicionadas com sucesso"
 }
 
+# IMPLEMENTAÇÃO: Configuração do Fail2Ban
+configure_fail2ban_service() {
+    if ! command -v fail2ban-client &>/dev/null; then
+        dialog --title "Erro" --msgbox "Fail2Ban não está instalado." 6 40
+        return 1
+    fi
+
+    while true; do
+        local f2b_status=$(systemctl is-active --quiet fail2ban && echo "ATIVO" || echo "INATIVO")
+        
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração Fail2Ban" --menu "Status: $f2b_status\nEscolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Ver status do Fail2Ban" \
+            "2" "Ver jails ativos" \
+            "3" "Ver configuração atual" \
+            "4" "Reiniciar Fail2Ban" \
+            "5" "Voltar" \
+            3>&1 1>&2 2>&3)
+
+        case $choice in
+            1)
+                local status_output=$(systemctl status fail2ban --no-pager -l)
+                dialog "${DIALOG_OPTS[@]}" --title "Status Fail2Ban" --msgbox "$status_output" 20 80
+                ;;
+            2)
+                local jails=$(fail2ban-client status | grep "Jail list" | sed -e 's/^[ \t]*Jail list:[ \t]*//' | tr ',' '\n' | sed 's/^[ \t]*//' | tr '\n' ',' | sed 's/,$//')
+                dialog "${DIALOG_OPTS[@]}" --title "Jails Ativos" --msgbox "Jails ativos: $jails" 10 60
+                ;;
+            3)
+                if [ -f "/etc/fail2ban/jail.local" ]; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração Fail2Ban" --textbox "/etc/fail2ban/jail.local" 20 80
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração Fail2Ban" --msgbox "Arquivo de configuração não encontrado." 6 50
+                fi
+                ;;
+            4)
+                dialog --title "Reiniciando Fail2Ban" --infobox "Reiniciando serviço..." 5 30
+                systemctl restart fail2ban
+                sleep 2
+                if systemctl is-active --quiet fail2ban; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "Fail2Ban reiniciado com sucesso!" 6 40
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar Fail2Ban." 6 30
+                fi
+                ;;
+            5|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# IMPLEMENTAÇÃO: Configuração do Chrony
+configure_chrony_service() {
+    if ! command -v chronyd &>/dev/null; then
+        dialog --title "Erro" --msgbox "Chrony não está instalado." 6 40
+        return 1
+    fi
+
+    while true; do
+        local chrony_status=$(systemctl is-active --quiet chrony && echo "ATIVO" || echo "INATIVO")
+        
+        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configuração Chrony" --menu "Status: $chrony_status\nEscolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
+            "1" "Ver status do Chrony" \
+            "2" "Ver configuração atual" \
+            "3" "Ver fontes de tempo" \
+            "4" "Forçar atualização de tempo" \
+            "5" "Reiniciar Chrony" \
+            "6" "Voltar" \
+            3>&1 1>&2 2>&3)
+
+        case $choice in
+            1)
+                local status_output=$(systemctl status chrony --no-pager -l)
+                dialog "${DIALOG_OPTS[@]}" --title "Status Chrony" --msgbox "$status_output" 20 80
+                ;;
+            2)
+                if [ -f "/etc/chrony/chrony.conf" ]; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração Chrony" --textbox "/etc/chrony/chrony.conf" 20 80
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Configuração Chrony" --msgbox "Arquivo de configuração não encontrado." 6 50
+                fi
+                ;;
+            3)
+                local sources=$(chronyc sources)
+                dialog "${DIALOG_OPTS[@]}" --title "Fontes de Tempo" --msgbox "$sources" 20 80
+                ;;
+            4)
+                dialog --title "Atualizando Tempo" --infobox "Forçando atualização de tempo..." 5 40
+                chronyc makestep >/dev/null 2>&1
+                dialog "${DIALOG_OPTS[@]}" --title "Atualização" --msgbox "Atualização de tempo forçada com sucesso!" 6 40
+                ;;
+            5)
+                dialog --title "Reiniciando Chrony" --infobox "Reiniciando serviço..." 5 30
+                systemctl restart chrony
+                sleep 2
+                if systemctl is-active --quiet chrony; then
+                    dialog "${DIALOG_OPTS[@]}" --title "Serviço" --msgbox "Chrony reiniciado com sucesso!" 6 40
+                else
+                    dialog "${DIALOG_OPTS[@]}" --title "Erro" --msgbox "Falha ao reiniciar Chrony." 6 30
+                fi
+                ;;
+            6|"")
+                break
+                ;;
+        esac
+    done
+}
+
 # Função para configurar ambiente headless
 setup_headless_environment() {
     # Remover variáveis de ambiente gráficas que podem causar problemas
@@ -5755,6 +6447,12 @@ main() {
     # Log de início
     log_message "INFO" "Boxserver TUI Installer iniciado"
     
+    # Verificar dependências do sistema
+    if ! check_dependencies; then
+        dialog "${DIALOG_OPTS[@]}" --title "Erro Crítico" --msgbox "Não foi possível verificar/instalar dependências necessárias.\n\nO script não pode continuar." 8 60
+        exit 1
+    fi
+    
     # Detectar interface de rede inicial
     detect_network_interface
     
@@ -5773,9 +6471,6 @@ main() {
     # Iniciar menu principal
     main_menu
 }
-
-# Tratamento de sinais
-trap 'clear; echo "Instalação interrompida."; exit 1' INT TERM
 
 # Executar função principal
 main "$@"
