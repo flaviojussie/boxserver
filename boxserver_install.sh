@@ -4472,13 +4472,9 @@ manage_filebrowser_users() {
         "2" "Adicionar usuário" \
         "3" "Remover usuário" \
         "4" "Alterar senha" \
-        "5" "Voltar" \
+        "9" "Voltar" \
         3>&1 1>&2 2>&3)
     
-    if [ $? -ne 0 ]; then
-        break
-    fi
-
     case $choice in
         1)
             local users=$(filebrowser -d /var/lib/filebrowser/filebrowser.db users ls 2>/dev/null || echo "Erro ao listar usuários")
@@ -4509,6 +4505,7 @@ manage_filebrowser_users() {
                 dialog "${DIALOG_OPTS[@]}" --title "Senha" --msgbox "Senha alterada com sucesso!" 6 40
             fi
             ;;
+        9|"") break ;;
     esac
 }
 
