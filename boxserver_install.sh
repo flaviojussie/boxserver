@@ -6,7 +6,7 @@
 # Baseado na base de conhecimento do projeto Boxserver Arandutec
 #
 # Autor: Boxserver Team
-# Versão: 1.0
+# Versão: 2.0
 # Data: $(date +%Y-%m-%d)
 #
 #
@@ -43,11 +43,6 @@ PIHOLE_PASSWORD=""
 FILEBROWSER_PORT="8080"
 COCKPIT_PORT="9090"
 
-# MELHORIA: Variáveis para modo silencioso
-SILENT_MODE="false"
-CURRENT_STEP=0
-TOTAL_STEPS=0
-
 # Array de aplicativos disponíveis
 declare -A APPS=(
     [1]="Pi-hole|Bloqueio de anúncios e DNS|http://IP/admin"
@@ -66,97 +61,6 @@ declare -A APPS=(
     [14]="Chrony|Sincronização de tempo (NTP)|Serviço em background"
     [15]="Interface Web|Dashboard unificado com Nginx|Porta 80"
 )
-
-# MELHORIA: Função para logging com modo silencioso
-log_message() {
-    local level="$1"
-    local message="$2"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
-    
-    # Verificar se está em modo silencioso
-    if [[ "$SILENT_MODE" == "true" ]]; then
-        # Em modo silencioso, apenas logs críticos são exibidos
-        if [[ "$level" == "ERROR" ]]; then
-            echo -e "${RED}[ERROR]${NC} $message" >&2
-        fi
-    else
-        # Modo normal - exibir todos os logs
-        if [[ "$level" == "ERROR" ]]; then
-            echo -e "${RED}[ERROR]${NC} $message" >&2
-        elif [[ "$level" == "INFO" ]]; then
-            echo -e "${GREEN}[INFO]${NC} $message"
-        elif [[ "$level" == "WARN" ]]; then
-            echo -e "${YELLOW}[WARN]${NC} $message"
-        fi
-    fi
-}
-
-# MELHORIA: Função para atualizar progresso em tempo real
-update_progress() {
-    local current="$1"
-    local total="$2"
-    local message="$3"
-    local percentage=$((current * 100 / total))
-    
-    echo "$percentage" | dialog --title "Instalação Silenciosa" \
-        --gauge "$message" 10 70
-}
-
-# MELHORIA: Função para executar comandos silenciosamente
-run_silent() {
-    local command="$1"
-    local description="$2"
-    
-    # Executar comando redirecionando output
-    if eval "$command" >/dev/null 2>&1; then
-        log_message "INFO" "$description: SUCESSO"
-        return 0
-    else
-        log_message "ERROR" "$description: FALHOU"
-        return 1
-    fi
-}
-
-# Função para verificar se o dialog está instalado
-check_dialog() {
-    if ! command -v dialog &> /dev/null; then
-        echo "Dialog não encontrado. Instalando..."
-        apt-get update && apt-get install -y dialog
-        if [ $? -ne 0 ]; then
-            echo "Erro ao instalar dialog. Saindo..."
-            exit 1
-        fi
-    fi
-}
-
-# Função para configurar ambiente headless
-setup_headless_environment() {
-    # Remover variáveis de ambiente gráficas que podem causar problemas
-    unset DISPLAY
-    unset WAYLAND_DISPLAY
-    unset XDG_SESSION_TYPE
-    unset XDG_CURRENT_DESKTOP
-    
-    # Configurar variáveis para modo texto
-    export DEBIAN_FRONTEND=noninteractive
-    export TERM=${TERM:-linux}
-    
-    # Verificar se estamos em um ambiente headless
-    if [[ -z "$SSH_CLIENT" && -z "$SSH_TTY" ]]; then
-        # Não é SSH, verificar se há display disponível
-        if [[ -n "$DISPLAY" ]] && command -v xset &>/dev/null; then
-            if ! xset q &>/dev/null; then
-                # Display definido mas não funcional
-                unset DISPLAY
-            fi
-        fi
-    fi
-    
-    # Configurar browser padrão para evitar tentativas de abertura
-    export BROWSER="echo 'Browser não disponível em servidor headless. URL:'"
-    
-    log_message "INFO" "Ambiente headless configurado - DISPLAY removido, BROWSER desabilitado"
-}
 
 # Função para criar diretórios necessários
 setup_directories() {
@@ -781,7 +685,7 @@ EOF
         case $app_id in
             1) external_scripts+=("pihole|https://install.pi-hole.net") ;;
             2) apt_packages+=("unbound") ;;
-            3) apt_packages+=("wireguard-tools") ;;
+            3) apt_packages+=("wireguard-tools" "qrencode") ;;
             4) apt_packages+=("cockpit") ;;
             5) external_scripts+=("filebrowser|https://raw.githubusercontent.com/filebrowser/get/master/get.sh") ;;
             6) external_scripts+=("netdata|https://my-netdata.io/kickstart.sh") ;;
@@ -1276,240 +1180,6 @@ EOF
         log_message "INFO" "Unbound instalado e testado com sucesso"
     fi
 }
-
-# MELHORIA: Versão silenciosa da instalação do Unbound
-install_unbound_silent() {
-    local base_progress="$1"
-    local step_size="$2"
-    local current_progress="$base_progress"
-    
-    # Ativar modo silencioso
-    SILENT_MODE="true"
-    
-    # Etapa 1: Verificar conflitos (10% do progresso)
-    update_progress "$current_progress" 100 "Unbound: Verificando conflitos DNS..."
-    if ! resolve_dns_conflicts >/dev/null 2>&1; then
-        log_message "ERROR" "Falha ao resolver conflitos DNS"
-        SILENT_MODE="false"
-        return 1
-    fi
-    current_progress=$((base_progress + step_size / 5))
-    
-    # Etapa 2: Parar serviços (15% do progresso)
-    update_progress "$current_progress" 100 "Unbound: Preparando ambiente..."
-    systemctl stop unbound 2>/dev/null || true
-    current_progress=$((base_progress + step_size / 4))
-    
-    # Etapa 3: Instalar pacote (40% do progresso)
-    update_progress "$current_progress" 100 "Unbound: Instalando pacote..."
-    if ! run_silent "apt update && apt install unbound -y" "Instalação do Unbound"; then
-        SILENT_MODE="false"
-        return 1
-    fi
-    current_progress=$((base_progress + step_size * 2 / 3))
-    
-    # Etapa 4: Configurar (70% do progresso)
-    update_progress "$current_progress" 100 "Unbound: Configurando serviço..."
-    
-    # Verificar usuário
-    if ! id "unbound" &>/dev/null; then
-        log_message "ERROR" "Usuário unbound não foi criado durante a instalação"
-        SILENT_MODE="false"
-        return 1
-    fi
-    
-    # Criar diretórios
-    mkdir -p /etc/unbound/unbound.conf.d /var/lib/unbound
-    
-    # Backup da configuração
-    if [ -f "/etc/unbound/unbound.conf" ]; then
-        cp /etc/unbound/unbound.conf /etc/unbound/unbound.conf.backup
-    fi
-    
-    # Criar configuração otimizada
-    cat > /etc/unbound/unbound.conf.d/pi-hole.conf << 'EOF'
-server:
-    verbosity: 1
-    interface: 127.0.0.1
-    port: 5335
-    do-ip4: yes
-    do-udp: yes
-    do-tcp: yes
-    do-ip6: no
-    prefer-ip6: no
-    harden-glue: yes
-    harden-dnssec-stripped: yes
-    use-caps-for-id: no
-    edns-buffer-size: 1232
-    prefetch: yes
-    num-threads: 1
-    msg-cache-slabs: 1
-    rrset-cache-slabs: 1
-    infra-cache-slabs: 1
-    key-cache-slabs: 1
-    so-rcvbuf: 512k
-    so-sndbuf: 512k
-    private-address: 192.168.0.0/16
-    private-address: 169.254.0.0/16
-    private-address: 172.16.0.0/12
-    private-address: 10.0.0.0/8
-    private-address: fd00::/8
-    private-address: fe80::/10
-    hide-identity: yes
-    hide-version: yes
-    auto-trust-anchor-file: "/var/lib/unbound/root.key"
-    root-hints: "/var/lib/unbound/root.hints"
-EOF
-    
-    current_progress=$((base_progress + step_size * 3 / 4))
-    
-    # Etapa 5: Baixar arquivos necessários (80% do progresso)
-    update_progress "$current_progress" 100 "Unbound: Baixando arquivos de configuração..."
-    
-    # CORREÇÃO: Lógica de download com fallback para o modo silencioso
-    local root_hints_urls=(
-        "https://www.internic.net/domain/named.root"
-        "https://ftp.internic.net/domain/named.root"
-        "https://www.iana.org/domains/root/files/named.root"
-    )
-    local download_success=false
-    for url in "${root_hints_urls[@]}"; do
-        if run_silent "wget -qO /var/lib/unbound/root.hints '$url'" "Download root hints de $url"; then
-            download_success=true
-            break
-        fi
-    done
-    if [ "$download_success" = false ]; then
-        log_message "ERROR" "Falha ao baixar root hints de todas as fontes."
-        SILENT_MODE="false"
-        return 1
-    fi
-
-    if ! run_silent "unbound-anchor -a /var/lib/unbound/root.key" "Configurando trust anchor"; then
-        if ! run_silent "wget -O /tmp/root.key https://data.iana.org/root-anchors/icannbundle.pem && mv /tmp/root.key /var/lib/unbound/root.key" "Trust anchor manual"; then
-            SILENT_MODE="false"
-            return 1
-        fi
-    fi
-    
-    # Configurar permissões
-    chown unbound:unbound /var/lib/unbound/root.key /var/lib/unbound/root.hints
-    chmod 644 /var/lib/unbound/root.key /var/lib/unbound/root.hints
-    
-    current_progress=$((base_progress + step_size * 4 / 5))
-    
-    # Etapa 6: Ativar serviço (90% do progresso)
-    update_progress "$current_progress" 100 "Unbound: Ativando serviço..."
-    
-    if ! activate_unbound_service >/dev/null 2>&1; then
-        if diagnose_and_fix_unbound >/dev/null 2>&1; then
-            if ! activate_unbound_service >/dev/null 2>&1; then
-                SILENT_MODE="false"
-                return 1
-            fi
-        else
-            SILENT_MODE="false"
-            return 1
-        fi
-    fi
-    
-    current_progress=$((base_progress + step_size * 9 / 10))
-    
-    # Etapa 7: Testar funcionalidade (100% do progresso)
-    update_progress "$current_progress" 100 "Unbound: Testando funcionalidade..."
-    
-    if ! test_unbound_functionality >/dev/null 2>&1; then
-        log_message "WARN" "Teste DNS falhou, mas serviço está ativo"
-    fi
-    
-    # Finalizar
-    current_progress=$((base_progress + step_size))
-    update_progress "$current_progress" 100 "Unbound: Instalação concluída"
-    
-    SILENT_MODE="false"
-    return 0
-}
-
-# MELHORIA: Versão silenciosa da instalação do Pi-hole
-install_pihole_silent() {
-    local base_progress="$1"
-    local step_size="$2"
-    local current_progress="$base_progress"
-    
-    SILENT_MODE="true"
-    
-    update_progress "$current_progress" 100 "Pi-hole: Baixando instalador..."
-    current_progress=$((base_progress + step_size / 4))
-    
-    update_progress "$current_progress" 100 "Pi-hole: Executando instalação..."
-    if ! download_and_run_script "https://install.pi-hole.net" >/dev/null 2>&1; then
-        SILENT_MODE="false"
-        return 1
-    fi
-    current_progress=$((base_progress + step_size * 3 / 4))
-    
-    update_progress "$current_progress" 100 "Pi-hole: Configurando..."
-    
-    if [ -n "$PIHOLE_PASSWORD" ]; then
-        echo "$PIHOLE_PASSWORD" | pihole -a -p >/dev/null 2>&1
-    fi
-    
-    cat > /etc/pihole/setupVars.conf << EOF
-PIHOLE_INTERFACE=$NETWORK_INTERFACE
-IPV4_ADDRESS=$SERVER_IP/24
-IPV6_ADDRESS=
-PIHOLE_DNS_1=127.0.0.1#5335
-PIHOLE_DNS_2=
-DNS_FQDN_REQUIRED=true
-DNS_BOGUS_PRIV=true
-DNSSEC=true
-EOF
-    
-    systemctl restart pihole-FTL >/dev/null 2>&1
-    systemctl enable pihole-FTL >/dev/null 2>&1
-    
-    current_progress=$((base_progress + step_size))
-    update_progress "$current_progress" 100 "Pi-hole: Instalação concluída"
-    
-    SILENT_MODE="false"
-    return 0
-}
-
-# MELHORIA: Função genérica para instalações silenciosas simples
-install_generic_silent() {
-    local app_name="$1"
-    local base_progress="$2"
-    local step_size="$3"
-    local install_function="$4"
-    
-    SILENT_MODE="true"
-    
-    update_progress "$base_progress" 100 "$app_name: Iniciando instalação..."
-    
-    if $install_function >/dev/null 2>&1; then
-        local final_progress=$((base_progress + step_size))
-        update_progress "$final_progress" 100 "$app_name: Instalação concluída"
-        SILENT_MODE="false"
-        return 0
-    else
-        SILENT_MODE="false"
-        return 1
-    fi
-}
-
-# MELHORIA: Versões silenciosas para outros aplicativos
-install_wireguard_silent() { install_generic_silent "WireGuard" "$1" "$2" "install_wireguard"; }
-install_cockpit_silent() { install_generic_silent "Cockpit" "$1" "$2" "install_cockpit"; }
-install_filebrowser_silent() { install_generic_silent "FileBrowser" "$1" "$2" "install_filebrowser"; }
-install_netdata_silent() { install_generic_silent "Netdata" "$1" "$2" "install_netdata"; }
-install_chrony_silent() { install_generic_silent "Chrony" "$1" "$2" "install_chrony"; }
-install_fail2ban_silent() { install_generic_silent "Fail2Ban" "$1" "$2" "install_fail2ban"; }
-install_ufw_silent() { install_generic_silent "UFW" "$1" "$2" "install_ufw"; }
-install_rng_tools_silent() { install_generic_silent "RNG-tools" "$1" "$2" "install_rng_tools"; }
-install_rclone_silent() { install_generic_silent "Rclone" "$1" "$2" "install_rclone"; }
-install_rsync_silent() { install_generic_silent "Rsync" "$1" "$2" "install_rsync"; }
-install_minidlna_silent() { install_generic_silent "MiniDLNA" "$1" "$2" "install_minidlna"; }
-install_cloudflared_silent() { install_generic_silent "Cloudflared" "$1" "$2" "install_cloudflared"; }
 
 # CORREÇÃO: Função para resolver conflitos DNS
 resolve_dns_conflicts() {
@@ -2535,12 +2205,12 @@ EOF
 # IMPLEMENTAÇÃO: Função para habilitar proxy no Nginx para um serviço
 enable_nginx_proxy() {
     local app_id="$1"
+    local pihole_port=${PIHOLE_PORT_OVERRIDE:-80}
     local config_file="/etc/nginx/sites-available/boxserver"
 
     case $app_id in
         1) # Pi-hole
-            sed -i '/# As localizações dos serviços/a \
-    location /pihole/ {\n        proxy_pass http://127.0.0.1/;\n    }' "$config_file"
+            sed -i "/# As localizações dos serviços/a \\\n    location /pihole/ {\\\n        proxy_pass http://127.0.0.1:$pihole_port/admin/;\\\n        proxy_set_header Host \\\$host;\\\n        proxy_set_header X-Real-IP \\\$remote_addr;\\\n    }" "$config_file"
             ;;
         4) # Cockpit
             sed -i '/# As localizações dos serviços/a \
@@ -3429,13 +3099,17 @@ EOF
     if command -v qrencode &>/dev/null;
     then
         local qr_file="/etc/wireguard/clients/${client_name}.png"
+        local client_config_content=$(cat "$client_config_path")
         qrencode -t png -o "$qr_file" < "$client_config_path"
 
-        # Tentar exibir o QR code no terminal
-        local qr_terminal
-        qr_terminal=$(qrencode -t ansiutf8 < "$client_config_path")
+        # MELHORIA: Exibir o QR code em um textbox para melhor renderização
+        # e fornecer um fallback claro.
+        local qr_terminal_text="Configuração do Cliente '$client_name':\n\n$client_config_content\n\n"
+        qr_terminal_text+="QR Code (aponte a câmera do seu app WireGuard aqui):\n\n"
+        qr_terminal_text+="$(qrencode -t ansiutf8 < "$client_config_path")"
+        qr_terminal_text+="\n\nSe o QR code aparecer quebrado, você pode usar o arquivo de imagem salvo em:\n$qr_file"
         
-        dialog --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\nQR Code (se o terminal suportar):\n$qr_terminal" 20 70
+        dialog --title "Cliente Criado: $client_name" --textbox <(echo -e "$qr_terminal_text") 25 80
     else
         dialog --title "Cliente Criado" --msgbox "Cliente '$client_name' criado com sucesso!\n\nIP: $client_ip\nArquivo: $client_config_path\n\n(Instale 'qrencode' para gerar QR codes)" 12 60
     fi
@@ -4974,17 +4648,6 @@ main_menu() {
     done
 }
 
-# MELHORIA: Função para alternar modo silencioso
-toggle_silent_mode() {
-    if [[ "$SILENT_MODE" == "true" ]]; then
-        SILENT_MODE="false"
-        dialog --title "Modo Silencioso" --msgbox "Modo Silencioso DESABILITADO\n\n• Logs detalhados serão exibidos\n• Instalação mais verbosa\n• Melhor para diagnóstico" 10 50
-    else
-        SILENT_MODE="true"
-        dialog --title "Modo Silencioso" --msgbox "Modo Silencioso HABILITADO\n\n• Apenas barra de progresso\n• Instalação mais rápida\n• Logs salvos em arquivo\n• Ideal para instalações automáticas" 12 60
-    fi
-}
-
 # MELHORIA: Gerar relatório final da instalação
 generate_installation_summary() {
     local installed_apps=("$@")
@@ -5104,6 +4767,50 @@ EOF
     log_message "INFO" "Script de saúde do sistema criado em /usr/local/bin/boxserver-health"
 }
 
+# Função para verificar se o dialog está instalado
+check_dialog() {
+    if ! command -v dialog &> /dev/null; then
+        echo "Dialog não encontrado. Instalando..."
+        apt-get update && apt-get install -y dialog
+        if [ $? -ne 0 ]; then
+            echo "Erro ao instalar dialog. Saindo..."
+            exit 1
+        fi
+    fi
+}
+
+# Função para configurar ambiente headless
+setup_headless_environment() {
+    # Remover variáveis de ambiente gráficas que podem causar problemas
+    unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
+    
+    # Configurar variáveis para modo texto
+    export DEBIAN_FRONTEND=noninteractive
+    export TERM=${TERM:-linux}
+}
+
+# IMPLEMENTAÇÃO: Função para instalar o script como um comando global
+install_script_globally() {
+    local install_path="/usr/local/bin/boxserver"
+    
+    if dialog --title "Instalação Global" --yesno "Deseja instalar este script como um comando global ('boxserver')?\n\nIsso permitirá que você o execute de qualquer lugar no terminal." 10 70; then
+        log_message "INFO" "Instalando script em $install_path..."
+        
+        if cp "$0" "$install_path" && chmod +x "$install_path"; then
+            dialog --title "Instalação Concluída" --msgbox "Script instalado com sucesso!\n\nAgora você pode executá-lo a qualquer momento digitando:\n\nboxserver" 10 60
+            log_message "INFO" "Script instalado globalmente. Reiniciando a partir do novo local."
+            
+            # Reiniciar o script a partir do novo local para continuar a execução
+            exec "$install_path"
+        else
+            dialog --title "Erro de Instalação" --msgbox "Falha ao instalar o script em $install_path.\n\nVerifique as permissões e tente novamente." 8 60
+            log_message "ERROR" "Falha ao copiar ou dar permissão de execução para $install_path."
+        fi
+    else
+        log_message "INFO" "Usuário optou por não instalar o script globalmente."
+    fi
+}
+
 # Função principal
 main() {
     # Verificar se está sendo executado como root
@@ -5130,6 +4837,12 @@ main() {
     
     # Atualizar o backtitle com o IP detectado
     BACKTITLE="Boxserver TUI v1.0 | IP: $SERVER_IP | Hardware: RK322x"
+
+    # MELHORIA: Oferecer auto-instalação se o script não for o comando global
+    local script_path=$(realpath "$0")
+    if [[ "$script_path" != "/usr/local/bin/boxserver" ]]; then
+        install_script_globally
+    fi
     
     # Mostrar tela de boas-vindas
     dialog --title "Bem-vindo" --msgbox "Boxserver TUI Installer v1.0\n\nInstalador automatizado para MXQ-4K\n\nEste assistente irá guiá-lo através da\ninstalação e configuração do seu\nservidor doméstico.\n\nPressione ENTER para continuar..." 12 50
