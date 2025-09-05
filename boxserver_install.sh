@@ -620,7 +620,7 @@ configure_advanced_settings() {
             "2" "Configurar Rede VPN" \
             "3" "Configurar Portas dos Serviços" \
             "4" "Configurar Senhas" \
-            "5" "Voltar ao Menu Principal" \
+            "5" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -2629,7 +2629,7 @@ configure_cloudflare_tunnel() {
             "5" "Ver status do túnel" \
             "6" "Validar configuração completa" \
             "7" "Editar configuração avançada" \
-            "8" "Voltar" \
+            "8" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -5103,6 +5103,7 @@ configure_rsync_service() {
             "5" "Voltar" \
             3>&1 1>&2 2>&3)
 
+        exit_status=$?
         case $choice in
             1)
                 local backup_info="Informações do Backup Rsync:\n\n"
@@ -5210,7 +5211,10 @@ manage_services_menu() {
             fi
         done
 
-        if [ ${#menu_items[@]} -eq 0 ]; then
+        # Adicionar opção Voltar
+        menu_items+=("Voltar" "🔙 Voltar ao menu anterior")
+
+        if [ ${#menu_items[@]} -eq 2 ]; then  # Only "Voltar" option
             dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Serviços" --msgbox "Nenhum serviço gerenciável foi instalado ainda." 8 60
             break
         fi
@@ -5219,6 +5223,11 @@ manage_services_menu() {
 
         exit_status=$?
         if [ $exit_status -ne 0 ]; then
+            break
+        fi
+
+        # Verificar se a opção escolhida é "Voltar"
+        if [[ "$choice" == "Voltar" ]] || [[ -z "$choice" ]]; then
             break
         fi
 
@@ -5263,7 +5272,10 @@ configure_apps_menu() {
             menu_items+=("10" "Configurar Interface Web")
         fi
 
-        if [ ${#menu_items[@]} -eq 0 ]; then
+        # Adicionar opção Voltar
+        menu_items+=("11" "Voltar")
+
+        if [ ${#menu_items[@]} -eq 2 ]; then  # Only "Voltar" option
             dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" --msgbox "Nenhum aplicativo configurável foi instalado ainda." 8 60
             break
         fi
@@ -5271,7 +5283,7 @@ configure_apps_menu() {
         local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" \
             --menu "Selecione um aplicativo para configurar detalhes avançados (portas, usuários, etc.):" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT "${menu_items[@]}" 3>&1 1>&2 2>&3)
 
-        if [ $? -ne 0 ]; then
+        if [ $? -ne 0 ] || [[ "$choice" == "11" ]]; then
             break
         fi
 
@@ -5286,6 +5298,7 @@ configure_apps_menu() {
             8) configure_fail2ban_service ;;
             9) configure_chrony_service ;;
             10) configure_web_interface ;;
+            11|"") break ;;
         esac
     done
 }
@@ -5298,7 +5311,7 @@ diagnostics_menu() {
             "2" "Testar Conectividade de Rede" \
             "3" "Testar Resolução DNS (Pi-hole & Unbound)" \
             "4" "Ver Logs de Instalação" \
-            "5" "Voltar ao Menu Principal" \
+            "5" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
 
         case $choice in
@@ -5315,16 +5328,13 @@ diagnostics_menu() {
                 test_dns_resolution
                 ;;
             4)
-                # Reutiliza o menu de gerenciamento para mostrar o status
-                manage_services_menu
-                ;;
-            5)
                 show_installation_logs
                 ;;
-            6|"")
+            5|"")
                 break
                 ;;
         esac
+        if [ $? -ne 0 ]; then break; fi
     done
 }
 
@@ -5337,6 +5347,7 @@ maintenance_menu() {
             "3" "Ver Backups Existentes" \
             "4" "Voltar" \
             3>&1 1>&2 2>&3)
+        exit_status=$?
 
         case $choice in
             1)
@@ -5352,6 +5363,7 @@ maintenance_menu() {
                 ;;
             4|"") break ;;
         esac
+        if [ $exit_status -ne 0 ]; then break; fi
     done
 }
 
@@ -5366,6 +5378,7 @@ security_menu() {
             "2" "Gerenciar Proteção (Fail2Ban) - Status: $f2b_status" \
             "3" "Voltar" \
             3>&1 1>&2 2>&3)
+        exit_status=$?
 
         case $choice in
             1)
@@ -5378,6 +5391,7 @@ security_menu() {
                 break
                 ;;
         esac
+        if [ $exit_status -ne 0 ]; then break; fi
     done
 }
 
@@ -5403,6 +5417,7 @@ configure_rclone_service() {
             "6" "Executar script de backup manual" \
             "7" "Voltar" \
             3>&1 1>&2 2>&3)
+        exit_status=$?
 
         case $choice in
             1)
@@ -5435,6 +5450,7 @@ configure_rclone_service() {
                 break
                 ;;
         esac
+        if [ $exit_status -ne 0 ]; then break; fi
     done
 }
 
@@ -6333,6 +6349,7 @@ configure_fail2ban_service() {
                 break
                 ;;
         esac
+        if [ $exit_status -ne 0 ]; then break; fi
     done
 }
 
