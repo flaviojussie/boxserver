@@ -67,7 +67,7 @@ DIALOG_MENU_HEIGHT=12
 
 # MELHORIA: Opções globais do dialog para consistência visual
 BACKTITLE="Boxserver TUI v1.0 | IP: ${SERVER_IP:-Detectando...} | Hardware: RK322x"
-DIALOG_OPTS=(--backtitle "$BACKTITLE" --colors --ok-label "Confirmar" --cancel-label "Voltar")
+DIALOG_OPTS=(--backtitle "$BACKTITLE" --colors --ok-label "Confirmar" --cancel-label "🔙 Voltar")
 
 # Variáveis globais de configuração
 NETWORK_INTERFACE=""
@@ -2753,7 +2753,7 @@ cloudflare_configure_domains() {
             "5" "Adicionar domínio customizado" \
             "6" "Ver configuração atual" \
             "7" "Aplicar configurações DNS" \
-            "8" "Voltar" \
+            "8" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -2954,7 +2954,7 @@ cloudflare_advanced_config() {
             "4" "Gerenciar certificados" \
             "5" "Reiniciar serviço" \
             "6" "Ver logs do serviço" \
-            "7" "Voltar" \
+            "7" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -3839,7 +3839,7 @@ wireguard_advanced_settings() {
             "4" "Configurar Keep-Alive" \
             "5" "Backup/Restore configurações" \
             "6" "Logs e diagnósticos" \
-            "7" "Voltar" \
+            "7" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -3912,7 +3912,7 @@ configure_pihole_unbound() {
             "7" "Backup/Restore configurações" \
             "8" "Logs e estatísticas" \
             "9" "Configurações avançadas" \
-            "10" "Voltar" \
+            "10" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -4086,7 +4086,7 @@ manage_blocklists() {
             "4" "Atualizar todas as listas" \
             "5" "Listas recomendadas" \
             "6" "Estatísticas de bloqueio" \
-            "7" "Voltar" \
+            "7" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -4205,7 +4205,7 @@ configure_netdata() {
             "5" "Otimizar para ARM" \
             "6" "Reiniciar serviço" \
             "7" "Ver logs" \
-            "8" "Voltar" \
+            "8" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         if [ $? -ne 0 ]; then
@@ -4237,7 +4237,7 @@ configure_filebrowser() {
             "6" "Backup/Restore configuração" \
             "7" "Reiniciar serviço" \
             "8" "Ver logs" \
-            "9" "Voltar" \
+            "9" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         if [ $? -ne 0 ]; then
@@ -4248,11 +4248,11 @@ configure_filebrowser() {
             1) check_filebrowser_status ;;
             2) manage_filebrowser_users ;;
             3) configure_filebrowser_dirs ;;
-            4) change_filebrowser_port ;; # Esta função precisa ser criada
+            4) change_filebrowser_port ;;
             5) configure_filebrowser_permissions ;;
             6) backup_restore_filebrowser ;;
             7) restart_filebrowser_service ;;
-            8) show_filebrowser_logs ;; # Esta função precisa ser criada
+            8) show_filebrowser_logs ;;
             9|"") break ;;
         esac
     done
@@ -4270,7 +4270,7 @@ configure_minidlna() {
             "6" "Configurar tipos de arquivo" \
             "7" "Reiniciar serviço" \
             "8" "Ver logs" \
-            "9" "Voltar" \
+            "9" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         if [ $? -ne 0 ]; then
@@ -4284,7 +4284,7 @@ configure_minidlna() {
             4) change_minidlna_port ;;
             5) rescan_minidlna_library ;;
             6) configure_minidlna_filetypes ;;
-            7) restart_minidlna_service ;; # Esta função precisa ser criada
+            7) restart_minidlna_service ;;
             8) show_minidlna_logs ;;
             9|"") break ;;
         esac
@@ -4345,7 +4345,7 @@ configure_netdata_plugins() {
         "4" "Configurar alertas de RAM" \
         "5" "Ver plugins ativos" \
         "6" "Restaurar configuração padrão" \
-        "7" "Voltar" \
+        "7" "🔙 Voltar" \
         3>&1 1>&2 2>&3)
     
     case $choice in
@@ -4472,7 +4472,7 @@ manage_filebrowser_users() {
         "2" "Adicionar usuário" \
         "3" "Remover usuário" \
         "4" "Alterar senha" \
-        "9" "Voltar" \
+        "9" "🔙 Voltar" \
         3>&1 1>&2 2>&3)
     
     case $choice in
@@ -4586,7 +4586,7 @@ configure_minidlna_dirs() {
         "3" "Adicionar diretório de música" \
         "4" "Adicionar diretório de fotos" \
         "5" "Remover diretório" \
-        "6" "Voltar" \
+        "6" "🔙 Voltar" \
         3>&1 1>&2 2>&3)
     
     if [ $? -ne 0 ]; then
@@ -4683,7 +4683,7 @@ configure_netdata_access() {
         "1" "Permitir acesso de qualquer IP" \
         "2" "Restringir a rede local" \
         "3" "Configurar senha" \
-        "4" "Voltar" \
+        "4" "🔙 Voltar" \
         3>&1 1>&2 2>&3)
     
     case $choice in
@@ -4724,7 +4724,7 @@ backup_restore_filebrowser() {
     local choice=$(dialog --title "Backup/Restore" --menu "Escolha uma opção:" 10 50 3 \
         "1" "Fazer backup da configuração" \
         "2" "Restaurar configuração" \
-        "3" "Voltar" \
+        "3" "🔙 Voltar" \
         3>&1 1>&2 2>&3)
     
     case $choice in
@@ -4806,7 +4806,7 @@ configure_other_services() {
             "6" "Configurar Fail2Ban" \
             "7" "Configurar Chrony" \
             "8" "Ver todos os serviços" \
-            "9" "Voltar" \
+            "9" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         
         case $choice in
@@ -4829,7 +4829,7 @@ configure_ufw_service() {
         "2" "Ver regras ativas" \
         "3" "Adicionar regra personalizada" \
         "4" "Resetar configuração" \
-        "5" "Voltar" \
+        "5" "🔙 Voltar" \
         3>&1 1>&2 2>&3)
     
     case $choice in
@@ -4907,7 +4907,7 @@ configure_cockpit_service() {
             "3" "Alterar porta" \
             "4" "Configurar timeouts" \
             "5" "Reiniciar Cockpit" \
-            "6" "Voltar" \
+            "6" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
 
         case $choice in
@@ -4997,7 +4997,7 @@ configure_web_interface() {
             "2" "Ver configuração atual" \
             "3" "Ver página inicial" \
             "4" "Reiniciar Nginx" \
-            "5" "Voltar" \
+            "5" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
 
         case $choice in
@@ -5052,7 +5052,7 @@ configure_rng_service() {
             "2" "Ver configuração atual" \
             "3" "Ver estatísticas de entropia" \
             "4" "Reiniciar RNG-tools" \
-            "5" "Voltar" \
+            "5" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
 
         case $choice in
@@ -5100,7 +5100,7 @@ configure_rsync_service() {
             "2" "Ver script de backup" \
             "3" "Ver agendamento (crontab)" \
             "4" "Executar backup manual" \
-            "5" "Voltar" \
+            "5" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
 
         exit_status=$?
@@ -5212,9 +5212,9 @@ manage_services_menu() {
         done
 
         # Adicionar opção Voltar
-        menu_items+=("Voltar" "🔙 Voltar ao menu anterior")
+        menu_items+=("🔙 Voltar" "🔙 Voltar ao menu anterior")
 
-        if [ ${#menu_items[@]} -eq 2 ]; then  # Only "Voltar" option
+        if [ ${#menu_items[@]} -eq 2 ]; then  # Only "🔙 Voltar" option
             dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Serviços" --msgbox "Nenhum serviço gerenciável foi instalado ainda." 8 60
             break
         fi
@@ -5226,8 +5226,8 @@ manage_services_menu() {
             break
         fi
 
-        # Verificar se a opção escolhida é "Voltar"
-        if [[ "$choice" == "Voltar" ]] || [[ -z "$choice" ]]; then
+        # Verificar se a opção escolhida é "🔙 Voltar"
+        if [[ "$choice" == "🔙 Voltar" ]] || [[ -z "$choice" ]]; then
             break
         fi
 
@@ -5273,9 +5273,9 @@ configure_apps_menu() {
         fi
 
         # Adicionar opção Voltar
-        menu_items+=("11" "Voltar")
+        menu_items+=("11" "🔙 Voltar")
 
-        if [ ${#menu_items[@]} -eq 2 ]; then  # Only "Voltar" option
+        if [ ${#menu_items[@]} -eq 2 ]; then  # Only "🔙 Voltar" option
             dialog "${DIALOG_OPTS[@]}" --title "Configurar Aplicativos" --msgbox "Nenhum aplicativo configurável foi instalado ainda." 8 60
             break
         fi
@@ -5345,7 +5345,7 @@ maintenance_menu() {
             "1" "Executar Limpeza do Sistema (apt, logs)" \
             "2" "Fazer Backup das Configurações" \
             "3" "Ver Backups Existentes" \
-            "4" "Voltar" \
+            "4" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         exit_status=$?
 
@@ -5376,7 +5376,7 @@ security_menu() {
         local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Segurança" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
             "1" "Gerenciar Firewall (UFW) - Status: $ufw_status" \
             "2" "Gerenciar Proteção (Fail2Ban) - Status: $f2b_status" \
-            "3" "Voltar" \
+            "3" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         exit_status=$?
 
@@ -5415,7 +5415,7 @@ configure_rclone_service() {
             "4" "Parar/Desabilitar Web-GUI" \
             "5" "Alterar senha da Web-GUI" \
             "6" "Executar script de backup manual" \
-            "7" "Voltar" \
+            "7" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
         exit_status=$?
 
@@ -6316,7 +6316,7 @@ configure_fail2ban_service() {
             "2" "Ver jails ativos" \
             "3" "Ver configuração atual" \
             "4" "Reiniciar Fail2Ban" \
-            "5" "Voltar" \
+            "5" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
 
         case $choice in
@@ -6369,7 +6369,7 @@ configure_chrony_service() {
             "3" "Ver fontes de tempo" \
             "4" "Forçar atualização de tempo" \
             "5" "Reiniciar Chrony" \
-            "6" "Voltar" \
+            "6" "🔙 Voltar" \
             3>&1 1>&2 2>&3)
 
         case $choice in
