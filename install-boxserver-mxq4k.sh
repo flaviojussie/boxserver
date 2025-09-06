@@ -175,8 +175,11 @@ show_checklist() {
 # Verificar se é root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
+        log_message "ERRO: Este script precisa ser executado como root (sudo)."
         show_error "Este script precisa ser executado como root (sudo)."
         exit 1
+    else
+        log_message "OK: Script executado como root"
     fi
 }
 
@@ -189,8 +192,11 @@ create_directories() {
 # Verificar conectividade
 check_internet() {
     if ! ping -c 1 8.8.8.8 &> /dev/null; then
+        log_message "ERRO: Sem conexão com a internet."
         show_error "Sem conexão com a internet. Verificar conectividade."
         return 1
+    else
+        log_message "OK: Conectividade com internet"
     fi
     return 0
 }
@@ -225,21 +231,28 @@ check_hardware() {
 
     # Verificações críticas
     if [[ $ram_mb -lt 512 ]]; then
+        log_message "ERRO: RAM detectada: ${ram_mb}MB (recomendado: 1GB+)"
         if ! ask_yes_no "RAM detectada: ${ram_mb}MB (recomendado: 1GB+)\nContinuar mesmo assim?"; then
             exit 1
         fi
+    else
+        log_message "OK: RAM detectada: ${ram_mb}MB"
     fi
 
     # Apenas logar a temperatura sem bloquear
     if [[ "$cpu_temp_c" != "N/A" ]] && [[ $cpu_temp_c -gt 75 ]]; then
         log_message "AVISO: Temperatura CPU alta: ${cpu_temp_c}°C"
+    else
+        log_message "OK: Temperatura CPU: ${cpu_temp_c}°C"
     fi
 
-
     if [[ $disk_usage -gt 90 ]]; then
+        log_message "ERRO: Disco com ${disk_usage}% de uso."
         if ! ask_yes_no "Disco com ${disk_usage}% de uso. Continuar?"; then
             exit 1
         fi
+    else
+        log_message "OK: Uso do disco: ${disk_usage}%"
     fi
 
     log_message "Hardware verificado: RAM=${ram_mb}MB, CPU=${cpu_temp_c}°C, Disco=${disk_usage}%"
