@@ -1,1444 +1,1467 @@
 #!/bin/bash
-# =============================================================================
-# BOXSERVER TUI INSTALLER - VERSÃO UNIFICADA 5.0
-# =============================================================================
-# Sistema unificado para instalação e gerenciamento do BoxServer
-# Interface TUI otimizada para MXQ-4K com chip RK322x
-# Consolida todas as versões anteriores eliminando redundâncias
+
+###############################################################################
+# BOXSERVER AUTO-INSTALLER v2.0
+# Script Automatizado com TUI para Configuração Completa
 #
-# Autor: BoxServer Team
-# Versão: 5.0-unified
+# Componentes: Pi-hole + Unbound + WireGuard + RNG-tools + Otimizações
+# Otimizado para: ARM RK322x, Debian/Ubuntu, Armbian
+# Hardware Mínimo: 1GB RAM, 8GB Storage
+#
+# Autor: BOXSERVER Project
 # Data: $(date +%Y-%m-%d)
-# =============================================================================
+###############################################################################
 
-set -euo pipefail
+set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
-# =============================================================================
+# ============================================================================
 # CONFIGURAÇÕES GLOBAIS
-# =============================================================================
+# ============================================================================
 
-readonly SCRIPT_VERSION="5.0-unified"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_VERSION="2.0"
+readonly SCRIPT_NAME="BOXSERVER Auto-Installer"
+readonly LOG_FILE="/var/log/boxserver-installer.log"
+readonly CONFIG_DIR="/etc/boxserver"
+readonly BACKUP_DIR="/tmp/boxserver-backup"
 
-# Diretórios do sistema
-declare -r LOG_DIR="/var/log/boxserver"
-declare -r CONFIG_DIR="/etc/boxserver"
-declare -r BACKUP_DIR="/var/backups/boxserver"
-declare -r WEB_DIR="/var/www/boxserver"
-declare -r CACHE_DIR="/tmp/boxserver_cache"
-declare -r LOCK_DIR="/var/lock/boxserver"
+# Cores para output
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m' # No Color
 
-# Arquivos
-declare -r LOG_FILE="${LOG_DIR}/boxserver.log"
-declare -r CONFIG_FILE="${CONFIG_DIR}/config.conf"
-declare -r PID_FILE="${LOCK_DIR}/boxserver.pid"
+# Variáveis globais dinâmicas
+NETWORK_INTERFACE=""
+SYSTEM_IP=""
+GATEWAY_IP=""
+DNS_SERVERS=""
+TOTAL_RAM=""
+AVAILABLE_STORAGE=""
+CPU_ARCHITECTURE=""
+INSTALL_MODE=""
 
-# Configurações de interface
-declare -r DIALOG_HEIGHT=20
-declare -r DIALOG_WIDTH=70
-declare -r DIALOG_MENU_HEIGHT=12
-
-# Configurações de sistema
-declare -r MAX_LOG_SIZE=$((10 * 1024 * 1024))  # 10MB
-declare -r CACHE_TTL=300  # 5 minutos
-declare -r MAX_RETRIES=3
-declare -r TIMEOUT=30
-
-# =============================================================================
-# VARIÁVEIS GLOBAIS
-# =============================================================================
-
-declare -A CONFIG=(
-    [NETWORK_INTERFACE]=""
-    [SERVER_IP]=""
-    [HOSTNAME]=""
-    [DOMAIN]="boxserver.local"
-)
-
-declare -A PORTS=(
-    [PIHOLE]=8081
-    [FILEBROWSER]=8080
-    [COCKPIT]=9090
-    [NETDATA]=19999
-    [MINIDLNA]=8200
-    [WIREGUARD]=51820
-    [NGINX]=80
-    [NGINX_SSL]=443
-)
-
-declare -A SERVICES=(
-    [pihole]="Pi-hole|Bloqueador de anúncios DNS|web|${PORTS[PIHOLE]}|/admin"
-    [unbound]="Unbound|DNS recursivo seguro|dns|5335|/"
-    [wireguard]="WireGuard|Servidor VPN|vpn|${PORTS[WIREGUARD]}|/"
-    [cockpit]="Cockpit|Painel administrativo|web|${PORTS[COCKPIT]}|/"
-    [filebrowser]="FileBrowser|Gerenciador de arquivos|web|${PORTS[FILEBROWSER]}|/"
-    [netdata]="Netdata|Monitor em tempo real|web|${PORTS[NETDATA]}|/"
-    [fail2ban]="Fail2Ban|Proteção anti-intrusão|service|0|/"
-    [ufw]="UFW|Firewall simplificado|service|0|/"
-    [minidlna]="MiniDLNA|Servidor de mídia|media|${PORTS[MINIDLNA]}|/"
-    [nginx]="Nginx|Servidor web|web|${PORTS[NGINX]}|/"
-)
-
-declare -a DIALOG_OPTS
-
-# =============================================================================
-# SISTEMA DE LOGGING
-# =============================================================================
+# ============================================================================
+# FUNÇÕES DE UTILIDADE E LOGGING
+# ============================================================================
 
 log() {
     local level="$1"
-    local message="$2"
+    shift
+    local message="$*"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+}
 
-    # Criar diretório de log se não existir
-    [[ ! -d "$LOG_DIR" ]] && mkdir -p "$LOG_DIR"
+log_info() { log "INFO" "$@"; }
+log_warn() { log "WARN" "$@"; }
+log_error() { log "ERROR" "$@"; }
+log_success() { log "SUCCESS" "$@"; }
 
-    # Rotacionar log se muito grande
-    if [[ -f "$LOG_FILE" ]] && [[ $(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE") -gt $MAX_LOG_SIZE ]]; then
-        mv "$LOG_FILE" "${LOG_FILE}.old"
-        gzip "${LOG_FILE}.old" 2>/dev/null || true
-    fi
+show_message() {
+    local type="$1"
+    local title="$2"
+    local message="$3"
 
-    # Escrever no log
-    printf '[%s][%s] %s\n' "$timestamp" "$level" "$message" >> "$LOG_FILE"
-
-    # Exibir erros no stderr
-    case "$level" in
-        ERROR|FATAL)
-            printf '\e[31m[%s][%s] %s\e[0m\n' "$timestamp" "$level" "$message" >&2
+    case "$type" in
+        "info")
+            dialog --title "$title" --msgbox "$message" 10 60
             ;;
-        WARN)
-            printf '\e[33m[%s][%s] %s\e[0m\n' "$timestamp" "$level" "$message" >&2
+        "error")
+            dialog --title "❌ $title" --msgbox "$message" 10 60
+            log_error "$title: $message"
+            ;;
+        "success")
+            dialog --title "✅ $title" --msgbox "$message" 10 60
+            log_success "$title: $message"
+            ;;
+        "warning")
+            dialog --title "⚠️ $title" --msgbox "$message" 10 60
+            log_warn "$title: $message"
             ;;
     esac
 }
 
-# =============================================================================
-# SISTEMA DE CACHE
-# =============================================================================
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='|/-\'
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+}
 
-cache_get() {
-    local key="$1"
-    local cache_file="${CACHE_DIR}/${key}"
+run_with_progress() {
+    local title="$1"
+    local cmd="$2"
 
-    if [[ -f "$cache_file" ]]; then
-        local cache_time=$(stat -c %Y "$cache_file")
-        local current_time=$(date +%s)
+    (
+        echo "0"
+        eval "$cmd" &>/dev/null
+        echo "100"
+    ) | dialog --title "$title" --gauge "Executando..." 6 60 0
 
-        if (( current_time - cache_time < CACHE_TTL )); then
-            cat "$cache_file"
-            return 0
-        else
-            rm -f "$cache_file"
-        fi
+    if [ $? -eq 0 ]; then
+        log_success "$title concluído"
+        return 0
+    else
+        log_error "$title falhou"
+        return 1
     fi
-    return 1
 }
-
-cache_set() {
-    local key="$1"
-    local value="$2"
-    local cache_file="${CACHE_DIR}/${key}"
-
-    mkdir -p "$CACHE_DIR"
-    echo "$value" > "$cache_file"
-}
-
-# =============================================================================
-# TRATAMENTO DE ERROS
-# =============================================================================
-
-error_handler() {
-    local line_num=$1
-    local error_code=$2
-    local error_msg="${3:-Erro desconhecido}"
-
-    log "ERROR" "Linha $line_num: $error_msg (código: $error_code)"
-
-    dialog --title "❌ Erro Fatal" \
-           --msgbox "Erro na linha $line_num:\n\n$error_msg\n\nCódigo: $error_code" \
-           12 60 2>/dev/null || true
-
-    cleanup
-    exit $error_code
-}
-
-cleanup() {
-    log "INFO" "Realizando limpeza do sistema..."
-    rm -rf "${CACHE_DIR}"/* 2>/dev/null || true
-    rm -f "$PID_FILE" 2>/dev/null || true
-}
-
-# =============================================================================
-# VALIDAÇÕES
-# =============================================================================
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        echo "❌ Este script deve ser executado como root."
-        echo "💡 Use: sudo $0"
+        show_message "error" "Privilégios Insuficientes" "Este script deve ser executado como root.\nUse: sudo $0"
         exit 1
     fi
 }
 
 check_dependencies() {
-    local missing=()
-    local deps=("dialog" "curl" "wget" "systemctl" "ip" "ss")
-
-    log "INFO" "Verificando dependências..."
+    local deps=("curl" "wget" "dig" "iptables" "systemctl")
+    local missing_deps=()
 
     for dep in "${deps[@]}"; do
-        if ! command -v "$dep" >/dev/null 2>&1; then
-            missing+=("$dep")
+        if ! command -v "$dep" &> /dev/null; then
+            missing_deps+=("$dep")
         fi
     done
 
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        log "ERROR" "Dependências faltando: ${missing[*]}"
-
-        dialog --title "❌ Dependências Faltando" \
-               --msgbox "Dependências necessárias não encontradas:\n\n${missing[*]}\n\nInstale-as antes de continuar." \
-               10 50
-        return 1
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        log_warn "Instalando dependências faltantes: ${missing_deps[*]}"
+        apt update &>/dev/null
+        apt install -y "${missing_deps[@]}" dialog &>/dev/null || {
+            show_message "error" "Erro de Dependências" "Falha ao instalar: ${missing_deps[*]}"
+            exit 1
+        }
     fi
-
-    log "INFO" "Todas as dependências estão disponíveis"
-    return 0
 }
 
-check_system_resources() {
-    local ram_mb=$(free -m | awk 'NR==2{print $2}')
-    local disk_gb=$(df / | awk 'NR==2{print int($4/1024/1024)}')
+# ============================================================================
+# FUNÇÕES DE DETECÇÃO DE SISTEMA
+# ============================================================================
 
-    log "INFO" "Verificando recursos do sistema: RAM=${ram_mb}MB, Disco=${disk_gb}GB"
+detect_system_info() {
+    log_info "Detectando informações do sistema..."
 
-    if (( ram_mb < 256 )); then
-        log "WARN" "Sistema com pouca RAM: ${ram_mb}MB"
-        dialog --title "⚠️  Aviso" \
-               --msgbox "Sistema detectado com pouca RAM (${ram_mb}MB).\n\nAlguns serviços podem ter limitações." \
-               10 50
+    # Detectar interface de rede principal
+    NETWORK_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+    if [[ -z "$NETWORK_INTERFACE" ]]; then
+        NETWORK_INTERFACE=$(ip link show | grep -E "^[0-9].*state UP" | head -1 | awk -F': ' '{print $2}')
     fi
 
-    if (( disk_gb < 2 )); then
-        log "ERROR" "Espaço em disco insuficiente: ${disk_gb}GB"
-        dialog --title "❌ Erro" \
-               --msgbox "Espaço em disco insuficiente: ${disk_gb}GB\n\nMínimo necessário: 2GB" \
-               10 50
-        return 1
-    fi
+    # IP do sistema
+    SYSTEM_IP=$(ip route get 8.8.8.8 | grep -oP 'src \K\S+' | head -1)
 
-    return 0
+    # Gateway
+    GATEWAY_IP=$(ip route | grep default | awk '{print $3}' | head -1)
+
+    # RAM total
+    TOTAL_RAM=$(free -m | awk 'NR==2{print $2}')
+
+    # Armazenamento disponível
+    AVAILABLE_STORAGE=$(df -BG / | awk 'NR==2{print $4}' | sed 's/G//')
+
+    # Arquitetura
+    CPU_ARCHITECTURE=$(uname -m)
+
+    # DNS atual
+    DNS_SERVERS=$(grep -E "^nameserver" /etc/resolv.conf | awk '{print $2}' | tr '\n' ',' | sed 's/,$//')
+
+    log_info "Sistema detectado:"
+    log_info "  Interface: $NETWORK_INTERFACE"
+    log_info "  IP: $SYSTEM_IP"
+    log_info "  Gateway: $GATEWAY_IP"
+    log_info "  RAM: ${TOTAL_RAM}MB"
+    log_info "  Storage: ${AVAILABLE_STORAGE}GB"
+    log_info "  Arquitetura: $CPU_ARCHITECTURE"
 }
 
-# =============================================================================
-# DETECÇÃO DE REDE
-# =============================================================================
+validate_system_requirements() {
+    local errors=()
 
-detect_network() {
-    local interface primary_ip hostname
-
-    # Tentar cache primeiro
-    if cached_data=$(cache_get "network_info"); then
-        read -r interface primary_ip hostname <<< "$cached_data"
-    else
-        log "INFO" "Detectando configuração de rede..."
-
-        # Detectar interface principal
-        interface=$(ip route | awk '/default/ {print $5}' | head -n1)
-        [[ -z "$interface" ]] && error_handler $LINENO 1 "Interface de rede não detectada"
-
-        # Detectar IP principal
-        primary_ip=$(ip -o -4 addr show dev "$interface" | awk '{print $4}' | cut -d/ -f1 | head -n1)
-        [[ -z "$primary_ip" ]] && error_handler $LINENO 1 "Endereço IP não detectado"
-
-        # Detectar hostname
-        hostname=$(hostname -f 2>/dev/null || hostname)
-
-        # Cache da informação
-        echo "$interface $primary_ip $hostname" | cache_set "network_info" -
+    # Verificar RAM mínima
+    if [[ $TOTAL_RAM -lt 512 ]]; then
+        errors+=("RAM insuficiente: ${TOTAL_RAM}MB (mínimo 512MB)")
     fi
 
-    CONFIG[NETWORK_INTERFACE]="$interface"
-    CONFIG[SERVER_IP]="$primary_ip"
-    CONFIG[HOSTNAME]="$hostname"
+    # Verificar storage
+    if [[ $AVAILABLE_STORAGE -lt 4 ]]; then
+        errors+=("Storage insuficiente: ${AVAILABLE_STORAGE}GB (mínimo 4GB)")
+    fi
 
-    log "INFO" "Rede detectada: Interface=$interface, IP=$primary_ip, Hostname=$hostname"
+    # Verificar interface de rede
+    if [[ -z "$NETWORK_INTERFACE" ]]; then
+        errors+=("Interface de rede não detectada")
+    fi
+
+    # Verificar conectividade
+    if ! ping -c 1 8.8.8.8 &>/dev/null; then
+        errors+=("Sem conectividade com a internet")
+    fi
+
+    if [[ ${#errors[@]} -gt 0 ]]; then
+        local error_msg=""
+        for error in "${errors[@]}"; do
+            error_msg+="• $error\n"
+        done
+        show_message "error" "Requisitos Não Atendidos" "$error_msg"
+        exit 1
+    fi
+
+    log_success "Requisitos do sistema validados"
 }
 
-# =============================================================================
-# CONFIGURAÇÃO DO DIALOG
-# =============================================================================
+# ============================================================================
+# FUNÇÕES DE BACKUP E ROLLBACK
+# ============================================================================
 
-setup_dialog() {
-    local backtitle="BoxServer TUI $SCRIPT_VERSION | IP: ${CONFIG[SERVER_IP]} | Hostname: ${CONFIG[HOSTNAME]}"
+create_backup() {
+    log_info "Criando backup das configurações atuais..."
 
-    DIALOG_OPTS=(
-        --backtitle "$backtitle"
-        --colors
-        --ok-label "✅ Confirmar"
-        --cancel-label "🔙 Voltar"
-        --timeout 3600
+    mkdir -p "$BACKUP_DIR"
+
+    # Backup de arquivos de configuração importantes
+    local config_files=(
+        "/etc/resolv.conf"
+        "/etc/systemd/resolved.conf"
+        "/etc/pihole"
+        "/etc/unbound"
+        "/etc/wireguard"
+        "/etc/default/rng-tools"
+        "/etc/sysctl.conf"
     )
+
+    for config in "${config_files[@]}"; do
+        if [[ -e "$config" ]]; then
+            cp -r "$config" "$BACKUP_DIR/" 2>/dev/null || true
+        fi
+    done
+
+    # Salvar lista de pacotes instalados
+    dpkg --get-selections > "$BACKUP_DIR/installed-packages.txt"
+
+    log_success "Backup criado em $BACKUP_DIR"
 }
 
-# =============================================================================
-# GERENCIAMENTO DE SERVIÇOS
-# =============================================================================
+rollback_changes() {
+    if [[ ! -d "$BACKUP_DIR" ]]; then
+        show_message "warning" "Rollback" "Backup não encontrado. Rollback não disponível."
+        return 1
+    fi
 
-get_service_status() {
-    local service="$1"
+    if dialog --title "⚠️ Confirmar Rollback" --yesno "Deseja realmente desfazer todas as alterações?\nIsso irá restaurar as configurações originais." 8 60; then
+        log_info "Iniciando rollback..."
 
-    if systemctl is-active "$service" >/dev/null 2>&1; then
-        echo "🟢 Ativo"
-    elif systemctl is-enabled "$service" >/dev/null 2>&1; then
-        echo "🟡 Parado"
-    else
-        echo "🔴 Inativo"
+        # Parar serviços
+        systemctl stop pihole-FTL unbound wg-quick@wg0 rng-tools 2>/dev/null || true
+
+        # Restaurar configurações
+        cp -r "$BACKUP_DIR"/* / 2>/dev/null || true
+
+        # Remover pacotes instalados (básico)
+        apt remove -y pihole unbound wireguard rng-tools 2>/dev/null || true
+        apt autoremove -y 2>/dev/null || true
+
+        show_message "success" "Rollback Concluído" "Configurações originais restauradas.\nReinicie o sistema para aplicar completamente."
+
+        log_success "Rollback concluído"
     fi
 }
 
-install_service() {
-    local service="$1"
-
-    log "INFO" "Iniciando instalação do serviço: $service"
-
-    case "$service" in
-        pihole)
-            install_pihole
-            ;;
-        unbound)
-            install_unbound
-            ;;
-        wireguard)
-            install_wireguard
-            ;;
-        cockpit)
-            install_cockpit
-            ;;
-        filebrowser)
-            install_filebrowser
-            ;;
-        netdata)
-            install_netdata
-            ;;
-        fail2ban)
-            install_fail2ban
-            ;;
-        ufw)
-            install_ufw
-            ;;
-        minidlna)
-            install_minidlna
-            ;;
-        nginx)
-            install_nginx
-            ;;
-        *)
-            log "ERROR" "Serviço desconhecido: $service"
-            return 1
-            ;;
-    esac
-}
-
-# =============================================================================
-# INSTALAÇÃO DE SERVIÇOS ESPECÍFICOS
-# =============================================================================
+# ============================================================================
+# FUNÇÕES DE INSTALAÇÃO - PI-HOLE
+# ============================================================================
 
 install_pihole() {
-    log "INFO" "Instalando Pi-hole..."
+    log_info "Iniciando instalação do Pi-hole..."
 
-    # Download e instalação do Pi-hole
-    curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended \
-        --admin-port="${PORTS[PIHOLE]}" \
-        --interface="${CONFIG[NETWORK_INTERFACE]}" \
-        --ipv4-address="${CONFIG[SERVER_IP]}"
+    # Pré-configurar variáveis do Pi-hole
+    cat > /tmp/pihole-setupvars.conf <<EOF
+WEBPASSWORD=
+PIHOLE_INTERFACE=$NETWORK_INTERFACE
+IPV4_ADDRESS=$SYSTEM_IP/24
+IPV6_ADDRESS=
+PIHOLE_DNS_1=127.0.0.1#5335
+PIHOLE_DNS_2=
+QUERY_LOGGING=true
+INSTALL_WEB_SERVER=true
+INSTALL_WEB_INTERFACE=true
+LIGHTTPD_ENABLED=true
+DNS_FQDN_REQUIRED=true
+DNS_BOGUS_PRIV=true
+DNSSEC=true
+TEMPERATUREUNIT=C
+WEBUIBOXEDLAYOUT=boxed
+API_EXCLUDE_DOMAINS=
+API_EXCLUDE_CLIENTS=
+API_QUERY_LOG_SHOW=permittedonly
+API_PRIVACY_MODE=false
+EOF
 
-    systemctl enable pihole-FTL
-    systemctl start pihole-FTL
+    # Instalar Pi-hole
+    if ! run_with_progress "Instalação Pi-hole" "curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended"; then
+        show_message "error" "Erro Pi-hole" "Falha na instalação do Pi-hole"
+        return 1
+    fi
 
-    log "INFO" "Pi-hole instalado com sucesso"
+    # Aplicar configurações personalizadas
+    if [[ -f /etc/pihole/setupVars.conf ]]; then
+        cp /tmp/pihole-setupvars.conf /etc/pihole/setupVars.conf
+        pihole reconfigure --unattended &>/dev/null
+    fi
+
+    # Configurar password do admin
+    local admin_password
+    admin_password=$(dialog --title "Configuração Pi-hole" --passwordbox "Digite a senha do administrador Pi-hole:" 8 50 3>&1 1>&2 2>&3) || admin_password="admin123"
+
+    if [[ -n "$admin_password" ]]; then
+        pihole -a -p "$admin_password" &>/dev/null
+    fi
+
+    # Habilitar e iniciar serviço
+    systemctl enable pihole-FTL &>/dev/null
+    systemctl start pihole-FTL &>/dev/null
+
+    log_success "Pi-hole instalado e configurado"
+    return 0
 }
 
+configure_pihole_optimizations() {
+    log_info "Aplicando otimizações do Pi-hole para ARM..."
+
+    # Configurações otimizadas para ARM com pouca RAM
+    cat >> /etc/pihole/pihole-FTL.conf <<EOF
+# Otimizações para ARM RK322x
+MAXDBDAYS=30
+DBINTERVAL=60.0
+MAXLOGAGE=7
+PRIVACYLEVEL=0
+IGNORE_LOCALHOST=no
+AAAA_QUERY_ANALYSIS=yes
+ANALYZE_ONLY_A_AND_AAAA=false
+DBFILE=/etc/pihole/pihole-FTL.db
+LOGFILE=/var/log/pihole-FTL.log
+PIDFILE=/var/run/pihole-FTL.pid
+SOCKETFILE=/var/run/pihole/FTL.sock
+MACVENDORDB=/etc/pihole/macvendor.db
+GRAVITYDB=/etc/pihole/gravity.db
+
+# Configurações de memória para sistemas limitados
+FTLCHUNKSIZE=4096
+MAXNETAGE=365
+MAXDBDAYS=30
+
+# Configurações de rede otimizadas
+SOCKET_LISTENING=localonly
+FTLPORT=4711
+RESOLVE_IPV6=no
+RESOLVE_IPV4=yes
+EOF
+
+    # Reiniciar serviço para aplicar configurações
+    systemctl restart pihole-FTL &>/dev/null
+
+    log_success "Otimizações do Pi-hole aplicadas"
+}
+
+# ============================================================================
+# FUNÇÕES DE INSTALAÇÃO - UNBOUND
+# ============================================================================
+
 install_unbound() {
-    log "INFO" "Instalando Unbound..."
+    log_info "Iniciando instalação do Unbound..."
 
-    apt-get update && apt-get install -y unbound
+    # Instalar Unbound
+    if ! run_with_progress "Instalação Unbound" "apt update && apt install -y unbound"; then
+        show_message "error" "Erro Unbound" "Falha na instalação do Unbound"
+        return 1
+    fi
 
-    # Configuração básica do Unbound
-    cat > /etc/unbound/unbound.conf.d/pihole.conf << 'EOF'
+    # Criar configuração otimizada para ARM
+    cat > /etc/unbound/unbound.conf.d/pi-hole.conf <<EOF
 server:
+    # Configurações básicas
     verbosity: 1
     interface: 127.0.0.1
     port: 5335
     do-ip4: yes
-    do-ip6: no
     do-udp: yes
     do-tcp: yes
+    do-ip6: no
+    prefer-ip6: no
 
-    root-hints: "/var/lib/unbound/root.hints"
+    # Configurações de rede
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    use-caps-for-id: no
+    edns-buffer-size: 1232
+    prefetch: yes
+    prefetch-key: yes
 
+    # Otimizações para ARM/baixa RAM (${TOTAL_RAM}MB)
+    num-threads: 1
+    msg-cache-slabs: 1
+    rrset-cache-slabs: 1
+    infra-cache-slabs: 1
+    key-cache-slabs: 1
+
+    # Configurações de cache otimizadas
+    rrset-cache-size: 32m
+    msg-cache-size: 16m
+    so-rcvbuf: 512k
+    so-sndbuf: 512k
+
+    # Configurações de privacidade
+    private-address: 192.168.0.0/16
+    private-address: 169.254.0.0/16
+    private-address: 172.16.0.0/12
+    private-address: 10.0.0.0/8
+    private-address: fd00::/8
+    private-address: fe80::/10
     hide-identity: yes
     hide-version: yes
 
-    use-caps-for-id: no
+    # Configurações de segurança
+    harden-short-bufsize: yes
+    harden-large-queries: yes
+    harden-below-nxdomain: yes
+    harden-referral-path: yes
 
-    prefetch: yes
+    # Trust anchor e root hints
+    auto-trust-anchor-file: "/var/lib/unbound/root.key"
+    root-hints: "/var/lib/unbound/root.hints"
 
-    num-threads: 1
-
-    msg-buffer-size: 8192
-    msg-cache-size: 1m
-    msg-cache-slabs: 1
-
-    rrset-cache-size: 2m
-    rrset-cache-slabs: 1
-
+    # Configurações de tempo
+    cache-min-ttl: 3600
     cache-max-ttl: 86400
-    cache-min-ttl: 300
-
-    edns-buffer-size: 1472
-
-    so-rcvbuf: 1m
-    so-sndbuf: 1m
+    serve-expired: yes
+    serve-expired-ttl: 3600
 EOF
 
-    systemctl enable unbound
-    systemctl start unbound
+    # Configurar trust anchor e root hints
+    setup_unbound_security
 
-    log "INFO" "Unbound instalado com sucesso"
+    # Habilitar e iniciar serviço
+    systemctl enable unbound &>/dev/null
+
+    # Testar configuração antes de iniciar
+    if unbound-checkconf &>/dev/null; then
+        systemctl start unbound &>/dev/null
+        log_success "Unbound instalado e configurado"
+        return 0
+    else
+        show_message "error" "Erro Unbound" "Configuração inválida do Unbound"
+        return 1
+    fi
 }
+
+setup_unbound_security() {
+    log_info "Configurando segurança do Unbound..."
+
+    # Criar diretório se necessário
+    mkdir -p /var/lib/unbound
+
+    # Baixar root hints
+    if ! wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root &>/dev/null; then
+        log_warn "Falha ao baixar root.hints online, usando configuração local"
+        # Fallback para configuração básica
+        echo ". 518400 IN NS a.root-servers.net." > /var/lib/unbound/root.hints
+    fi
+
+    # Configurar trust anchor automático
+    if ! unbound-anchor -a /var/lib/unbound/root.key &>/dev/null; then
+        log_warn "Falha no trust anchor automático, configurando manualmente"
+        # Trust anchor manual (última versão conhecida)
+        cat > /var/lib/unbound/root.key <<EOF
+. IN DS 20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D
+EOF
+    fi
+
+    # Configurar permissões
+    chown unbound:unbound /var/lib/unbound/root.key /var/lib/unbound/root.hints 2>/dev/null || true
+    chmod 644 /var/lib/unbound/root.key /var/lib/unbound/root.hints
+
+    log_success "Segurança do Unbound configurada"
+}
+
+test_unbound_dns() {
+    log_info "Testando resolução DNS do Unbound..."
+
+    # Aguardar serviço inicializar
+    sleep 3
+
+    # Teste básico
+    if dig @127.0.0.1 -p 5335 google.com +short &>/dev/null; then
+        log_success "Unbound DNS funcionando"
+        return 0
+    else
+        log_error "Unbound DNS não está funcionando"
+        return 1
+    fi
+}
+
+# ============================================================================
+# FUNÇÕES DE INSTALAÇÃO - WIREGUARD
+# ============================================================================
 
 install_wireguard() {
-    log "INFO" "Instalando WireGuard..."
+    log_info "Iniciando instalação do WireGuard..."
 
-    apt-get update && apt-get install -y wireguard wireguard-tools
+    # Instalar WireGuard
+    if ! run_with_progress "Instalação WireGuard" "apt update && apt install -y wireguard wireguard-tools"; then
+        show_message "error" "Erro WireGuard" "Falha na instalação do WireGuard"
+        return 1
+    fi
 
-    # Gerar chaves
-    wg genkey | tee /etc/wireguard/privatekey | wg pubkey > /etc/wireguard/publickey
+    # Configurar geração de chaves e configuração
+    setup_wireguard_config
 
-    # Configuração básica
-    cat > /etc/wireguard/wg0.conf << EOF
+    # Configurar firewall e forwarding
+    setup_wireguard_network
+
+    log_success "WireGuard instalado e configurado"
+    return 0
+}
+
+setup_wireguard_config() {
+    log_info "Configurando WireGuard..."
+
+    # Criar diretório de chaves
+    mkdir -p /etc/wireguard/keys
+    cd /etc/wireguard/keys
+
+    # Gerar chaves com permissões corretas
+    umask 077
+    wg genkey | tee privatekey | wg pubkey > publickey
+
+    # Obter chaves
+    local private_key=$(cat privatekey)
+    local public_key=$(cat publickey)
+
+    # Configurar VPN subnet
+    local vpn_subnet="10.200.200.0/24"
+    local vpn_server_ip="10.200.200.1"
+
+    # Criar configuração do servidor
+    cat > /etc/wireguard/wg0.conf <<EOF
 [Interface]
-PrivateKey = $(cat /etc/wireguard/privatekey)
-Address = 10.0.0.1/24
-ListenPort = ${PORTS[WIREGUARD]}
-SaveConfig = true
+# Configuração do Servidor WireGuard
+PrivateKey = $private_key
+Address = $vpn_server_ip/24
+ListenPort = 51820
 
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o ${CONFIG[NETWORK_INTERFACE]} -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${CONFIG[NETWORK_INTERFACE]} -j MASQUERADE
+# Configurações de NAT e forwarding
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $NETWORK_INTERFACE -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $NETWORK_INTERFACE -j MASQUERADE
+
+# Configurações DNS para clientes
+DNS = $SYSTEM_IP
+
+# Exemplo de peer - Configure clientes aqui
+# [Peer]
+# PublicKey = <CHAVE_PUBLICA_DO_CLIENTE>
+# AllowedIPs = 10.200.200.2/32
+
 EOF
 
-    chmod 600 /etc/wireguard/wg0.conf
+    # Salvar informações para configuração de clientes
+    cat > /etc/wireguard/client-template.conf <<EOF
+# Configuração do Cliente WireGuard
+# Substitua <PRIVATE_KEY_CLIENT> pela chave privada do cliente
+# Configure no servidor a chave pública correspondente
 
-    systemctl enable wg-quick@wg0
-    systemctl start wg-quick@wg0
+[Interface]
+PrivateKey = <PRIVATE_KEY_CLIENT>
+Address = 10.200.200.X/24  # X = 2,3,4... para cada cliente
+DNS = $SYSTEM_IP
 
-    log "INFO" "WireGuard instalado com sucesso"
-}
-
-install_cockpit() {
-    log "INFO" "Instalando Cockpit..."
-
-    apt-get update && apt-get install -y cockpit cockpit-system cockpit-networkmanager
-
-    # Configurar porta customizada
-    mkdir -p /etc/systemd/system/cockpit.socket.d/
-    cat > /etc/systemd/system/cockpit.socket.d/listen.conf << EOF
-[Socket]
-ListenStream=
-ListenStream=${PORTS[COCKPIT]}
+[Peer]
+PublicKey = $public_key
+Endpoint = $SYSTEM_IP:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
 EOF
 
-    systemctl daemon-reload
-    systemctl enable cockpit.socket
-    systemctl start cockpit.socket
+    # Mostrar informações para configuração manual
+    dialog --title "🔐 Configuração WireGuard" --msgbox "Chave Pública do Servidor:\n$public_key\n\nTemplate de cliente salvo em:\n/etc/wireguard/client-template.conf\n\nConfigure os clientes manualmente editando:\n/etc/wireguard/wg0.conf" 15 70
 
-    log "INFO" "Cockpit instalado com sucesso"
+    log_info "Chave pública do servidor: $public_key"
 }
 
-install_filebrowser() {
-    log "INFO" "Instalando FileBrowser..."
+setup_wireguard_network() {
+    log_info "Configurando rede para WireGuard..."
 
-    # Download do FileBrowser
-    curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+    # Habilitar IP forwarding
+    echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+    sysctl -w net.ipv4.ip_forward=1 &>/dev/null
 
-    # Configurar FileBrowser
-    filebrowser config init --database /etc/filebrowser/filebrowser.db
-    filebrowser users add admin admin --perm.admin --database /etc/filebrowser/filebrowser.db
+    # Configurar UFW se estiver instalado
+    if command -v ufw &>/dev/null; then
+        # Configurar UFW para WireGuard
+        ufw allow 51820/udp comment "WireGuard" &>/dev/null || true
+        ufw allow 22/tcp comment "SSH" &>/dev/null || true
+        ufw --force enable &>/dev/null || true
+    else
+        # Configurar iptables básico
+        iptables -A INPUT -p udp --dport 51820 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 22 -j ACCEPT
 
-    # Criar serviço systemd
-    cat > /etc/systemd/system/filebrowser.service << EOF
-[Unit]
-Description=FileBrowser
-After=network.target
+        # Salvar regras do iptables
+        if command -v iptables-save &>/dev/null; then
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        fi
+    fi
 
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/filebrowser --port ${PORTS[FILEBROWSER]} --database /etc/filebrowser/filebrowser.db --root /
-Restart=always
+    # Habilitar e testar WireGuard
+    systemctl enable wg-quick@wg0 &>/dev/null
 
-[Install]
-WantedBy=multi-user.target
+    if systemctl start wg-quick@wg0 &>/dev/null; then
+        log_success "WireGuard network configurado e ativo"
+        return 0
+    else
+        log_error "Falha ao iniciar WireGuard"
+        return 1
+    fi
+}
+
+# ============================================================================
+# FUNÇÕES DE INSTALAÇÃO - RNG-TOOLS
+# ============================================================================
+
+install_rng_tools() {
+    log_info "Iniciando instalação do RNG-tools..."
+
+    # Instalar rng-tools
+    if ! run_with_progress "Instalação RNG-tools" "apt update && apt install -y rng-tools"; then
+        show_message "error" "Erro RNG-tools" "Falha na instalação do RNG-tools"
+        return 1
+    fi
+
+    # Configurar para hardware específico
+    setup_rng_optimization
+
+    # Verificar alternativas se necessário
+    setup_entropy_alternatives
+
+    log_success "RNG-tools instalado e configurado"
+    return 0
+}
+
+setup_rng_optimization() {
+    log_info "Configurando RNG para hardware ARM..."
+
+    # Detectar dispositivos de entropia disponíveis
+    local rng_device="/dev/urandom"  # Fallback seguro
+
+    if [[ -e "/dev/hwrng" ]]; then
+        rng_device="/dev/hwrng"
+        log_info "Hardware RNG detectado: /dev/hwrng"
+    elif [[ -e "/dev/random" ]]; then
+        rng_device="/dev/random"
+        log_info "Usando /dev/random como fonte de entropia"
+    fi
+
+    # Configurar rng-tools
+    cat > /etc/default/rng-tools <<EOF
+# Configuração RNG-tools otimizada para ARM RK322x
+
+# Dispositivo de entropia
+HRNGDEVICE="$rng_device"
+
+# Opções otimizadas para ARM com pouca RAM
+RNGDOPTIONS="--fill-watermark=2048 --feed-interval=60 --timeout=10 --random-step=64"
+
+# Configurações específicas para RK322x
+RNGD_OPTS="-f -r $rng_device -W 2048"
+
+# Enable para inicialização automática
+RNGD_ENABLED=1
 EOF
 
-    mkdir -p /etc/filebrowser
-    systemctl daemon-reload
-    systemctl enable filebrowser
-    systemctl start filebrowser
+    # Habilitar e iniciar serviço
+    systemctl enable rng-tools &>/dev/null
+    systemctl start rng-tools &>/dev/null
 
-    log "INFO" "FileBrowser instalado com sucesso"
+    # Verificar nível de entropia
+    sleep 2
+    local entropy_level=$(cat /proc/sys/kernel/random/entropy_avail)
+    log_info "Nível de entropia atual: $entropy_level"
+
+    if [[ $entropy_level -lt 1000 ]]; then
+        log_warn "Entropia baixa ($entropy_level), configurando alternativas..."
+        return 1
+    fi
+
+    return 0
 }
 
-install_netdata() {
-    log "INFO" "Instalando Netdata..."
+setup_entropy_alternatives() {
+    local current_entropy=$(cat /proc/sys/kernel/random/entropy_avail)
 
-    # Instalação via script oficial
-    bash <(curl -Ss https://my-netdata.io/kickstart.sh) --non-interactive --stable-channel
+    if [[ $current_entropy -lt 1000 ]]; then
+        log_info "Configurando haveged como alternativa..."
 
-    # Configurar porta customizada
-    sed -i "s/port = 19999/port = ${PORTS[NETDATA]}/" /etc/netdata/netdata.conf
+        if apt install -y haveged &>/dev/null; then
+            systemctl enable haveged &>/dev/null
+            systemctl start haveged &>/dev/null
 
-    systemctl restart netdata
+            # Aguardar e verificar novamente
+            sleep 3
+            local new_entropy=$(cat /proc/sys/kernel/random/entropy_avail)
 
-    log "INFO" "Netdata instalado com sucesso"
+            if [[ $new_entropy -gt $current_entropy ]]; then
+                log_success "Haveged instalado, entropia melhorada: $new_entropy"
+            fi
+        fi
+    fi
 }
 
-install_fail2ban() {
-    log "INFO" "Instalando Fail2Ban..."
+# ============================================================================
+# FUNÇÕES DE OTIMIZAÇÃO DO SISTEMA
+# ============================================================================
 
-    apt-get update && apt-get install -y fail2ban
+apply_system_optimizations() {
+    log_info "Aplicando otimizações do sistema para ARM..."
 
-    # Configuração básica
-    cat > /etc/fail2ban/jail.local << 'EOF'
-[DEFAULT]
-bantime = 3600
-findtime = 600
-maxretry = 3
+    # Otimizações de memória para ARM
+    cat >> /etc/sysctl.conf <<EOF
 
-[sshd]
-enabled = true
-port = ssh
-filter = sshd
-logpath = /var/log/auth.log
-maxretry = 3
+# Otimizações BOXSERVER para ARM RK322x
+# Configurações de memória
+vm.swappiness=10
+vm.vfs_cache_pressure=50
+vm.dirty_background_ratio=5
+vm.dirty_ratio=10
+
+# Configurações de rede
+net.core.rmem_default=262144
+net.core.wmem_default=262144
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+
+# Otimizações DNS
+net.core.netdev_max_backlog=5000
+net.ipv4.tcp_congestion_control=bbr
+net.ipv4.tcp_fastopen=3
+
+# Segurança de rede
+net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.all.send_redirects=0
+net.ipv4.conf.all.accept_source_route=0
+net.ipv4.conf.all.log_martians=1
 EOF
 
-    systemctl enable fail2ban
-    systemctl start fail2ban
+    # Aplicar configurações
+    sysctl -p &>/dev/null
 
-    log "INFO" "Fail2Ban instalado com sucesso"
+    # Configurar chrony para sincronização de tempo
+    setup_time_sync
+
+    # Configurar logrotate
+    setup_log_rotation
+
+    # Configurar limpeza automática
+    setup_automated_cleanup
+
+    log_success "Otimizações do sistema aplicadas"
 }
 
-install_ufw() {
-    log "INFO" "Configurando UFW..."
+setup_time_sync() {
+    log_info "Configurando sincronização de tempo..."
 
-    apt-get update && apt-get install -y ufw
+    if apt install -y chrony &>/dev/null; then
+        # Configurar servidores NTP brasileiros
+        cat >> /etc/chrony/chrony.conf <<EOF
 
-    # Configuração básica
-    ufw --force reset
-    ufw default deny incoming
-    ufw default allow outgoing
-
-    # Permitir serviços essenciais
-    ufw allow 22/tcp comment 'SSH'
-    ufw allow "${PORTS[NGINX]}/tcp" comment 'HTTP'
-    ufw allow "${PORTS[NGINX_SSL]}/tcp" comment 'HTTPS'
-    ufw allow "${PORTS[PIHOLE]}/tcp" comment 'Pi-hole'
-    ufw allow "${PORTS[COCKPIT]}/tcp" comment 'Cockpit'
-    ufw allow "${PORTS[WIREGUARD]}/udp" comment 'WireGuard'
-
-    ufw --force enable
-
-    log "INFO" "UFW configurado com sucesso"
-}
-
-install_minidlna() {
-    log "INFO" "Instalando MiniDLNA..."
-
-    apt-get update && apt-get install -y minidlna
-
-    # Configuração básica
-    cat > /etc/minidlna.conf << EOF
-media_dir=V,/home
-media_dir=P,/home
-media_dir=A,/home
-
-friendly_name=BoxServer Media
-db_dir=/var/cache/minidlna
-
-album_art_names=Cover.jpg/cover.jpg/AlbumArtSmall.jpg/albumartsmall.jpg
-
-inotify=yes
-enable_tivo=no
-strict_dlna=no
-
-presentation_url=http://${CONFIG[SERVER_IP]}:${PORTS[MINIDLNA]}/
-
-notify_interval=895
-serial=12345678
-
-model_name=Windows Media Connect compatible (MiniDLNA)
-model_number=1
-root_container=.
-port=${PORTS[MINIDLNA]}
+# Servidores NTP brasileiros - BOXSERVER
+server a.st1.ntp.br iburst
+server b.st1.ntp.br iburst
+server c.st1.ntp.br iburst
+server d.st1.ntp.br iburst
 EOF
 
-    systemctl enable minidlna
-    systemctl start minidlna
+        systemctl enable chrony &>/dev/null
+        systemctl start chrony &>/dev/null
 
-    log "INFO" "MiniDLNA instalado com sucesso"
+        log_success "Sincronização de tempo configurada"
+    else
+        log_warn "Falha ao instalar chrony"
+    fi
 }
 
-install_nginx() {
-    log "INFO" "Instalando Nginx..."
+setup_log_rotation() {
+    log_info "Configurando rotação de logs..."
 
-    apt-get update && apt-get install -y nginx
+    # Configuração para Pi-hole
+    cat > /etc/logrotate.d/boxserver <<EOF
+/var/log/pihole.log {
+    daily
+    missingok
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    create 644 pihole pihole
+    postrotate
+        systemctl reload pihole-FTL > /dev/null 2>&1 || true
+    endscript
+}
 
-    # Criar configuração do site
-    mkdir -p "$WEB_DIR"
-    cat > /etc/nginx/sites-available/boxserver << EOF
-server {
-    listen ${PORTS[NGINX]} default_server;
-    listen [::]:${PORTS[NGINX]} default_server;
+/var/log/boxserver-installer.log {
+    weekly
+    missingok
+    rotate 4
+    compress
+    delaycompress
+    notifempty
+    create 644 root root
+}
 
-    root $WEB_DIR;
-    index index.html index.htm;
-
-    server_name ${CONFIG[HOSTNAME]} ${CONFIG[SERVER_IP]};
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-
-    location /pihole/ {
-        proxy_pass http://localhost:${PORTS[PIHOLE]}/admin/;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-
-    location /cockpit/ {
-        proxy_pass https://localhost:${PORTS[COCKPIT]}/;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-
-    location /files/ {
-        proxy_pass http://localhost:${PORTS[FILEBROWSER]}/;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
+/var/log/unbound.log {
+    daily
+    missingok
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    create 644 unbound unbound
+    postrotate
+        systemctl reload unbound > /dev/null 2>&1 || true
+    endscript
 }
 EOF
 
-    # Ativar site
-    ln -sf /etc/nginx/sites-available/boxserver /etc/nginx/sites-enabled/
-    rm -f /etc/nginx/sites-enabled/default
-
-    # Gerar página inicial
-    generate_dashboard
-
-    systemctl enable nginx
-    systemctl restart nginx
-
-    log "INFO" "Nginx instalado com sucesso"
+    log_success "Rotação de logs configurada"
 }
 
-# =============================================================================
-# GERAÇÃO DO DASHBOARD WEB
-# =============================================================================
+setup_automated_cleanup() {
+    log_info "Configurando limpeza automática..."
 
-generate_dashboard() {
-    log "INFO" "Gerando dashboard web..."
+    # Script de limpeza semanal
+    cat > /etc/cron.weekly/boxserver-cleanup <<'EOF'
+#!/bin/bash
+# Script de limpeza automática do BOXSERVER
 
-    mkdir -p "$WEB_DIR"
+LOG_FILE="/var/log/boxserver-cleanup.log"
 
-    cat > "$WEB_DIR/index.html" << 'EOF'
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BoxServer Dashboard</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            min-height: 100vh;
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .header {
-            text-align: center;
-            margin-bottom: 40px;
-        }
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-        }
-        .services {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-        }
-        .service-card {
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            border-radius: 15px;
-            padding: 25px;
-            transition: transform 0.3s ease;
-        }
-        .service-card:hover {
-            transform: translateY(-5px);
-        }
-        .service-card h3 {
-            font-size: 1.5em;
-            margin-bottom: 10px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .service-card p {
-            margin-bottom: 15px;
-            opacity: 0.8;
-        }
-        .service-link {
-            display: inline-block;
-            background: rgba(255, 255, 255, 0.2);
-            color: white;
-            text-decoration: none;
-            padding: 10px 20px;
-            border-radius: 25px;
-            transition: background 0.3s ease;
-        }
-        .service-link:hover {
-            background: rgba(255, 255, 255, 0.3);
-        }
-        .status {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: #4CAF50;
-        }
-        .footer {
-            text-align: center;
-            margin-top: 40px;
-            opacity: 0.7;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🚀 BoxServer Dashboard</h1>
-            <p>Sistema de Gerenciamento Unificado</p>
-        </div>
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"
+}
 
-        <div class="services">
-            <div class="service-card">
-                <h3><span class="status"></span>🛡️ Pi-hole</h3>
-                <p>Bloqueador de anúncios e DNS</p>
-                <a href="/pihole/" class="service-link">Acessar</a>
-            </div>
+log "Iniciando limpeza automática..."
 
-            <div class="service-card">
-                <h3><span class="status"></span>🖥️ Cockpit</h3>
-                <p>Painel de administração do sistema</p>
-                <a href="/cockpit/" class="service-link">Acessar</a>
-            </div>
+# Limpeza de pacotes
+apt autoremove --purge -y >> "$LOG_FILE" 2>&1
+apt autoclean >> "$LOG_FILE" 2>&1
 
-            <div class="service-card">
-                <h3><span class="status"></span>📁 FileBrowser</h3>
-                <p>Gerenciador de arquivos web</p>
-                <a href="/files/" class="service-link">Acessar</a>
-            </div>
+# Limpeza de logs (manter últimos 7 dias)
+journalctl --vacuum-time=7d >> "$LOG_FILE" 2>&1
 
-            <div class="service-card">
-                <h3><span class="status"></span>📊 Netdata</h3>
-                <p>Monitoramento em tempo real</p>
-                <a href="http://SERVER_IP:19999/" class="service-link" target="_blank">Acessar</a>
-            </div>
+# Limpeza de logs do Pi-hole (manter últimos 30 dias)
+find /var/log -name "pihole*.log*" -mtime +30 -delete 2>/dev/null
 
-            <div class="service-card">
-                <h3><span class="status"></span>🔒 WireGuard</h3>
-                <p>Servidor VPN seguro</p>
-                <a href="#" class="service-link" onclick="alert('Configure via linha de comando')">Configurar</a>
-            </div>
+# Limpeza de cache DNS
+if systemctl is-active --quiet unbound; then
+    unbound-control flush_zone . >> "$LOG_FILE" 2>&1 || true
+fi
 
-            <div class="service-card">
-                <h3><span class="status"></span>📺 MiniDLNA</h3>
-                <p>Servidor de mídia DLNA</p>
-                <a href="http://SERVER_IP:8200/" class="service-link" target="_blank">Acessar</a>
-            </div>
-        </div>
+# Verificar espaço em disco
+DISK_USAGE=$(df / | awk 'NR==2{print $5}' | sed 's/%//')
+log "Uso do disco: ${DISK_USAGE}%"
 
-        <div class="footer">
-            <p>BoxServer TUI v5.0-unified | IP: SERVER_IP</p>
-        </div>
-    </div>
+if [ "$DISK_USAGE" -gt 90 ]; then
+    log "ALERTA: Uso de disco alto (${DISK_USAGE}%)"
+fi
 
-    <script>
-        // Substituir SERVER_IP pelo IP real
-        document.addEventListener('DOMContentLoaded', function() {
-            fetch('/api/info')
-                .then(response => response.json())
-                .then(data => {
-                    document.body.innerHTML = document.body.innerHTML.replace(/SERVER_IP/g, data.ip);
-                })
-                .catch(error => console.log('API não disponível'));
-        });
-    </script>
-</body>
-</html>
+# Verificar entropia
+ENTROPY=$(cat /proc/sys/kernel/random/entropy_avail)
+log "Entropia atual: $ENTROPY"
+
+if [ "$ENTROPY" -lt 1000 ]; then
+    log "ALERTA: Entropia baixa ($ENTROPY)"
+    systemctl restart rng-tools >> "$LOG_FILE" 2>&1 || true
+fi
+
+log "Limpeza automática concluída"
 EOF
 
-    # Substituir SERVER_IP pelo IP real
-    sed -i "s/SERVER_IP/${CONFIG[SERVER_IP]}/g" "$WEB_DIR/index.html"
+    chmod +x /etc/cron.weekly/boxserver-cleanup
 
-    log "INFO" "Dashboard web criado com sucesso"
+    log_success "Limpeza automática configurada"
 }
 
-# =============================================================================
-# MENUS DA INTERFACE TUI
-# =============================================================================
+# ============================================================================
+# FUNÇÕES DE TESTE E VALIDAÇÃO
+# ============================================================================
+
+run_system_tests() {
+    log_info "Executando testes do sistema..."
+
+    local test_results=()
+    local total_tests=0
+    local passed_tests=0
+
+    # Teste 1: Serviços ativos
+    log_info "Testando serviços..."
+    local services=("pihole-FTL" "unbound" "wg-quick@wg0" "rng-tools" "chrony")
+
+    for service in "${services[@]}"; do
+        ((total_tests++))
+        if systemctl is-active --quiet "$service"; then
+            test_results+=("✅ Serviço $service: ATIVO")
+            ((passed_tests++))
+        else
+            test_results+=("❌ Serviço $service: INATIVO")
+        fi
+    done
+
+    # Teste 2: DNS Pi-hole
+    ((total_tests++))
+    if timeout 5 dig @127.0.0.1 google.com +short &>/dev/null; then
+        test_results+=("✅ DNS Pi-hole: FUNCIONANDO")
+        ((passed_tests++))
+    else
+        test_results+=("❌ DNS Pi-hole: FALHOU")
+    fi
+
+    # Teste 3: DNS Unbound
+    ((total_tests++))
+    if timeout 5 dig @127.0.0.1 -p 5335 google.com +short &>/dev/null; then
+        test_results+=("✅ DNS Unbound: FUNCIONANDO")
+        ((passed_tests++))
+    else
+        test_results+=("❌ DNS Unbound: FALHOU")
+    fi
+
+    # Teste 4: Conectividade externa
+    ((total_tests++))
+    if timeout 5 ping -c 1 8.8.8.8 &>/dev/null; then
+        test_results+=("✅ Conectividade externa: OK")
+        ((passed_tests++))
+    else
+        test_results+=("❌ Conectividade externa: FALHOU")
+    fi
+
+    # Teste 5: WireGuard interface
+    ((total_tests++))
+    if ip link show wg0 &>/dev/null; then
+        test_results+=("✅ Interface WireGuard: ATIVA")
+        ((passed_tests++))
+    else
+        test_results+=("❌ Interface WireGuard: INATIVA")
+    fi
+
+    # Teste 6: Entropia
+    ((total_tests++))
+    local entropy=$(cat /proc/sys/kernel/random/entropy_avail)
+    if [[ $entropy -gt 1000 ]]; then
+        test_results+=("✅ Entropia: ADEQUADA ($entropy)")
+        ((passed_tests++))
+    else
+        test_results+=("⚠️  Entropia: BAIXA ($entropy)")
+    fi
+
+    # Mostrar resultados
+    local result_text=""
+    for result in "${test_results[@]}"; do
+        result_text+="$result\n"
+    done
+    result_text+="\nResultado: $passed_tests/$total_tests testes aprovados"
+
+    if [[ $passed_tests -eq $total_tests ]]; then
+        show_message "success" "Testes Concluídos" "$result_text"
+        log_success "Todos os testes passaram ($passed_tests/$total_tests)"
+        return 0
+    else
+        show_message "warning" "Testes com Problemas" "$result_text"
+        log_warn "Alguns testes falharam ($passed_tests/$total_tests)"
+        return 1
+    fi
+}
+
+show_system_status() {
+    log_info "Coletando status do sistema..."
+
+    # Informações do sistema
+    local uptime_info=$(uptime -p)
+    local memory_info=$(free -h | awk 'NR==2{printf "%.1f%% (%s/%s)", $3*100/$2, $3, $2}')
+    local disk_info=$(df -h / | awk 'NR==2{printf "%s usado de %s (%s)", $3, $2, $5}')
+    local entropy_info=$(cat /proc/sys/kernel/random/entropy_avail)
+
+    # Temperatura (se disponível)
+    local temp_info="N/A"
+    if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
+        temp_info="$(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))°C"
+    fi
+
+    # Status dos serviços
+    local service_status=""
+    local services=("pihole-FTL" "unbound" "wg-quick@wg0" "rng-tools" "chrony")
+    for service in "${services[@]}"; do
+        if systemctl is-active --quiet "$service"; then
+            service_status+="✅ $service: ATIVO\n"
+        else
+            service_status+="❌ $service: INATIVO\n"
+        fi
+    done
+
+    # Informações de rede
+    local vpn_clients="0"
+    if systemctl is-active --quiet wg-quick@wg0; then
+        vpn_clients=$(wg show wg0 peers 2>/dev/null | wc -l)
+    fi
+
+    # Testes rápidos de DNS
+    local pihole_dns="❌"
+    local unbound_dns="❌"
+
+    if timeout 3 dig @127.0.0.1 google.com +short &>/dev/null; then
+        pihole_dns="✅"
+    fi
+
+    if timeout 3 dig @127.0.0.1 -p 5335 google.com +short &>/dev/null; then
+        unbound_dns="✅"
+    fi
+
+    # Montar mensagem de status
+    local status_msg="=== INFORMAÇÕES DO SISTEMA ===
+Uptime: $uptime_info
+Memória: $memory_info
+Disco: $disk_info
+Temperatura: $temp_info
+Entropia: $entropy_info
+
+=== STATUS DOS SERVIÇOS ===
+$service_status
+=== CONECTIVIDADE ===
+$pihole_dns Pi-hole DNS
+$unbound_dns Unbound DNS
+VPN Clientes conectados: $vpn_clients
+
+=== CONFIGURAÇÃO DE REDE ===
+Interface: $NETWORK_INTERFACE
+IP do sistema: $SYSTEM_IP
+Gateway: $GATEWAY_IP"
+
+    dialog --title "📊 Status do BOXSERVER" --msgbox "$status_msg" 25 80
+}
+
+# ============================================================================
+# INTERFACE TUI - MENUS
+# ============================================================================
 
 show_main_menu() {
     while true; do
         local choice
-        choice=$(dialog "${DIALOG_OPTS[@]}" \
-            --title "🚀 BoxServer TUI - Menu Principal" \
-            --menu "\nEscolha uma opção para continuar:\n" \
-            $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
-            "1" "📊 Status do Sistema" \
-            "2" "🔧 Gerenciar Serviços" \
-            "3" "⚙️  Configurações" \
-            "4" "📋 Visualizar Logs" \
-            "5" "🌐 Dashboard Web" \
-            "6" "💾 Backup/Restaurar" \
-            "7" "🔄 Atualizar Sistema" \
-            "8" "ℹ️  Sobre" \
-            "9" "🚪 Sair" \
-            3>&1 1>&2 2>&3) || break
+        choice=$(dialog --clear --title "🚀 BOXSERVER Auto-Installer v$SCRIPT_VERSION" \
+            --menu "Escolha uma opção:" 20 70 12 \
+            "1" "🔧 Instalação Completa Automática" \
+            "2" "📦 Instalação Individual por Componente" \
+            "3" "🔍 Verificar Requisitos do Sistema" \
+            "4" "🧪 Executar Testes do Sistema" \
+            "5" "📊 Mostrar Status Atual" \
+            "6" "🔧 Otimizações do Sistema" \
+            "7" "📋 Configurar Cliente WireGuard" \
+            "8" "🗂️  Criar Backup das Configurações" \
+            "9" "↩️  Rollback (Desfazer Alterações)" \
+            "10" "📖 Mostrar Logs do Sistema" \
+            "11" "ℹ️  Sobre" \
+            "0" "🚪 Sair" \
+            3>&1 1>&2 2>&3) || exit 0
 
         case $choice in
-            1) show_system_status ;;
-            2) show_services_menu ;;
-            3) show_settings_menu ;;
-            4) show_logs ;;
-            5) show_web_dashboard ;;
-            6) show_backup_menu ;;
-            7) update_system ;;
-            8) show_about ;;
-            9) confirm_exit && break ;;
+            1) full_installation ;;
+            2) component_installation_menu ;;
+            3) system_requirements_check ;;
+            4) run_system_tests ;;
+            5) show_system_status ;;
+            6) apply_system_optimizations ;;
+            7) configure_wireguard_client ;;
+            8) create_backup ;;
+            9) rollback_changes ;;
+            10) show_logs_menu ;;
+            11) show_about ;;
+            0) exit 0 ;;
+            *) show_message "error" "Opção Inválida" "Por favor, selecione uma opção válida." ;;
         esac
     done
 }
 
-show_system_status() {
-    local status_text=""
-
-    # Informações do sistema
-    status_text+="🖥️  INFORMAÇÕES DO SISTEMA\n"
-    status_text+="═══════════════════════════════\n"
-    status_text+="Hostname: ${CONFIG[HOSTNAME]}\n"
-    status_text+="Interface: ${CONFIG[NETWORK_INTERFACE]}\n"
-    status_text+="IP: ${CONFIG[SERVER_IP]}\n"
-    status_text+="Domínio: ${CONFIG[DOMAIN]}\n\n"
-
-    # Recursos do sistema
-    local ram_mb=$(free -m | awk 'NR==2{print $2}')
-    local ram_used=$(free -m | awk 'NR==2{print $3}')
-    local disk_total=$(df -h / | awk 'NR==2{print $2}')
-    local disk_used=$(df -h / | awk 'NR==2{print $3}')
-    local uptime=$(uptime -p)
-
-    status_text+="💾 RECURSOS DO SISTEMA\n"
-    status_text+="═══════════════════════════════\n"
-    status_text+="RAM: ${ram_used}MB / ${ram_mb}MB\n"
-    status_text+="Disco: ${disk_used} / ${disk_total}\n"
-    status_text+="Uptime: ${uptime}\n\n"
-
-    # Status dos serviços
-    status_text+="🔧 STATUS DOS SERVIÇOS\n"
-    status_text+="═══════════════════════════════\n"
-
-    for service_id in "${!SERVICES[@]}"; do
-        IFS='|' read -r name desc type port path <<< "${SERVICES[$service_id]}"
-        local status=$(get_service_status "$service_id")
-        status_text+="$status $name\n"
-    done
-
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "📊 Status do Sistema" \
-        --msgbox "$status_text" \
-        25 70
-}
-
-show_services_menu() {
+component_installation_menu() {
     while true; do
-        # Construir menu dinâmico dos serviços
-        local menu_items=()
-        local index=1
-
-        for service_id in "${!SERVICES[@]}"; do
-            IFS='|' read -r name desc type port path <<< "${SERVICES[$service_id]}"
-            local status=$(get_service_status "$service_id")
-            menu_items+=("$index" "$status $name - $desc")
-            ((index++))
-        done
-
-        menu_items+=("$index" "🔙 Voltar")
-
         local choice
-        choice=$(dialog "${DIALOG_OPTS[@]}" \
-            --title "🔧 Gerenciamento de Serviços" \
-            --menu "\nSelecione um serviço para gerenciar:\n" \
-            20 75 12 \
-            "${menu_items[@]}" \
+        choice=$(dialog --clear --title "📦 Instalação Individual" \
+            --menu "Escolha o componente:" 15 60 8 \
+            "1" "🛡️  Pi-hole (DNS + Ad-block)" \
+            "2" "🔒 Unbound (DNS Recursivo)" \
+            "3" "🌐 WireGuard (VPN)" \
+            "4" "🎲 RNG-tools (Entropia)" \
+            "5" "⚡ Otimizações do Sistema" \
+            "6" "🧪 Testar Componentes" \
+            "0" "↩️  Voltar ao Menu Principal" \
             3>&1 1>&2 2>&3) || break
 
-        if [[ "$choice" == "$index" ]]; then
-            break
+        case $choice in
+            1)
+                if install_pihole && configure_pihole_optimizations; then
+                    show_message "success" "Pi-hole" "Pi-hole instalado com sucesso!"
+                fi
+                ;;
+            2)
+                if install_unbound && test_unbound_dns; then
+                    show_message "success" "Unbound" "Unbound instalado com sucesso!"
+                fi
+                ;;
+            3)
+                if install_wireguard; then
+                    show_message "success" "WireGuard" "WireGuard instalado com sucesso!"
+                fi
+                ;;
+            4)
+                if install_rng_tools; then
+                    show_message "success" "RNG-tools" "RNG-tools instalado com sucesso!"
+                fi
+                ;;
+            5)
+                if apply_system_optimizations; then
+                    show_message "success" "Otimizações" "Otimizações aplicadas com sucesso!"
+                fi
+                ;;
+            6) run_system_tests ;;
+            0) break ;;
+        esac
+    done
+}
+
+full_installation() {
+    if dialog --title "⚠️ Confirmação" --yesno "Deseja executar a instalação completa?\n\nIsso irá instalar e configurar:\n• Pi-hole\n• Unbound\n• WireGuard\n• RNG-tools\n• Otimizações do sistema\n\nContinuar?" 12 60; then
+
+        log_info "Iniciando instalação completa..."
+
+        # Criar backup
+        create_backup
+
+        # Executar instalações sequencialmente
+        local components=("Pi-hole" "Unbound" "WireGuard" "RNG-tools" "Otimizações")
+        local functions=("install_pihole && configure_pihole_optimizations"
+                        "install_unbound && test_unbound_dns"
+                        "install_wireguard"
+                        "install_rng_tools"
+                        "apply_system_optimizations")
+
+        local failed_components=()
+
+        for i in "${!components[@]}"; do
+            local component="${components[i]}"
+            local func="${functions[i]}"
+
+            log_info "Instalando: $component"
+
+            (
+                echo "25"
+                eval "$func" &>/dev/null
+                echo "100"
+            ) | dialog --title "Instalando $component" --gauge "Por favor, aguarde..." 6 60 0
+
+            if [ $? -ne 0 ]; then
+                failed_components+=("$component")
+                log_error "Falha na instalação: $component"
+            else
+                log_success "Instalação concluída: $component"
+            fi
+        done
+
+        # Mostrar resultado final
+        if [ ${#failed_components[@]} -eq 0 ]; then
+            show_message "success" "Instalação Completa" "Todos os componentes foram instalados com sucesso!\n\nExecute os testes do sistema para verificar o funcionamento."
+
+            # Executar testes automáticos
+            if dialog --title "Testes Automáticos" --yesno "Deseja executar os testes do sistema agora?" 8 50; then
+                run_system_tests
+            fi
+        else
+            local failed_list=""
+            for comp in "${failed_components[@]}"; do
+                failed_list+="• $comp\n"
+            done
+            show_message "warning" "Instalação Parcial" "Alguns componentes falharam:\n$failed_list\nConsulte os logs para mais detalhes."
         fi
-
-        # Converter escolha para ID do serviço
-        local service_keys=($(printf '%s\n' "${!SERVICES[@]}" | sort))
-        local selected_service="${service_keys[$((choice-1))]}"
-
-        manage_single_service "$selected_service"
-    done
+    fi
 }
 
-manage_single_service() {
-    local service="$1"
-    IFS='|' read -r name desc type port path <<< "${SERVICES[$service]}"
+configure_wireguard_client() {
+    if ! systemctl is-active --quiet wg-quick@wg0; then
+        show_message "error" "WireGuard Inativo" "WireGuard não está instalado ou ativo.\nInstale o WireGuard primeiro."
+        return 1
+    fi
 
+    # Obter próximo IP disponível
+    local next_ip=2
+    while grep -q "10.200.200.$next_ip" /etc/wireguard/wg0.conf; do
+        ((next_ip++))
+        if [[ $next_ip -gt 254 ]]; then
+            show_message "error" "Limite Atingido" "Máximo de clientes VPN atingido (254)."
+            return 1
+        fi
+    done
+
+    # Solicitar nome do cliente
+    local client_name
+    client_name=$(dialog --title "Configuração Cliente VPN" --inputbox "Digite o nome do cliente:" 8 40 "cliente$next_ip" 3>&1 1>&2 2>&3) || return
+
+    if [[ -z "$client_name" ]]; then
+        show_message "error" "Nome Inválido" "Nome do cliente não pode estar vazio."
+        return 1
+    fi
+
+    # Gerar chaves do cliente
+    local client_dir="/etc/wireguard/clients/$client_name"
+    mkdir -p "$client_dir"
+    cd "$client_dir"
+
+    wg genkey | tee private.key | wg pubkey > public.key
+    local client_private_key=$(cat private.key)
+    local client_public_key=$(cat public.key)
+    local server_public_key=$(cat /etc/wireguard/keys/publickey)
+
+    # Adicionar peer ao servidor
+    cat >> /etc/wireguard/wg0.conf <<EOF
+
+# Cliente: $client_name
+[Peer]
+PublicKey = $client_public_key
+AllowedIPs = 10.200.200.$next_ip/32
+EOF
+
+    # Criar configuração do cliente
+    cat > "$client_dir/$client_name.conf" <<EOF
+[Interface]
+PrivateKey = $client_private_key
+Address = 10.200.200.$next_ip/24
+DNS = $SYSTEM_IP
+
+[Peer]
+PublicKey = $server_public_key
+Endpoint = $SYSTEM_IP:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+EOF
+
+    # Gerar QR Code se possível
+    if command -v qrencode &>/dev/null; then
+        qrencode -t ansiutf8 < "$client_dir/$client_name.conf" > "$client_dir/$client_name.qr"
+    fi
+
+    # Reiniciar WireGuard
+    systemctl restart wg-quick@wg0
+
+    # Mostrar informações
+    local config_content=$(cat "$client_dir/$client_name.conf")
+    dialog --title "✅ Cliente VPN Configurado" --msgbox "Cliente '$client_name' configurado com sucesso!\n\nIP: 10.200.200.$next_ip\n\nArquivo de configuração salvo em:\n$client_dir/$client_name.conf\n\nImporte esta configuração no aplicativo WireGuard do cliente." 15 70
+
+    log_success "Cliente VPN '$client_name' configurado com IP 10.200.200.$next_ip"
+}
+
+system_requirements_check() {
+    log_info "Verificando requisitos do sistema..."
+
+    detect_system_info
+
+    local req_msg="=== REQUISITOS DO SISTEMA ===
+
+Hardware Detectado:
+• Arquitetura: $CPU_ARCHITECTURE
+• RAM Total: ${TOTAL_RAM}MB
+• Storage Disponível: ${AVAILABLE_STORAGE}GB
+• Interface de Rede: $NETWORK_INTERFACE
+
+Configurações de Rede:
+• IP do Sistema: $SYSTEM_IP
+• Gateway: $GATEWAY_IP
+• DNS Atual: $DNS_SERVERS
+
+Requisitos Mínimos:
+✓ RAM: 512MB (Recomendado: 1GB)
+✓ Storage: 4GB (Recomendado: 8GB)
+✓ Conectividade com Internet
+✓ Interface de Rede Ativa"
+
+    # Validar requisitos
+    local warnings=""
+
+    if [[ $TOTAL_RAM -lt 1024 ]]; then
+        warnings+="⚠️  RAM abaixo do recomendado (${TOTAL_RAM}MB < 1GB)\n"
+    fi
+
+    if [[ $AVAILABLE_STORAGE -lt 8 ]]; then
+        warnings+="⚠️  Storage abaixo do recomendado (${AVAILABLE_STORAGE}GB < 8GB)\n"
+    fi
+
+    if ! ping -c 1 8.8.8.8 &>/dev/null; then
+        warnings+="❌ Sem conectividade com a internet\n"
+    fi
+
+    if [[ -n "$warnings" ]]; then
+        req_msg+="\n\n=== AVISOS ===\n$warnings"
+    fi
+
+    dialog --title "🔍 Verificação de Requisitos" --msgbox "$req_msg" 25 80
+
+    # Validação automática
+    validate_system_requirements
+}
+
+show_logs_menu() {
     while true; do
-        local status=$(get_service_status "$service")
         local choice
-
-        choice=$(dialog "${DIALOG_OPTS[@]}" \
-            --title "🔧 Gerenciar: $name" \
-            --menu "\nStatus atual: $status\n" \
-            15 60 8 \
-            "1" "🚀 Instalar/Reinstalar" \
-            "2" "▶️  Iniciar Serviço" \
-            "3" "⏸️  Parar Serviço" \
-            "4" "🔄 Reiniciar Serviço" \
-            "5" "📊 Ver Status Detalhado" \
-            "6" "🔧 Configurar" \
-            "7" "🔙 Voltar" \
+        choice=$(dialog --clear --title "📖 Logs do Sistema" \
+            --menu "Escolha o log:" 15 60 8 \
+            "1" "📋 Log do Installer" \
+            "2" "🛡️  Log do Pi-hole" \
+            "3" "🔒 Log do Unbound" \
+            "4" "🌐 Log do WireGuard" \
+            "5" "🎲 Log do RNG-tools" \
+            "6" "⚙️  Log do Sistema (journalctl)" \
+            "7" "🧹 Log de Limpeza" \
+            "0" "↩️  Voltar" \
             3>&1 1>&2 2>&3) || break
 
         case $choice in
-            1) install_service "$service" ;;
-            2) systemctl start "$service" 2>/dev/null || true ;;
-            3) systemctl stop "$service" 2>/dev/null || true ;;
-            4) systemctl restart "$service" 2>/dev/null || true ;;
-            5) show_service_details "$service" ;;
-            6) configure_service "$service" ;;
-            7) break ;;
+            1) show_log_file "$LOG_FILE" ;;
+            2) show_log_file "/var/log/pihole.log" ;;
+            3) show_journal_log "unbound" ;;
+            4) show_journal_log "wg-quick@wg0" ;;
+            5) show_journal_log "rng-tools" ;;
+            6) show_journal_log "" ;;
+            7) show_log_file "/var/log/boxserver-cleanup.log" ;;
+            0) break ;;
         esac
     done
 }
 
-show_service_details() {
-    local service="$1"
-    local details=""
-
-    details+="🔍 DETALHES DO SERVIÇO: $service\n"
-    details+="═══════════════════════════════\n\n"
-
-    if systemctl list-unit-files | grep -q "^$service"; then
-        details+="Status: $(systemctl is-active "$service")\n"
-        details+="Habilitado: $(systemctl is-enabled "$service")\n"
-        details+="PID: $(systemctl show -p MainPID --value "$service")\n\n"
-
-        details+="📋 ÚLTIMAS LINHAS DO LOG:\n"
-        details+="─────────────────────────────\n"
-        details+="$(journalctl -u "$service" -n 10 --no-pager 2>/dev/null || echo 'Nenhum log disponível')"
+show_log_file() {
+    local log_file="$1"
+    if [[ -f "$log_file" ]]; then
+        dialog --title "📖 $log_file" --textbox "$log_file" 20 80
     else
-        details+="❌ Serviço não encontrado no sistema"
+        show_message "error" "Log não encontrado" "Arquivo de log não existe: $log_file"
     fi
-
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "📋 Detalhes: $service" \
-        --msgbox "$details" \
-        20 80
 }
 
-configure_service() {
+show_journal_log() {
     local service="$1"
+    local temp_log="/tmp/boxserver-journal.log"
 
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "🔧 Configurar: $service" \
-        --msgbox "Configuração específica para $service\nserá implementada em versão futura." \
-        10 50
-}
-
-show_settings_menu() {
-    while true; do
-        local choice
-        choice=$(dialog "${DIALOG_OPTS[@]}" \
-            --title "⚙️ Configurações" \
-            --menu "\nConfigurações do sistema:\n" \
-            15 60 8 \
-            "1" "🌐 Configurar Rede" \
-            "2" "🔒 Configurar Segurança" \
-            "3" "🔧 Configurar Portas" \
-            "4" "📁 Diretórios" \
-            "5" "🔄 Reinicializar Serviços" \
-            "6" "🧹 Limpeza do Sistema" \
-            "7" "🔙 Voltar" \
-            3>&1 1>&2 2>&3) || break
-
-        case $choice in
-            1) configure_network ;;
-            2) configure_security ;;
-            3) configure_ports ;;
-            4) configure_directories ;;
-            5) restart_all_services ;;
-            6) system_cleanup ;;
-            7) break ;;
-        esac
-    done
-}
-
-configure_network() {
-    local new_hostname new_domain
-
-    # Configurar hostname
-    new_hostname=$(dialog "${DIALOG_OPTS[@]}" \
-        --title "🌐 Configurar Hostname" \
-        --inputbox "Digite o novo hostname:" \
-        10 50 "${CONFIG[HOSTNAME]}" \
-        3>&1 1>&2 2>&3) || return
-
-    if [[ -n "$new_hostname" ]]; then
-        hostnamectl set-hostname "$new_hostname"
-        CONFIG[HOSTNAME]="$new_hostname"
-        log "INFO" "Hostname alterado para: $new_hostname"
-    fi
-
-    # Configurar domínio
-    new_domain=$(dialog "${DIALOG_OPTS[@]}" \
-        --title "🌐 Configurar Domínio" \
-        --inputbox "Digite o domínio local:" \
-        10 50 "${CONFIG[DOMAIN]}" \
-        3>&1 1>&2 2>&3) || return
-
-    if [[ -n "$new_domain" ]]; then
-        CONFIG[DOMAIN]="$new_domain"
-        log "INFO" "Domínio alterado para: $new_domain"
-    fi
-
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "✅ Configuração Salva" \
-        --msgbox "Configurações de rede atualizadas com sucesso!" \
-        8 50
-}
-
-configure_security() {
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "🔒 Configurações de Segurança" \
-        --msgbox "Configurações de segurança:\n\n• UFW: Ativo\n• Fail2Ban: Ativo\n• SSH: Protegido\n• Portas: Filtradas" \
-        12 50
-}
-
-configure_ports() {
-    local service port_name new_port
-
-    # Selecionar serviço para configurar porta
-    local menu_items=()
-    for port_name in "${!PORTS[@]}"; do
-        menu_items+=("$port_name" "${PORTS[$port_name]}")
-    done
-
-    service=$(dialog "${DIALOG_OPTS[@]}" \
-        --title "🔧 Configurar Portas" \
-        --menu "\nSelecione o serviço para alterar a porta:\n" \
-        15 50 8 \
-        "${menu_items[@]}" \
-        3>&1 1>&2 2>&3) || return
-
-    new_port=$(dialog "${DIALOG_OPTS[@]}" \
-        --title "🔧 Nova Porta para $service" \
-        --inputbox "Digite a nova porta:" \
-        10 40 "${PORTS[$service]}" \
-        3>&1 1>&2 2>&3) || return
-
-    if [[ "$new_port" =~ ^[0-9]+$ ]] && (( new_port >= 1 && new_port <= 65535 )); then
-        PORTS[$service]="$new_port"
-        log "INFO" "Porta do $service alterada para: $new_port"
-
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "✅ Porta Alterada" \
-            --msgbox "Porta do $service alterada para $new_port\n\nReinicie o serviço para aplicar a alteração." \
-            10 50
+    if [[ -n "$service" ]]; then
+        journalctl -u "$service" -n 50 --no-pager > "$temp_log"
     else
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "❌ Erro" \
-            --msgbox "Porta inválida! Use valores entre 1 e 65535." \
-            8 50
-    fi
-}
-
-configure_directories() {
-    local info=""
-    info+="📁 DIRETÓRIOS DO SISTEMA\n"
-    info+="═══════════════════════════════\n\n"
-    info+="Logs: $LOG_DIR\n"
-    info+="Configurações: $CONFIG_DIR\n"
-    info+="Backups: $BACKUP_DIR\n"
-    info+="Web: $WEB_DIR\n"
-    info+="Cache: $CACHE_DIR\n"
-    info+="Locks: $LOCK_DIR\n"
-
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "📁 Diretórios do Sistema" \
-        --msgbox "$info" \
-        15 60
-}
-
-restart_all_services() {
-    if dialog "${DIALOG_OPTS[@]}" \
-        --title "🔄 Reiniciar Serviços" \
-        --yesno "Deseja reiniciar todos os serviços do BoxServer?" \
-        8 50; then
-
-        for service_id in "${!SERVICES[@]}"; do
-            systemctl restart "$service_id" 2>/dev/null || true
-        done
-
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "✅ Concluído" \
-            --msgbox "Todos os serviços foram reiniciados!" \
-            8 40
-    fi
-}
-
-system_cleanup() {
-    if dialog "${DIALOG_OPTS[@]}" \
-        --title "🧹 Limpeza do Sistema" \
-        --yesno "Deseja executar limpeza do sistema?\n\n• Limpar cache\n• Remover logs antigos\n• Liberar espaço" \
-        12 50; then
-
-        # Limpar cache
-        rm -rf "${CACHE_DIR}"/* 2>/dev/null || true
-
-        # Limpar logs antigos
-        find "$LOG_DIR" -name "*.log.old*" -mtime +7 -delete 2>/dev/null || true
-
-        # Limpar packages
-        apt-get autoremove -y >/dev/null 2>&1 || true
-        apt-get autoclean >/dev/null 2>&1 || true
-
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "✅ Limpeza Concluída" \
-            --msgbox "Limpeza do sistema executada com sucesso!" \
-            8 50
-    fi
-}
-
-show_logs() {
-    if [[ ! -f "$LOG_FILE" ]]; then
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "📋 Logs" \
-            --msgbox "Nenhum arquivo de log encontrado." \
-            8 40
-        return
+        journalctl -n 50 --no-pager > "$temp_log"
     fi
 
-    local choice
-    choice=$(dialog "${DIALOG_OPTS[@]}" \
-        --title "📋 Visualizar Logs" \
-        --menu "\nEscolha uma opção:\n" \
-        12 50 5 \
-        "1" "📖 Ver log completo" \
-        "2" "🔍 Últimas 50 linhas" \
-        "3" "❌ Apenas erros" \
-        "4" "🔙 Voltar" \
-        3>&1 1>&2 2>&3) || return
-
-    case $choice in
-        1) dialog "${DIALOG_OPTS[@]}" --title "📋 Log Completo" --textbox "$LOG_FILE" 22 80 ;;
-        2) tail -n 50 "$LOG_FILE" | dialog "${DIALOG_OPTS[@]}" --title "📋 Últimas Linhas" --textbox - 22 80 ;;
-        3) grep -i "error\|fatal" "$LOG_FILE" | dialog "${DIALOG_OPTS[@]}" --title "❌ Erros" --textbox - 22 80 ;;
-        4) return ;;
-    esac
-}
-
-show_web_dashboard() {
-    local dashboard_url="http://${CONFIG[SERVER_IP]}"
-
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "🌐 Dashboard Web" \
-        --msgbox "Dashboard disponível em:\n\n$dashboard_url\n\nServiços disponíveis:\n• Pi-hole: $dashboard_url/pihole/\n• Cockpit: $dashboard_url/cockpit/\n• FileBrowser: $dashboard_url/files/" \
-        15 60
-}
-
-show_backup_menu() {
-    while true; do
-        local choice
-        choice=$(dialog "${DIALOG_OPTS[@]}" \
-            --title "💾 Backup e Restauração" \
-            --menu "\nGerenciar backups:\n" \
-            12 50 5 \
-            "1" "💾 Criar Backup" \
-            "2" "📥 Restaurar Backup" \
-            "3" "📋 Listar Backups" \
-            "4" "🗑️  Limpar Backups Antigos" \
-            "5" "🔙 Voltar" \
-            3>&1 1>&2 2>&3) || break
-
-        case $choice in
-            1) create_backup ;;
-            2) restore_backup ;;
-            3) list_backups ;;
-            4) clean_old_backups ;;
-            5) break ;;
-        esac
-    done
-}
-
-create_backup() {
-    local backup_name="boxserver_$(date +%Y%m%d_%H%M%S)"
-    local backup_path="${BACKUP_DIR}/${backup_name}.tar.gz"
-
-    mkdir -p "$BACKUP_DIR"
-
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "💾 Criando Backup" \
-        --infobox "Criando backup...\n\nAguarde..." \
-        8 40
-
-    # Criar backup das configurações
-    tar -czf "$backup_path" \
-        -C / \
-        --exclude="$LOG_DIR" \
-        --exclude="$CACHE_DIR" \
-        "$CONFIG_DIR" \
-        "/etc/nginx/sites-available/boxserver" \
-        "/etc/pihole" \
-        "/etc/wireguard" \
-        2>/dev/null || true
-
-    log "INFO" "Backup criado: $backup_path"
-
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "✅ Backup Criado" \
-        --msgbox "Backup criado com sucesso:\n\n$backup_path" \
-        10 60
-}
-
-restore_backup() {
-    local backup_files=()
-
-    if [[ ! -d "$BACKUP_DIR" ]] || [[ -z "$(ls -A "$BACKUP_DIR")" ]]; then
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "📥 Restaurar Backup" \
-            --msgbox "Nenhum backup encontrado." \
-            8 40
-        return
-    fi
-
-    # Listar arquivos de backup
-    while IFS= read -r -d '' file; do
-        backup_files+=("$(basename "$file")" "$(date -r "$file" '+%Y-%m-%d %H:%M:%S')")
-    done < <(find "$BACKUP_DIR" -name "*.tar.gz" -print0)
-
-    if [[ ${#backup_files[@]} -eq 0 ]]; then
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "📥 Restaurar Backup" \
-            --msgbox "Nenhum arquivo de backup válido encontrado." \
-            8 50
-        return
-    fi
-
-    local selected_backup
-    selected_backup=$(dialog "${DIALOG_OPTS[@]}" \
-        --title "📥 Selecionar Backup" \
-        --menu "\nSelecione o backup para restaurar:\n" \
-        15 70 8 \
-        "${backup_files[@]}" \
-        3>&1 1>&2 2>&3) || return
-
-    if dialog "${DIALOG_OPTS[@]}" \
-        --title "⚠️ Confirmar Restauração" \
-        --yesno "Deseja restaurar o backup:\n\n$selected_backup\n\nIsto substituirá as configurações atuais!" \
-        12 60; then
-
-        tar -xzf "${BACKUP_DIR}/${selected_backup}" -C / 2>/dev/null || true
-        log "INFO" "Backup restaurado: $selected_backup"
-
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "✅ Backup Restaurado" \
-            --msgbox "Backup restaurado com sucesso!\n\nReinicie os serviços para aplicar as alterações." \
-            10 60
-    fi
-}
-
-list_backups() {
-    local backup_list=""
-
-    if [[ ! -d "$BACKUP_DIR" ]] || [[ -z "$(ls -A "$BACKUP_DIR")" ]]; then
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "📋 Lista de Backups" \
-            --msgbox "Nenhum backup encontrado." \
-            8 40
-        return
-    fi
-
-    backup_list+="📋 BACKUPS DISPONÍVEIS\n"
-    backup_list+="═══════════════════════════════\n\n"
-
-    while IFS= read -r -d '' file; do
-        local name=$(basename "$file")
-        local size=$(du -h "$file" | cut -f1)
-        local date=$(date -r "$file" '+%Y-%m-%d %H:%M:%S')
-        backup_list+="$name\n"
-        backup_list+="  Tamanho: $size\n"
-        backup_list+="  Data: $date\n\n"
-    done < <(find "$BACKUP_DIR" -name "*.tar.gz" -print0)
-
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "📋 Lista de Backups" \
-        --msgbox "$backup_list" \
-        20 70
-}
-
-clean_old_backups() {
-    local count=$(find "$BACKUP_DIR" -name "*.tar.gz" -mtime +30 2>/dev/null | wc -l)
-
-    if [[ $count -eq 0 ]]; then
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "🗑️ Limpeza de Backups" \
-            --msgbox "Nenhum backup antigo (>30 dias) encontrado." \
-            8 50
-        return
-    fi
-
-    if dialog "${DIALOG_OPTS[@]}" \
-        --title "🗑️ Confirmar Limpeza" \
-        --yesno "Encontrados $count backups antigos (>30 dias).\n\nDeseja removê-los?" \
-        10 50; then
-
-        find "$BACKUP_DIR" -name "*.tar.gz" -mtime +30 -delete 2>/dev/null
-        log "INFO" "Backups antigos removidos: $count arquivos"
-
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "✅ Limpeza Concluída" \
-            --msgbox "$count backups antigos foram removidos." \
-            8 50
-    fi
-}
-
-update_system() {
-    if dialog "${DIALOG_OPTS[@]}" \
-        --title "🔄 Atualizar Sistema" \
-        --yesno "Deseja atualizar o sistema?\n\n• Atualizar pacotes\n• Limpar cache\n• Verificar serviços" \
-        12 50; then
-
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "🔄 Atualizando..." \
-            --infobox "Atualizando sistema...\n\nAguarde..." \
-            8 40
-
-        # Atualizar sistema
-        apt-get update >/dev/null 2>&1
-        apt-get upgrade -y >/dev/null 2>&1
-
-        log "INFO" "Sistema atualizado"
-
-        dialog "${DIALOG_OPTS[@]}" \
-            --title "✅ Sistema Atualizado" \
-            --msgbox "Sistema atualizado com sucesso!" \
-            8 40
-    fi
+    dialog --title "📖 Journal Log${service:+ - $service}" --textbox "$temp_log" 20 80
+    rm -f "$temp_log"
 }
 
 show_about() {
-    local about_text=""
-    about_text+="🚀 BOXSERVER TUI v$SCRIPT_VERSION\n"
-    about_text+="═══════════════════════════════\n\n"
-    about_text+="Sistema unificado para MXQ-4K\n"
-    about_text+="com chip RK322x\n\n"
-    about_text+="📋 RECURSOS:\n"
-    about_text+="• Interface TUI intuitiva\n"
-    about_text+="• Gerenciamento unificado\n"
-    about_text+="• Dashboard web responsivo\n"
-    about_text+="• Sistema de backup\n"
-    about_text+="• Monitoramento em tempo real\n"
-    about_text+="• Configuração simplificada\n\n"
-    about_text+="🛠️  SERVIÇOS SUPORTADOS:\n"
-    about_text+="• Pi-hole (Bloqueador DNS)\n"
-    about_text+="• Unbound (DNS recursivo)\n"
-    about_text+="• WireGuard (VPN)\n"
-    about_text+="• Cockpit (Admin panel)\n"
-    about_text+="• FileBrowser (Gerenciador)\n"
-    about_text+="• Netdata (Monitoramento)\n"
-    about_text+="• Fail2Ban + UFW (Segurança)\n"
-    about_text+="• MiniDLNA (Servidor mídia)\n\n"
-    about_text+="🏠 IP do Servidor: ${CONFIG[SERVER_IP]}\n"
-    about_text+="🌐 Hostname: ${CONFIG[HOSTNAME]}\n\n"
-    about_text+="Desenvolvido pela BoxServer Team"
+    dialog --title "ℹ️ Sobre o BOXSERVER" --msgbox "
+🚀 BOXSERVER Auto-Installer v$SCRIPT_VERSION
 
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "ℹ️ Sobre o BoxServer TUI" \
-        --msgbox "$about_text" \
-        25 60
+Instalador automatizado para configuração completa de:
+• Pi-hole (DNS + Bloqueio de anúncios)
+• Unbound (DNS recursivo local)
+• WireGuard (VPN segura)
+• RNG-tools (Gerador de entropia)
+• Otimizações para ARM RK322x
+
+📋 Características:
+✓ Interface TUI amigável
+✓ Detecção automática de hardware
+✓ Configurações otimizadas para ARM
+✓ Sistema de backup e rollback
+✓ Testes automáticos de validação
+✓ Monitoramento integrado
+
+🎯 Otimizado para:
+• Sistemas ARM RK322x
+• Debian/Ubuntu/Armbian
+• Hardware com recursos limitados
+
+📧 Projeto: BOXSERVER
+📅 Data: $(date +%Y-%m-%d)
+" 25 70
 }
 
-confirm_exit() {
-    dialog "${DIALOG_OPTS[@]}" \
-        --title "🚪 Confirmar Saída" \
-        --yesno "Deseja realmente sair do BoxServer TUI?" \
-        8 50
-}
-
-# =============================================================================
+# ============================================================================
 # FUNÇÃO PRINCIPAL
-# =============================================================================
+# ============================================================================
 
 main() {
-    # Configurar tratamento de erros
-    trap 'error_handler ${LINENO} $?' ERR
-    trap cleanup EXIT
+    # Configurar logging
+    mkdir -p "$(dirname "$LOG_FILE")"
+    mkdir -p "$CONFIG_DIR"
 
     # Verificações iniciais
     check_root
+    check_dependencies
 
-    # Criar estrutura de diretórios
-    mkdir -p "$LOG_DIR" "$CONFIG_DIR" "$BACKUP_DIR" "$WEB_DIR" "$CACHE_DIR" "$LOCK_DIR"
+    # Detectar informações do sistema
+    detect_system_info
 
-    # Verificar dependências
-    check_dependencies || exit 1
+    log_info "=== BOXSERVER Auto-Installer v$SCRIPT_VERSION iniciado ==="
+    log_info "Sistema: $CPU_ARCHITECTURE, RAM: ${TOTAL_RAM}MB, Interface: $NETWORK_INTERFACE"
 
-    # Verificar recursos do sistema
-    check_system_resources || exit 1
+    # Mostrar tela de boas-vindas
+    dialog --title "🚀 Bem-vindo ao BOXSERVER" --msgbox "
+BOXSERVER Auto-Installer v$SCRIPT_VERSION
 
-    # Detectar rede
-    detect_network
+Este script irá configurar automaticamente:
+• Pi-hole (DNS + Ad-block)
+• Unbound (DNS recursivo)
+• WireGuard (VPN)
+• RNG-tools (Entropia)
+• Otimizações do sistema
 
-    # Configurar interface
-    setup_dialog
+Sistema detectado:
+• Arquitetura: $CPU_ARCHITECTURE
+• RAM: ${TOTAL_RAM}MB
+• Interface: $NETWORK_INTERFACE
+• IP: $SYSTEM_IP
 
-    log "INFO" "BoxServer TUI v$SCRIPT_VERSION iniciado"
+Pressione OK para continuar...
+" 20 60
 
-    # Exibir menu principal
+    # Iniciar menu principal
     show_main_menu
 
-    log "INFO" "BoxServer TUI finalizado"
+    log_info "=== BOXSERVER Auto-Installer finalizado ==="
 }
 
-# Inicializar aplicação
+# ============================================================================
+# TRATAMENTO DE SINAIS E LIMPEZA
+# ============================================================================
+
+cleanup() {
+    log_info "Limpeza em andamento..."
+    clear
+    echo "👋 Obrigado por usar o BOXSERVER Auto-Installer!"
+    echo "📋 Logs salvos em: $LOG_FILE"
+    echo "🔧 Configurações em: $CONFIG_DIR"
+    exit 0
+}
+
+trap cleanup EXIT INT TERM
+
+# ============================================================================
+# EXECUÇÃO PRINCIPAL
+# ============================================================================
+
+# Verificar se foi executado diretamente
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
