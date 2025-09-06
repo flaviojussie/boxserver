@@ -4,7 +4,7 @@
 # BOXSERVER AUTO-INSTALLER v2.0
 # Script Automatizado com TUI para Configuração Completa
 #
-# Componentes: Pi-hole + Unbound + WireGuard + RNG-tools + Otimizações
+# Componentes: Pi-hole + Unbound + Cloudflared + WireGuard + RNG-tools + Otimizações
 # Otimizado para: ARM RK322x, Debian/Ubuntu, Armbian
 # Hardware Mínimo: 1GB RAM, 8GB Storage
 #
@@ -326,6 +326,699 @@ check_service_installed() {
     return 1
 }
 
+check_dependencies_status() {
+    log_info "Verificando status de dependências entre componentes..."
+
+    local dependency_issues=()
+    local recommendations=()
+
+    # Verificar RNG-tools (base de entropia)
+    local rng_status="❌"
+    local rng_entropy="0"
+    if systemctl is-active --quiet rng-tools; then
+        rng_status="✅"
+        rng_entropy=$(cat /proc/sys/kernel/random/entropy_avail)
+        if [[ $rng_entropy -lt 1000 ]]; then
+            dependency_issues+=("⚠️ RNG-tools ativo mas entropia baixa ($rng_entropy)")
+            recommendations+=("• Reiniciar rng-tools ou instalar haveged")
+        fi
+    else
+        dependency_issues+=("❌ RNG-tools inativo - chaves fracas para WireGuard")
+        recommendations+=("• Instalar e ativar RNG-tools")
+    fi
+
+    # Verificar Unbound (DNS recursivo)
+    local unbound_status="❌"
+    local unbound_responding="❌"
+    if systemctl is-active --quiet unbound; then
+        unbound_status="✅"
+        if timeout 5 dig @127.0.0.1 -p 5335 google.com +short &>/dev/null; then
+            unbound_responding="✅"
+        else
+            dependency_issues+=("⚠️ Unbound ativo mas não responde na porta 5335")
+            recommendations+=("• Verificar configuração do Unbound")
+        fi
+    else
+        dependency_issues+=("❌ Unbound inativo - Pi-hole usará DNS público ou Cloudflared")
+        recommendations+=("• Instalar Unbound ou Cloudflared para melhor performance")
+    fi
+
+    # Verificar Cloudflared (DNS DoH)
+    local cloudflared_status="❌"
+    local cloudflared_responding="❌"
+    if systemctl is-active --quiet cloudflared-dns; then
+        cloudflared_status="✅"
+        if timeout 5 dig @127.0.0.1 -p 5053 google.com +short &>/dev/null; then
+            cloudflared_responding="✅"
+        else
+            dependency_issues+=("⚠️ Cloudflared ativo mas não responde na porta 5053")
+            recommendations+=("• Verificar configuração do Cloudflared")
+        fi
+    else
+        dependency_issues+=("ℹ️ Cloudflared não configurado (opcional)")
+    fi
+
+    # Verificar Pi-hole (DNS + bloqueio)
+    local pihole_status="❌"
+    local pihole_dns_config="unknown"
+    if systemctl is-active --quiet pihole-FTL; then
+        pihole_status="✅"
+
+        # Verificar configuração DNS do Pi-hole
+        if [[ -f /etc/pihole/setupVars.conf ]]; then
+            local pihole_dns=$(grep "PIHOLE_DNS_1=" /etc/pihole/setupVars.conf | cut -d'=' -f2)
+            case "$pihole_dns" in
+                "127.0.0.1#5335")
+                    pihole_dns_config="Unbound"
+                    if [[ "$unbound_responding" != "✅" ]]; then
+                        dependency_issues+=("❌ Pi-hole configurado para Unbound mas Unbound não responde")
+                        recommendations+=("• Ativar Unbound ou reconfigurar Pi-hole")
+                    fi
+                    ;;
+                "127.0.0.1#5053")
+                    pihole_dns_config="Cloudflared DoH"
+                    if [[ "$cloudflared_responding" != "✅" ]]; then
+                        dependency_issues+=("❌ Pi-hole configurado para Cloudflared mas Cloudflared não responde")
+                        recommendations+=("• Ativar Cloudflared ou reconfigurar Pi-hole")
+                    fi
+                    ;;
+                *)
+                    pihole_dns_config="Público ($pihole_dns)"
+                    if [[ "$unbound_status" == "✅" ]] || [[ "$cloudflared_status" == "✅" ]]; then
+                        dependency_issues+=("⚠️ DNS local disponível mas Pi-hole usa DNS público")
+                        recommendations+=("• Reconfigurar Pi-hole para usar DNS local")
+                    fi
+                    ;;
+            esac
+        fi
+    else
+        dependency_issues+=("❌ Pi-hole inativo - WireGuard não terá DNS otimizado")
+        recommendations+=("• Instalar Pi-hole para DNS + bloqueio de anúncios")
+    fi
+
+    # Verificar WireGuard (VPN)
+    local wireguard_status="❌"
+    local wireguard_dns="unknown"
+    if systemctl is-active --quiet wg-quick@wg0; then
+        wireguard_status="✅"
+
+        # Verificar configuração DNS do WireGuard
+        if [[ -f /etc/wireguard/wg0.conf ]]; then
+            local wg_dns=$(grep "DNS =" /etc/wireguard/wg0.conf | cut -d'=' -f2 | tr -d ' ')
+            if [[ "$wg_dns" == "$SYSTEM_IP" ]]; then
+                wireguard_dns="Pi-hole ($SYSTEM_IP)"
+                if [[ "$pihole_status" != "✅" ]]; then
+                    dependency_issues+=("❌ WireGuard configurado para Pi-hole mas Pi-hole inativo")
+                    recommendations+=("• Ativar Pi-hole ou reconfigurar WireGuard")
+                fi
+            else
+                wireguard_dns="Outro ($wg_dns)"
+            fi
+        fi
+    else
+        dependency_issues+=("ℹ️ WireGuard não configurado")
+    fi
+
+    # Montar relatório
+    local report="🔗 STATUS DE DEPENDÊNCIAS:
+
+📊 COMPONENTES:
+• RNG-tools: $rng_status (Entropia: $rng_entropy)
+• Unbound: $unbound_status (Responde: $unbound_responding)
+• Cloudflared: $cloudflare
+
+    if [[ ${#dependency_issues[@]} -gt 0 ]]; then
+        report+="\n\n⚠️ PROBLEMAS ENCONTRADOS:"
+        for issue in "${dependency_issues[@]}"; do
+            report+="\n$issue"
+        done
+
+        report+="\n\n🔧 RECOMENDAÇÕES:"
+        for rec in "${recommendations[@]}"; do
+            report+="\n$rec"
+        done
+    else
+        report+="\n\n✅ Todas as dependências estão corretas!"
+    fi
+
+    dialog --title "🔗 Relatório de Dependências" --msgbox "$report" 25 80
+
+    return ${#dependency_issues[@]}
+}
+
+fix_dependencies_automatically() {
+    log_info "Iniciando correção automática de dependências..."
+
+    if ! dialog --title "🔧 Correção Automática" --yesno "Deseja corrigir automaticamente as dependências?\n\nIsso irá:\n• Verificar e corrigir configurações\n• Reiniciar serviços se necessário\n• Instalar componentes faltantes\n\nContinuar?" 12 60; then
+        return 1
+    fi
+
+    local fixes_applied=()
+    local fixes_failed=()
+
+    # 1. Verificar e corrigir RNG-tools
+    if ! systemctl is-active --quiet rng-tools; then
+        log_info "Instalando/ativando RNG-tools..."
+        if install_rng_tools; then
+            fixes_applied+=("✅ RNG-tools ativado")
+        else
+            fixes_failed+=("❌ Falha ao ativar RNG-tools")
+        fi
+    else
+        local entropy=$(cat /proc/sys/kernel/random/entropy_avail)
+        if [[ $entropy -lt 1000 ]]; then
+            log_info "Melhorando entropia..."
+            if setup_entropy_alternatives; then
+                fixes_applied+=("✅ Entropia melhorada")
+            else
+                fixes_failed+=("❌ Falha ao melhorar entropia")
+            fi
+        fi
+    fi
+
+    # 2. Verificar e corrigir Unbound
+    if ! systemctl is-active --quiet unbound || ! timeout 5 dig @127.0.0.1 -p 5335 google.com +short &>/dev/null; then
+        log_info "Instalando/corrigindo Unbound..."
+        if install_unbound && test_unbound_dns; then
+            fixes_applied+=("✅ Unbound funcionando")
+        else
+            fixes_failed+=("❌ Falha ao corrigir Unbound")
+        fi
+    fi
+
+    # 3. Verificar e corrigir Pi-hole
+    if systemctl is-active --quiet pihole-FTL; then
+        # Pi-hole ativo, verificar se está usando Unbound
+        local pihole_dns=$(grep "PIHOLE_DNS_1=" /etc/pihole/setupVars.conf 2>/dev/null | cut -d'=' -f2)
+        if [[ "$pihole_dns" != "127.0.0.1#5335" ]] && systemctl is-active --quiet unbound; then
+            log_info "Reconfigurando Pi-hole para usar Unbound..."
+            if configure_pihole_unbound_integration; then
+                fixes_applied+=("✅ Pi-hole integrado com Unbound")
+            else
+                fixes_failed+=("❌ Falha na integração Pi-hole → Unbound")
+            fi
+        fi
+    else
+        log_info "Instalando Pi-hole..."
+        if install_pihole && configure_pihole_optimizations; then
+            if systemctl is-active --quiet unbound; then
+                configure_pihole_unbound_integration
+            fi
+            fixes_applied+=("✅ Pi-hole instalado e configurado")
+        else
+            fixes_failed+=("❌ Falha ao instalar Pi-hole")
+        fi
+    fi
+
+    # 4. Verificar WireGuard (opcional)
+    if systemctl is-active --quiet wg-quick@wg0; then
+        local wg_dns=$(grep "DNS =" /etc/wireguard/wg0.conf 2>/dev/null | cut -d'=' -f2 | tr -d ' ')
+        if [[ "$wg_dns" != "$SYSTEM_IP" ]] && systemctl is-active --quiet pihole-FTL; then
+            log_info "WireGuard detectado mas não otimizado para Pi-hole"
+            fixes_applied+=("ℹ️ WireGuard funcional (não otimizado)")
+        fi
+    fi
+
+    # Mostrar resultado
+    local result_msg="🔧 CORREÇÕES APLICADAS:\n\n"
+
+    if [[ ${#fixes_applied[@]} -gt 0 ]]; then
+        for fix in "${fixes_applied[@]}"; do
+            result_msg+="$fix\n"
+        done
+    fi
+
+    if [[ ${#fixes_failed[@]} -gt 0 ]]; then
+        result_msg+="\n❌ FALHAS:\n"
+        for fail in "${fixes_failed[@]}"; do
+            result_msg+="$fail\n"
+        done
+    fi
+
+    if [[ ${#fixes_failed[@]} -eq 0 ]]; then
+        result_msg+="\n🎉 Todas as correções foram aplicadas com sucesso!"
+        show_message "success" "Correção Concluída" "$result_msg"
+    else
+        show_message "warning" "Correção Parcial" "$result_msg"
+    fi
+
+    log_success "Correção automática de dependências concluída"
+    return 0
+}
+
+# ============================================================================
+# FUNÇÕES DE INSTALAÇÃO - CLOUDFLARED
+# ============================================================================
+
+install_cloudflared() {
+    log_info "Verificando instalação do Cloudflared..."
+
+    # Verificar se Cloudflared já está instalado
+    if command -v cloudflared &>/dev/null; then
+        log_info "Cloudflared detectado, verificando configuração..."
+        show_message "info" "Cloudflared já instalado" "Cloudflared já está instalado.\nVerificando configuração..."
+
+        # Verificar se serviço DoH está ativo
+        if systemctl is-active --quiet cloudflared-dns; then
+            log_success "Cloudflared DNS já configurado e funcionando"
+            return 0
+        else
+            log_info "Cloudflared instalado mas não configurado, configurando..."
+        fi
+    fi
+
+    log_info "Iniciando instalação do Cloudflared..."
+
+    # Detectar arquitetura para download
+    local arch=""
+    case "$CPU_ARCHITECTURE" in
+        "x86_64") arch="amd64" ;;
+        "aarch64"|"arm64") arch="arm64" ;;
+        "armv7l"|"armhf") arch="arm" ;;
+        *)
+            log_error "Arquitetura não suportada: $CPU_ARCHITECTURE"
+            show_message "error" "Arquitetura não suportada" "Cloudflared não suporta a arquitetura $CPU_ARCHITECTURE"
+            return 1
+            ;;
+    esac
+
+    # Instalar Cloudflared
+    local install_cmd="wget -O /tmp/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch} && chmod +x /tmp/cloudflared && mv /tmp/cloudflared /usr/local/bin/cloudflared"
+
+    if ! run_with_progress "Instalação Cloudflared" "$install_cmd" "5"; then
+        show_message "error" "Erro Cloudflared" "Falha na instalação do Cloudflared"
+        return 1
+    fi
+
+    # Configurar serviços DNS e Túnel
+    setup_cloudflared_services
+
+    log_success "Cloudflared instalado e configurado"
+    return 0
+}
+
+setup_cloudflared_services() {
+    log_info "Configurando serviços do Cloudflared..."
+
+    # Perguntar que serviços configurar
+    local services_choice
+    services_choice=$(dialog --title "🌐 Configuração Cloudflared" --checklist \
+        "Escolha os serviços do Cloudflared:" 15 60 4 \
+        "dns" "DNS over HTTPS (DoH) - Substitui Unbound" ON \
+        "tunnel" "Túnel para acesso remoto - Pi-hole web" OFF \
+        "proxy" "Proxy para WireGuard (experimental)" OFF \
+        "warp" "WARP para conectividade (experimental)" OFF \
+        3>&1 1>&2 2>&3) || services_choice="dns"
+
+    # Configurar DNS over HTTPS se selecionado
+    if echo "$services_choice" | grep -q "dns"; then
+        setup_cloudflared_dns
+    fi
+
+    # Configurar túnel se selecionado
+    if echo "$services_choice" | grep -q "tunnel"; then
+        setup_cloudflared_tunnel
+    fi
+
+    # Configurar proxy se selecionado
+    if echo "$services_choice" | grep -q "proxy"; then
+        setup_cloudflared_proxy
+    fi
+
+    # Configurar WARP se selecionado
+    if echo "$services_choice" | grep -q "warp"; then
+        setup_cloudflared_warp
+    fi
+}
+
+setup_cloudflared_dns() {
+    log_info "Configurando Cloudflared DNS over HTTPS..."
+
+    # Criar configuração DNS DoH
+    mkdir -p /etc/cloudflared
+    cat > /etc/cloudflared/dns-config.yml <<EOF
+# Configuração DNS over HTTPS para ARM RK322x
+# Otimizada para ${TOTAL_RAM}MB RAM
+
+# Servidores upstream Cloudflare
+upstream:
+  - https://1.1.1.1/dns-query
+  - https://1.0.0.1/dns-query
+
+# Configurações locais
+proxy-dns: true
+proxy-dns-port: 5053
+proxy-dns-address: 127.0.0.1
+
+# Configurações de performance para ARM
+proxy-dns-upstream:
+  - https://1.1.1.1/dns-query
+  - https://1.0.0.1/dns-query
+
+# Otimizações para recursos limitados
+max-upstream-conns: 10
+proxy-dns-workers: 2
+
+# Logging otimizado
+loglevel: warn
+transport-loglevel: warn
+EOF
+
+    # Criar serviço systemd para DNS
+    cat > /etc/systemd/system/cloudflared-dns.service <<EOF
+[Unit]
+Description=Cloudflared DNS over HTTPS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cloudflared
+Group=cloudflared
+ExecStart=/usr/local/bin/cloudflared --config /etc/cloudflared/dns-config.yml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Otimizações para ARM
+Nice=10
+IOSchedulingClass=2
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Criar usuário cloudflared
+    if ! id cloudflared &>/dev/null; then
+        useradd -r -s /bin/false cloudflared
+    fi
+    chown -R cloudflared:cloudflared /etc/cloudflared
+
+    # Habilitar e iniciar serviço DNS
+    systemctl daemon-reload
+    systemctl enable cloudflared-dns &>/dev/null
+    systemctl start cloudflared-dns &>/dev/null
+
+    # Testar DNS DoH
+    sleep 3
+    if timeout 10 dig @127.0.0.1 -p 5053 google.com +short &>/dev/null; then
+        log_success "Cloudflared DNS DoH funcionando na porta 5053"
+
+        # Perguntar se deve integrar com Pi-hole
+        if systemctl is-active --quiet pihole-FTL; then
+            if dialog --title "Integração Pi-hole" --yesno "Pi-hole detectado!\n\nDeseja configurar Pi-hole para usar Cloudflared DoH\nem vez do Unbound?\n\nCloudflared DoH vs Unbound:\n• DoH: Mais privado, passa por HTTPS\n• Unbound: Mais rápido, consulta direta\n\nConfigurar Pi-hole → Cloudflared?" 14 60; then
+                configure_pihole_cloudflared_integration
+            fi
+        fi
+    else
+        log_error "Cloudflared DNS não está respondendo"
+        return 1
+    fi
+}
+
+configure_pihole_cloudflared_integration() {
+    log_info "Configurando integração Pi-hole → Cloudflared..."
+
+    # Verificar se Cloudflared DoH está funcionando
+    if ! timeout 5 dig @127.0.0.1 -p 5053 google.com +short &>/dev/null; then
+        log_error "Cloudflared DNS não está respondendo na porta 5053"
+        return 1
+    fi
+
+    log_info "Cloudflared DoH verificado, configurando Pi-hole..."
+
+    # Atualizar configuração do Pi-hole para usar Cloudflared
+    sed -i 's/PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5053/' /etc/pihole/setupVars.conf
+    sed -i 's/PIHOLE_DNS_2=.*/PIHOLE_DNS_2=/' /etc/pihole/setupVars.conf
+
+    # Reconfigurar Pi-hole
+    pihole reconfigure --unattended &>/dev/null
+
+    # Reiniciar Pi-hole para aplicar mudanças
+    systemctl restart pihole-FTL &>/dev/null
+
+    # Aguardar reinicialização
+    sleep 5
+
+    # Testar integração
+    if timeout 10 dig @127.0.0.1 google.com +short &>/dev/null; then
+        log_success "Integração Pi-hole → Cloudflared DoH configurada com sucesso"
+        show_message "success" "Integração Configurada" "Pi-hole agora usa Cloudflared DoH!\n\n✅ DNS seguro via HTTPS\n✅ Maior privacidade\n✅ Bloqueio de anúncios mantido"
+        return 0
+    else
+        log_error "Falha na integração Pi-hole → Cloudflared"
+        return 1
+    fi
+}
+
+setup_cloudflared_tunnel() {
+    log_info "Configurando Cloudflared Tunnel para acesso remoto..."
+
+    # Verificar se usuário tem conta Cloudflare
+    if ! dialog --title "Cloudflare Account" --yesno "Para configurar o túnel, você precisa:\n\n1. Conta gratuita no Cloudflare\n2. Domínio configurado no Cloudflare (opcional)\n\nVocê tem uma conta Cloudflare?" 10 60; then
+        show_message "info" "Conta Necessária" "Você pode criar uma conta gratuita em:\nhttps://dash.cloudflare.com/sign-up\n\nO túnel pode funcionar sem domínio próprio\nusando subdomínio *.trycloudflare.com"
+
+        if ! dialog --title "Continuar" --yesno "Deseja continuar com túnel temporário\n(sem domínio próprio)?" 8 50; then
+            return 1
+        fi
+    fi
+
+    # Escolher tipo de túnel
+    local tunnel_type
+    tunnel_type=$(dialog --title "Tipo de Túnel" --menu \
+        "Escolha o tipo de túnel:" 12 60 3 \
+        "quick" "Túnel rápido (temporário, sem login)" \
+        "named" "Túnel nomeado (permanente, requer login)" \
+        "local" "Túnel local (desenvolvimento)" \
+        3>&1 1>&2 2>&3) || tunnel_type="quick"
+
+    case "$tunnel_type" in
+        "quick")
+            setup_cloudflared_quick_tunnel
+            ;;
+        "named")
+            setup_cloudflared_named_tunnel
+            ;;
+        "local")
+            setup_cloudflared_local_tunnel
+            ;;
+    esac
+}
+
+setup_cloudflared_quick_tunnel() {
+    log_info "Configurando túnel rápido do Cloudflared..."
+
+    # Detectar serviços para expor
+    local services=()
+    local service_ports=()
+
+    if systemctl is-active --quiet pihole-FTL && systemctl is-active --quiet lighttpd; then
+        services+=("Pi-hole Web Interface")
+        service_ports+=("80")
+    fi
+
+    if systemctl is-active --quiet ssh; then
+        services+=("SSH")
+        service_ports+=("22")
+    fi
+
+    if [[ ${#services[@]} -eq 0 ]]; then
+        show_message "warning" "Nenhum Serviço" "Nenhum serviço web detectado para expor.\nInstale Pi-hole primeiro."
+        return 1
+    fi
+
+    # Escolher serviço para expor
+    local choices=""
+    for i in "${!services[@]}"; do
+        choices+="$i \"${services[i]} (porta ${service_ports[i]})\" "
+    done
+
+    local selected
+    selected=$(eval "dialog --title \"Expor Serviço\" --menu \"Escolha o serviço para expor:\" 12 60 ${#services[@]} $choices" 3>&1 1>&2 2>&3) || return 1
+
+    local target_port="${service_ports[$selected]}"
+    local service_name="${services[$selected]}"
+
+    # Criar script de túnel rápido
+    cat > /usr/local/bin/cloudflared-quick-tunnel <<EOF
+#!/bin/bash
+# Túnel rápido Cloudflared para $service_name
+
+echo "🌐 Iniciando túnel Cloudflared para $service_name..."
+echo "⏳ Aguarde a URL do túnel..."
+echo ""
+
+# Executar túnel rápido
+cloudflared tunnel --url http://127.0.0.1:$target_port
+EOF
+
+    chmod +x /usr/local/bin/cloudflared-quick-tunnel
+
+    # Mostrar instruções
+    show_message "success" "Túnel Configurado" "Túnel rápido configurado!\n\n🚀 Para iniciar o túnel:\nsudo cloudflared-quick-tunnel\n\n📝 O túnel criará uma URL temporária\ncomo: https://xyz.trycloudflare.com\n\n⚠️ URL muda a cada reinicialização"
+
+    log_success "Túnel rápido configurado para $service_name na porta $target_port"
+}
+
+setup_cloudflared_named_tunnel() {
+    log_info "Configurando túnel nomeado do Cloudflared..."
+
+    show_message "info" "Login Necessário" "Para túnel nomeado, você precisa:\n\n1. Fazer login no Cloudflare\n2. Criar um túnel\n3. Configurar DNS\n\nO processo será interativo."
+
+    # Fazer login
+    if dialog --title "Cloudflare Login" --yesno "Executar login no Cloudflare?\n\nIsso abrirá uma página web para autorização." 8 50; then
+        cloudflared tunnel login
+    else
+        return 1
+    fi
+
+    # Criar túnel
+    local tunnel_name
+    tunnel_name=$(dialog --title "Nome do Túnel" --inputbox "Digite um nome para o túnel:" 8 40 "boxserver-$(hostname)" 3>&1 1>&2 2>&3) || return 1
+
+    if cloudflared tunnel create "$tunnel_name"; then
+        # Configurar túnel para Pi-hole
+        local tunnel_id=$(cloudflared tunnel list | grep "$tunnel_name" | awk '{print $1}')
+
+        cat > /etc/cloudflared/tunnel-config.yml <<EOF
+tunnel: $tunnel_id
+credentials-file: /home/cloudflared/.cloudflared/$tunnel_id.json
+
+ingress:
+  - hostname: $tunnel_name.example.com
+    service: http://127.0.0.1:80
+  - service: http_status:404
+EOF
+
+        show_message "success" "Túnel Criado" "Túnel '$tunnel_name' criado!\n\n📝 Configure DNS no Cloudflare:\n$tunnel_name.seu-dominio.com → $tunnel_id\n\n🚀 Inicie com:\ncloudflared tunnel run $tunnel_name"
+    else
+        show_message "error" "Erro no Túnel" "Falha ao criar túnel nomeado"
+        return 1
+    fi
+}
+
+setup_cloudflared_local_tunnel() {
+    log_info "Configurando túnel local do Cloudflared..."
+
+    # Túnel local para desenvolvimento/teste
+    cat > /usr/local/bin/cloudflared-local-tunnel <<EOF
+#!/bin/bash
+# Túnel local Cloudflared para desenvolvimento
+
+echo "🛠️ Iniciando túnel local para desenvolvimento..."
+echo "📡 Expondo serviços locais:"
+echo "   • Pi-hole: http://127.0.0.1:80"
+echo "   • SSH: tcp://127.0.0.1:22"
+echo ""
+
+cloudflared tunnel --config /dev/stdin <<CONFIG
+tunnel: local-dev
+ingress:
+  - hostname: pihole.localhost
+    service: http://127.0.0.1:80
+  - hostname: ssh.localhost
+    service: tcp://127.0.0.1:22
+  - service: http_status:404
+CONFIG
+EOF
+
+    chmod +x /usr/local/bin/cloudflared-local-tunnel
+
+    show_message "success" "Túnel Local" "Túnel local configurado!\n\n🛠️ Para desenvolvimento:\nsudo cloudflared-local-tunnel\n\n🌐 Acesso local:\n• Pi-hole: pihole.localhost\n• SSH: ssh.localhost"
+}
+
+setup_cloudflared_proxy() {
+    log_info "Configurando Cloudflared Proxy (experimental)..."
+
+    show_message "info" "Recurso Experimental" "Proxy Cloudflared para WireGuard\né um recurso experimental.\n\nPermite roteamento de tráfego VPN\natravés da rede Cloudflare."
+
+    # Configuração básica de proxy
+    cat > /etc/cloudflared/proxy-config.yml <<EOF
+# Configuração experimental de proxy
+# Roteamento via rede Cloudflare
+
+proxy:
+  enabled: true
+  bind-address: 127.0.0.1:7000
+
+upstream:
+  - 127.0.0.1:51820  # WireGuard
+
+# Experimental - use com cuidado
+experimental: true
+EOF
+
+    log_info "Proxy configurado (experimental) na porta 7000"
+}
+
+setup_cloudflared_warp() {
+    log_info "Configurando Cloudflared WARP (experimental)..."
+
+    show_message "info" "WARP Experimental" "WARP do Cloudflare pode melhorar\nconectividade e performance.\n\n⚠️ Recurso experimental\nPode conflitar com WireGuard"
+
+    # Configuração WARP básica
+    cloudflared warp-service install 2>/dev/null || {
+        log_warn "WARP service não disponível nesta arquitetura"
+        return 1
+    }
+
+    log_info "WARP configurado (se disponível para $CPU_ARCHITECTURE)"
+}
+
+test_cloudflared_services() {
+    log_info "Testando serviços Cloudflared..."
+
+    local test_results=()
+    local total_tests=0
+    local passed_tests=0
+
+    # Teste DNS DoH
+    ((total_tests++))
+    if timeout 5 dig @127.0.0.1 -p 5053 google.com +short &>/dev/null; then
+        test_results+=("✅ Cloudflared DNS DoH: FUNCIONANDO")
+        ((passed_tests++))
+    else
+        test_results+=("❌ Cloudflared DNS DoH: FALHOU")
+    fi
+
+    # Teste serviço systemd
+    ((total_tests++))
+    if systemctl is-active --quiet cloudflared-dns; then
+        test_results+=("✅ Serviço cloudflared-dns: ATIVO")
+        ((passed_tests++))
+    else
+        test_results+=("❌ Serviço cloudflared-dns: INATIVO")
+    fi
+
+    # Teste de conectividade
+    ((total_tests++))
+    if timeout 10 curl -s https://1.1.1.1/cdn-cgi/trace | grep -q "fl="; then
+        test_results+=("✅ Conectividade Cloudflare: OK")
+        ((passed_tests++))
+    else
+        test_results+=("❌ Conectividade Cloudflare: FALHOU")
+    fi
+
+    # Mostrar resultados
+    local result_text=""
+    for result in "${test_results[@]}"; do
+        result_text+="$result\n"
+    done
+    result_text+="\nResultado: $passed_tests/$total_tests testes aprovados"
+
+    if [[ $passed_tests -eq $total_tests ]]; then
+        show_message "success" "Testes Cloudflared" "$result_text"
+        log_success "Todos os testes Cloudflared passaram ($passed_tests/$total_tests)"
+        return 0
+    else
+        show_message "warning" "Testes Cloudflared" "$result_text"
+        log_warn "Alguns testes Cloudflared falharam ($passed_tests/$total_tests)"
+        return 1
+    fi
+}
+
 # ============================================================================
 # FUNÇÕES DE DIAGNÓSTICO - PI-HOLE
 # ============================================================================
@@ -537,8 +1230,8 @@ WEBPASSWORD=
 PIHOLE_INTERFACE=$NETWORK_INTERFACE
 IPV4_ADDRESS=$SYSTEM_IP/24
 IPV6_ADDRESS=
-PIHOLE_DNS_1=127.0.0.1#5335
-PIHOLE_DNS_2=
+PIHOLE_DNS_1=8.8.8.8
+PIHOLE_DNS_2=8.8.4.4
 QUERY_LOGGING=true
 INSTALL_WEB_SERVER=true
 INSTALL_WEB_INTERFACE=true
@@ -671,6 +1364,70 @@ EOF
     systemctl restart pihole-FTL &>/dev/null
 
     log_success "Otimizações do Pi-hole aplicadas"
+}
+
+configure_pihole_unbound_integration() {
+    log_info "Configurando integração Pi-hole → Unbound..."
+
+    # Verificar se Unbound está funcionando
+    if ! systemctl is-active --quiet unbound; then
+        log_error "Unbound não está ativo. Não é possível configurar integração."
+        return 1
+    fi
+
+    # Testar se Unbound responde
+    # Verificar se Unbound está funcionando
+    if ! timeout 5 dig @127.0.0.1 -p 5335 google.com +short &>/dev/null; then
+        log_error "Unbound não está respondendo na porta 5335"
+        return 1
+    fi
+
+    log_info "Unbound verificado e funcionando, configurando Pi-hole para usar Unbound..."
+
+    # Verificar se existe Cloudflared DoH ativo
+    if systemctl is-active --quiet cloudflared-dns && timeout 5 dig @127.0.0.1 -p 5053 google.com +short &>/dev/null; then
+        # Oferecer escolha entre Unbound e Cloudflared
+        local dns_choice
+        dns_choice=$(dialog --title "Escolha DNS Upstream" --menu \
+            "Ambos DNS estão funcionando. Escolha:" 10 60 2 \
+            "unbound" "Unbound (local, mais rápido)" \
+            "cloudflared" "Cloudflared DoH (HTTPS, mais privado)" \
+            3>&1 1>&2 2>&3) || dns_choice="unbound"
+
+        if [[ "$dns_choice" == "cloudflared" ]]; then
+            # Usar Cloudflared DoH
+            sed -i 's/PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5053/' /etc/pihole/setupVars.conf
+            sed -i 's/PIHOLE_DNS_2=.*/PIHOLE_DNS_2=/' /etc/pihole/setupVars.conf
+            log_info "Pi-hole configurado para usar Cloudflared DoH"
+        else
+            # Usar Unbound (padrão)
+            sed -i 's/PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
+            sed -i 's/PIHOLE_DNS_2=.*/PIHOLE_DNS_2=/' /etc/pihole/setupVars.conf
+            log_info "Pi-hole configurado para usar Unbound"
+        fi
+    else
+        # Usar apenas Unbound
+        sed -i 's/PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
+        sed -i 's/PIHOLE_DNS_2=.*/PIHOLE_DNS_2=/' /etc/pihole/setupVars.conf
+    fi
+
+    # Reconfigurar Pi-hole
+    pihole reconfigure --unattended &>/dev/null
+
+    # Reiniciar Pi-hole para aplicar mudanças
+    systemctl restart pihole-FTL &>/dev/null
+
+    # Aguardar reinicialização
+    sleep 5
+
+    # Testar integração
+    if timeout 10 dig @127.0.0.1 google.com +short &>/dev/null; then
+        log_success "Integração Pi-hole → Unbound configurada com sucesso"
+        return 0
+    else
+        log_error "Falha na integração Pi-hole → Unbound"
+        return 1
+    fi
 }
 
 # ============================================================================
@@ -1411,18 +2168,20 @@ show_main_menu() {
     while true; do
         local choice
         choice=$(dialog --clear --title "🚀 BOXSERVER Auto-Installer v$SCRIPT_VERSION" \
-            --menu "Escolha uma opção:" 20 70 12 \
+            --menu "Escolha uma opção:" 22 70 14 \
             "1" "🔧 Instalação Completa Automática" \
             "2" "📦 Instalação Individual por Componente" \
             "3" "🔍 Verificar Requisitos do Sistema" \
             "4" "🧪 Executar Testes do Sistema" \
             "5" "📊 Mostrar Status Atual" \
-            "6" "🔧 Otimizações do Sistema" \
-            "7" "📋 Configurar Cliente WireGuard" \
-            "8" "🗂️  Criar Backup das Configurações" \
-            "9" "↩️  Rollback (Desfazer Alterações)" \
-            "10" "📖 Mostrar Logs do Sistema" \
-            "11" "ℹ️  Sobre" \
+            "6" "🔗 Verificar Dependências dos Componentes" \
+            "7" "🔧 Corrigir Dependências Automaticamente" \
+            "8" "⚡ Otimizações do Sistema" \
+            "9" "📋 Configurar Cliente WireGuard" \
+            "10" "🗂️  Criar Backup das Configurações" \
+            "11" "↩️  Rollback (Desfazer Alterações)" \
+            "12" "📖 Mostrar Logs do Sistema" \
+            "13" "ℹ️  Sobre" \
             "0" "🚪 Sair" \
             3>&1 1>&2 2>&3) || exit 0
 
@@ -1432,12 +2191,14 @@ show_main_menu() {
             3) system_requirements_check ;;
             4) run_system_tests ;;
             5) show_system_status ;;
-            6) apply_system_optimizations ;;
-            7) configure_wireguard_client ;;
-            8) create_backup ;;
-            9) rollback_changes ;;
-            10) show_logs_menu ;;
-            11) show_about ;;
+            6) check_dependencies_status ;;
+            7) fix_dependencies_automatically ;;
+            8) apply_system_optimizations ;;
+            9) configure_wireguard_client ;;
+            10) create_backup ;;
+            11) rollback_changes ;;
+            12) show_logs_menu ;;
+            13) show_about ;;
             0) exit 0 ;;
             *) show_message "error" "Opção Inválida" "Por favor, selecione uma opção válida." ;;
         esac
@@ -1448,62 +2209,107 @@ component_installation_menu() {
     while true; do
         local choice
         choice=$(dialog --clear --title "📦 Instalação Individual" \
-            --menu "Escolha o componente:" 15 60 8 \
-            "1" "🛡️  Pi-hole (DNS + Ad-block)" \
-            "2" "🔒 Unbound (DNS Recursivo)" \
-            "3" "🌐 WireGuard (VPN)" \
-            "4" "🎲 RNG-tools (Entropia)" \
-            "5" "⚡ Otimizações do Sistema" \
+            --menu "⚠️ ORDEM RECOMENDADA (baseada em dependências):" 20 75 12 \
+            "1" "🎲 RNG-tools (Entropia) - INSTALE PRIMEIRO" \
+            "2" "🔒 Unbound (DNS Recursivo) - DEPOIS RNG" \
+            "3" "🛡️  Pi-hole (DNS + Ad-block) - DEPOIS UNBOUND" \
+            "4" "🌐 WireGuard (VPN) - DEPOIS PI-HOLE" \
+            "5" "⚡ Otimizações do Sistema - POR ÚLTIMO" \
+            "" "" \
             "6" "🧪 Testar Componentes" \
+            "7" "ℹ️  Ver Dependências Detalhadas" \
+            "8" "🔗 Verificar Status de Dependências" \
+            "9" "🔧 Corrigir Dependências Automaticamente" \
             "0" "↩️  Voltar ao Menu Principal" \
             3>&1 1>&2 2>&3) || break
 
         case $choice in
             1)
-                if install_pihole && configure_pihole_optimizations; then
-                    show_message "success" "Pi-hole" "Pi-hole instalado com sucesso!"
+                if install_rng_tools; then
+                    show_message "success" "RNG-tools" "RNG-tools instalado com sucesso!\n\n✅ Próximo recomendado: Unbound (opção 2)"
                 fi
                 ;;
             2)
+                # Verificar se RNG-tools está ativo
+                if ! systemctl is-active --quiet rng-tools; then
+                    show_message "warning" "Dependência" "⚠️ RNG-tools não está ativo!\n\nRecomenda-se instalar RNG-tools primeiro (opção 1)\npara garantir boa entropia.\n\nContinuar mesmo assim?"
+                    if ! dialog --title "Confirmar" --yesno "Instalar Unbound sem RNG-tools?" 8 50; then
+                        continue
+                    fi
+                fi
+
                 if install_unbound && test_unbound_dns; then
-                    show_message "success" "Unbound" "Unbound instalado com sucesso!"
+                    show_message "success" "Unbound" "Unbound instalado com sucesso!\n\n✅ Próximo recomendado: Pi-hole (opção 3)"
                 fi
                 ;;
             3)
-                if install_wireguard; then
-                    show_message "success" "WireGuard" "WireGuard instalado com sucesso!"
+                # Verificar se Unbound está funcionando
+                if ! systemctl is-active --quiet unbound; then
+                    show_message "warning" "Dependência" "⚠️ Unbound não está ativo!\n\nPi-hole funcionará melhor com Unbound como DNS upstream.\n\nRecomenda-se instalar Unbound primeiro (opção 2).\n\nContinuar com Pi-hole usando DNS público?"
+                    if ! dialog --title "Confirmar" --yesno "Instalar Pi-hole sem Unbound?" 9 50; then
+                        continue
+                    fi
+                fi
+
+                if install_pihole && configure_pihole_optimizations; then
+                    # Se Unbound estiver ativo, configurar integração
+                    if systemctl is-active --quiet unbound; then
+                        configure_pihole_unbound_integration
+                        show_message "success" "Pi-hole" "Pi-hole instalado e integrado com Unbound!\n\n✅ Próximo recomendado: WireGuard (opção 4)"
+                    else
+                        show_message "success" "Pi-hole" "Pi-hole instalado com DNS público!\n\n⚠️ Para melhor performance, instale Unbound depois.\n\n✅ Próximo recomendado: WireGuard (opção 4)"
+                    fi
                 fi
                 ;;
             4)
-                if install_rng_tools; then
-                    show_message "success" "RNG-tools" "RNG-tools instalado com sucesso!"
+                # Verificar se Pi-hole está funcionando
+                if ! systemctl is-active --quiet pihole-FTL; then
+                    show_message "warning" "Dependência" "⚠️ Pi-hole não está ativo!\n\nWireGuard usará Pi-hole como servidor DNS para clientes.\n\nRecomenda-se instalar Pi-hole primeiro (opção 3).\n\nContinuar mesmo assim?"
+                    if ! dialog --title "Confirmar" --yesno "Instalar WireGuard sem Pi-hole?" 9 50; then
+                        continue
+                    fi
+                fi
+
+                if install_wireguard; then
+                    show_message "success" "WireGuard" "WireGuard instalado com sucesso!\n\n✅ Próximo recomendado: Otimizações (opção 5)"
                 fi
                 ;;
             5)
                 if apply_system_optimizations; then
-                    show_message "success" "Otimizações" "Otimizações aplicadas com sucesso!"
+                    show_message "success" "Otimizações" "Otimizações aplicadas com sucesso!\n\n🎉 Sistema otimizado!"
                 fi
                 ;;
             6) run_system_tests ;;
+            7) show_dependency_details ;;
+            8) check_dependencies_status ;;
+            9) fix_dependencies_automatically ;;
             0) break ;;
         esac
     done
 }
 
 full_installation() {
-    if dialog --title "⚠️ Confirmação" --yesno "Deseja executar a instalação completa?\n\nIsso irá instalar e configurar:\n• Pi-hole\n• Unbound\n• WireGuard\n• RNG-tools\n• Otimizações do sistema\n\nContinuar?" 12 60; then
+    log_info "=== INSTALAÇÃO COMPLETA COM SEQUÊNCIA OTIMIZADA ==="
+    log_info "Sequência baseada em dependências:"
+    log_info "1. RNG-tools → Entropia para chaves seguras"
+    log_info "2. Unbound → DNS recursivo independente"
+    log_info "3. Pi-hole → DNS + bloqueio (integrado com Unbound)"
+    log_info "4. WireGuard → VPN (usando Pi-hole como DNS)"
+    log_info "5. Otimizações → Ajustes finais do sistema"
+
+    if dialog --title "⚠️ Confirmação" --yesno "Deseja executar a instalação completa?\n\nOrdem de instalação otimizada:\n• RNG-tools (entropia)\n• Unbound (DNS recursivo)\n• Pi-hole (DNS + bloqueio)\n• WireGuard (VPN)\n• Otimizações do sistema\n\nContinuar?" 14 65; then
 
         log_info "Iniciando instalação completa..."
 
         # Criar backup
         create_backup
 
-        # Executar instalações sequencialmente
-        local components=("Pi-hole" "Unbound" "WireGuard" "RNG-tools" "Otimizações")
-        local functions=("install_pihole && configure_pihole_optimizations"
+        # Executar instalações sequencialmente (ORDEM CORRIGIDA BASEADA EM DEPENDÊNCIAS)
+        local components=("RNG-tools" "Unbound" "Pi-hole" "WireGuard" "Otimizações")
+        local functions=("install_rng_tools"
                         "install_unbound && test_unbound_dns"
+                        "install_pihole && configure_pihole_optimizations && configure_pihole_unbound_integration"
                         "install_wireguard"
-                        "install_rng_tools"
                         "apply_system_optimizations")
 
         local failed_components=()
@@ -1625,6 +2431,39 @@ EOF
     dialog --title "✅ Cliente VPN Configurado" --msgbox "Cliente '$client_name' configurado com sucesso!\n\nIP: 10.200.200.$next_ip\n\nArquivo de configuração salvo em:\n$client_dir/$client_name.conf\n\nImporte esta configuração no aplicativo WireGuard do cliente." 15 70
 
     log_success "Cliente VPN '$client_name' configurado com IP 10.200.200.$next_ip"
+}
+
+show_dependency_details() {
+    dialog --title "ℹ️ Dependências Detalhadas" --msgbox "
+🔗 DEPENDÊNCIAS ENTRE COMPONENTES:
+
+📋 ORDEM RECOMENDADA:
+1️⃣ RNG-tools
+   └─ Fornece entropia para chaves seguras
+
+2️⃣ Unbound
+   └─ DNS recursivo independente
+   └─ Requer: Boa entropia para DNSSEC
+
+3️⃣ Pi-hole
+   └─ DNS + bloqueio de anúncios
+   └─ Requer: Unbound como upstream DNS
+   └─ Configurado para: 127.0.0.1#5335
+
+4️⃣ WireGuard
+   └─ Servidor VPN
+   └─ Requer: Pi-hole como DNS para clientes
+   └─ Requer: Boa entropia para chaves
+
+5️⃣ Otimizações
+   └─ Ajustes finais do sistema
+   └─ Aplica configurações para todos os serviços
+
+⚠️  PROBLEMAS SE ORDEM ERRADA:
+• Pi-hole antes Unbound → DNS instável
+• WireGuard antes RNG → Chaves fracas
+• WireGuard antes Pi-hole → DNS não otimizado
+" 25 70
 }
 
 system_requirements_check() {
