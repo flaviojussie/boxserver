@@ -415,13 +415,13 @@ install_unbound() {
     wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
 
     # Configurar trust anchor
-    unbound-anchor -a /var/lib/unbound/root.key || {
-        wget -O /var/lib/unbound/root.key https://data.iana.org/root-anchors/icannbundle.pem
-    }
+    rm -f /var/lib/unbound/root.key
+    unbound-anchor -a /var/lib/unbound/root.key
 
     # Ajustar permissões
-    chown unbound:unbound /var/lib/unbound/root.key /var/lib/unbound/root.hints
-    chmod 644 /var/lib/unbound/root.key /var/lib/unbound/root.hints
+    chown -R unbound:unbound /var/lib/unbound/
+    chmod 644 /var/lib/unbound/root.hints
+    chmod 644 /var/lib/unbound/root.key
 
     # Configuração otimizada para ARM
     cat > /etc/unbound/unbound.conf.d/pi-hole.conf <<EOF
@@ -459,9 +459,10 @@ server:
     hide-identity: yes
     hide-version: yes
 
-    # Trust anchor automático
+    # Trust anchor e root hints
     auto-trust-anchor-file: "/var/lib/unbound/root.key"
     root-hints: "/var/lib/unbound/root.hints"
+    trust-anchor-file: ""
 EOF
 
     # Verificar configuração
