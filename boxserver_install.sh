@@ -141,10 +141,11 @@ check_hardware() {
         fi
     fi
 
+    # Apenas logar a temperatura sem bloquear
     if [[ "$cpu_temp_c" != "N/A" ]] && [[ $cpu_temp_c -gt 75 ]]; then
-        show_error "CPU muito quente: ${cpu_temp_c}°C (máximo recomendado: 75°C)\nResfrie o sistema antes de continuar."
-        exit 1
+        log_message "AVISO: Temperatura CPU alta: ${cpu_temp_c}°C"
     fi
+
 
     if [[ $disk_usage -gt 90 ]]; then
         if ! ask_yes_no "Disco com ${disk_usage}% de uso. Continuar?"; then
