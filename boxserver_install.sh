@@ -99,19 +99,48 @@ spinner() {
 run_with_progress() {
     local title="$1"
     local cmd="$2"
+    local timeout_minutes="${3:-10}"  # Default 10 minutes
 
+    # Criar arquivo temporário para o resultado
+    local temp_result="/tmp/boxserver-progress-$$"
+    local temp_log="/tmp/boxserver-cmd-$$"
+
+    # Executar comando em background
     (
-        echo "0"
-        eval "$cmd" &>/dev/null
-        echo "100"
-    ) | dialog --title "$title" --gauge "Executando..." 6 60 0
+        echo "10"
+        sleep 1
+        echo "25"
+        timeout "${timeout_minutes}m" bash -c "$cmd" &>"$temp_log"
+        local exit_code=$?
+        echo "$exit_code" > "$temp_result"
 
-    if [ $? -eq 0 ]; then
-        log_success "$title concluído"
-        return 0
-    else
-        log_error "$title falhou"
+        if [ $exit_code -eq 0 ]; then
+            echo "100"
+        else
+            echo "ERROR"
+        fi
+    ) | dialog --title "$title" --gauge "Executando... (timeout: ${timeout_minutes}min)" 8 70 0
+
+    # Verificar resultado
+    local result_code=1
+    if [[ -f "$temp_result" ]]; then
+        result_code=$(cat "$temp_result")
+        rm -f "$temp_result"
+    fi
+
+    # Mostrar logs em caso de erro
+    if [[ $result_code -ne 0 ]]; then
+        if [[ -f "$temp_log" ]]; then
+            local error_msg="Falha na execução:\n\n$(tail -10 "$temp_log" 2>/dev/null || echo "Sem logs disponíveis")"
+            show_message "error" "$title - Erro" "$error_msg"
+        fi
+        log_error "$title falhou (código: $result_code)"
+        rm -f "$temp_log"
         return 1
+    else
+        log_success "$title concluído"
+        rm -f "$temp_log"
+        return 0
     fi
 }
 
@@ -275,10 +304,231 @@ rollback_changes() {
 }
 
 # ============================================================================
+# FUNÇÕES DE VERIFICAÇÃO DE SERVIÇOS
+# ============================================================================
+
+check_service_installed() {
+    local service_name="$1"
+    local package_name="${2:-$service_name}"
+
+    # Verificar se o pacote está instalado
+    if dpkg -l | grep -q "^ii.*$package_name"; then
+        log_info "$service_name já está instalado"
+        return 0
+    fi
+
+    # Verificar se o serviço existe
+    if systemctl list-unit-files | grep -q "$service_name"; then
+        log_info "Serviço $service_name já existe"
+        return 0
+    fi
+
+    return 1
+}
+
+# ============================================================================
+# FUNÇÕES DE DIAGNÓSTICO - PI-HOLE
+# ============================================================================
+
+diagnose_pihole_status() {
+    log_info "Executando diagnóstico detalhado do Pi-hole..."
+
+    local issues=()
+    local status_msg=""
+
+    # 1. Verificar se Pi-hole está instalado
+    if command -v pihole &>/dev/null; then
+        status_msg+="✅ Comando pihole disponível\n"
+    else
+        issues+=("❌ Comando pihole não encontrado")
+        status_msg+="❌ Comando pihole não encontrado\n"
+    fi
+
+    # 2. Verificar serviço pihole-FTL
+    if systemctl list-unit-files | grep -q "pihole-FTL"; then
+        if systemctl is-active --quiet pihole-FTL; then
+            status_msg+="✅ Serviço pihole-FTL ativo\n"
+        else
+            issues+=("⚠️ Serviço pihole-FTL inativo")
+            status_msg+="⚠️ Serviço pihole-FTL inativo\n"
+        fi
+    else
+        issues+=("❌ Serviço pihole-FTL não existe")
+        status_msg+="❌ Serviço pihole-FTL não existe\n"
+    fi
+
+    # 3. Verificar arquivos de configuração
+    if [[ -f /etc/pihole/setupVars.conf ]]; then
+        status_msg+="✅ Arquivo setupVars.conf existe\n"
+        local interface=$(grep "PIHOLE_INTERFACE" /etc/pihole/setupVars.conf | cut -d'=' -f2)
+        if [[ -n "$interface" ]]; then
+            status_msg+="   Interface configurada: $interface\n"
+        fi
+    else
+        issues+=("❌ Arquivo setupVars.conf não existe")
+        status_msg+="❌ Arquivo setupVars.conf não existe\n"
+    fi
+
+    # 4. Verificar porta 53
+    if netstat -tulpn 2>/dev/null | grep -q ":53 "; then
+        local service_on_53=$(netstat -tulpn 2>/dev/null | grep ":53 " | awk '{print $7}' | head -1)
+        status_msg+="ℹ️ Porta 53 ocupada por: $service_on_53\n"
+    else
+        status_msg+="⚠️ Porta 53 livre\n"
+    fi
+
+    # 5. Verificar DNS atual do sistema
+    if [[ -f /etc/resolv.conf ]]; then
+        local current_dns=$(grep "nameserver" /etc/resolv.conf | head -1 | awk '{print $2}')
+        status_msg+="ℹ️ DNS atual do sistema: $current_dns\n"
+    fi
+
+    # 6. Verificar logs recentes
+    if [[ -f /var/log/pihole.log ]]; then
+        status_msg+="✅ Log do Pi-hole existe\n"
+        local log_size=$(du -h /var/log/pihole.log | cut -f1)
+        status_msg+="   Tamanho do log: $log_size\n"
+    else
+        issues+=("⚠️ Log do Pi-hole não existe")
+        status_msg+="⚠️ Log do Pi-hole não existe\n"
+    fi
+
+    # 7. Verificar diretório web
+    if [[ -d /var/www/html/admin ]]; then
+        status_msg+="✅ Interface web existe\n"
+    else
+        issues+=("⚠️ Interface web não existe")
+        status_msg+="⚠️ Interface web não existe\n"
+    fi
+
+    # 8. Teste de conectividade
+    if timeout 5 dig @127.0.0.1 google.com &>/dev/null; then
+        status_msg+="✅ DNS local funcionando\n"
+    else
+        issues+=("⚠️ DNS local não responde")
+        status_msg+="⚠️ DNS local não responde\n"
+    fi
+
+    # Mostrar resultado do diagnóstico
+    local title="Diagnóstico Pi-hole"
+    if [[ ${#issues[@]} -eq 0 ]]; then
+        status_msg+="\n🎉 Nenhum problema crítico detectado!"
+        show_message "success" "$title" "$status_msg"
+    else
+        status_msg+="\n⚠️ Problemas encontrados:\n"
+        for issue in "${issues[@]}"; do
+            status_msg+="$issue\n"
+        done
+        show_message "warning" "$title" "$status_msg"
+    fi
+
+    return ${#issues[@]}
+}
+
+fix_pihole_common_issues() {
+    log_info "Tentando corrigir problemas comuns do Pi-hole..."
+
+    # 1. Parar serviços conflitantes
+    local conflicting_services=("systemd-resolved" "dnsmasq" "bind9")
+    for service in "${conflicting_services[@]}"; do
+        if systemctl is-active --quiet "$service"; then
+            log_info "Parando serviço conflitante: $service"
+            systemctl stop "$service" &>/dev/null || true
+            systemctl disable "$service" &>/dev/null || true
+        fi
+    done
+
+    # 2. Liberar porta 53 se ocupada por outro processo
+    local pid_on_53=$(netstat -tulpn 2>/dev/null | grep ":53 " | awk '{print $7}' | cut -d'/' -f1 | head -1)
+    if [[ -n "$pid_on_53" && "$pid_on_53" != "-" ]]; then
+        local process_name=$(ps -p "$pid_on_53" -o comm= 2>/dev/null || echo "unknown")
+        if [[ "$process_name" != "pihole-FTL" ]]; then
+            log_info "Finalizando processo que ocupa porta 53: $process_name (PID: $pid_on_53)"
+            kill -TERM "$pid_on_53" 2>/dev/null || true
+            sleep 2
+            kill -KILL "$pid_on_53" 2>/dev/null || true
+        fi
+    fi
+
+    # 3. Recriar configurações básicas se necessário
+    if [[ ! -f /etc/pihole/setupVars.conf ]] && [[ -n "$NETWORK_INTERFACE" ]] && [[ -n "$SYSTEM_IP" ]]; then
+        log_info "Recriando configuração básica do Pi-hole..."
+        mkdir -p /etc/pihole
+        cat > /etc/pihole/setupVars.conf <<EOF
+PIHOLE_INTERFACE=$NETWORK_INTERFACE
+IPV4_ADDRESS=$SYSTEM_IP/24
+IPV6_ADDRESS=
+PIHOLE_DNS_1=8.8.8.8
+PIHOLE_DNS_2=8.8.4.4
+QUERY_LOGGING=true
+INSTALL_WEB_SERVER=true
+INSTALL_WEB_INTERFACE=true
+LIGHTTPD_ENABLED=true
+DNS_FQDN_REQUIRED=true
+DNS_BOGUS_PRIV=true
+DNSSEC=false
+TEMPERATUREUNIT=C
+WEBUIBOXEDLAYOUT=boxed
+API_EXCLUDE_DOMAINS=
+API_EXCLUDE_CLIENTS=
+API_QUERY_LOG_SHOW=permittedonly
+API_PRIVACY_MODE=false
+EOF
+    fi
+
+    # 4. Tentar reiniciar o serviço
+    if systemctl list-unit-files | grep -q "pihole-FTL"; then
+        log_info "Reiniciando serviço pihole-FTL..."
+        systemctl enable pihole-FTL &>/dev/null || true
+        systemctl restart pihole-FTL &>/dev/null || true
+        sleep 3
+
+        if systemctl is-active --quiet pihole-FTL; then
+            log_success "Serviço pihole-FTL reiniciado com sucesso"
+            return 0
+        else
+            log_error "Falha ao reiniciar pihole-FTL"
+        fi
+    fi
+
+    return 1
+}
+
+# ============================================================================
 # FUNÇÕES DE INSTALAÇÃO - PI-HOLE
 # ============================================================================
 
 install_pihole() {
+    log_info "Verificando instalação do Pi-hole..."
+
+    # Verificar se Pi-hole já está instalado
+    if check_service_installed "pihole-FTL" "pihole"; then
+        log_info "Pi-hole detectado, executando diagnóstico..."
+
+        # Executar diagnóstico detalhado
+        if diagnose_pihole_status; then
+            show_message "info" "Pi-hole já instalado" "Pi-hole já está instalado e funcionando adequadamente.\nAplicando otimizações..."
+            configure_pihole_optimizations
+            return 0
+        else
+            log_info "Problemas detectados no Pi-hole, tentando correções..."
+            if fix_pihole_common_issues; then
+                log_success "Problemas do Pi-hole corrigidos"
+                configure_pihole_optimizations
+                return 0
+            else
+                if dialog --title "Problema Pi-hole" --yesno "Pi-hole está instalado mas com problemas.\n\nDeseja tentar reinstalação completa?" 8 50; then
+                    log_info "Removendo instalação problemática do Pi-hole..."
+                    systemctl stop pihole-FTL &>/dev/null || true
+                    systemctl disable pihole-FTL &>/dev/null || true
+                    # Continuar com nova instalação
+                else
+                    return 1
+                fi
+            fi
+        fi
+    fi
+
     log_info "Iniciando instalação do Pi-hole..."
 
     # Pré-configurar variáveis do Pi-hole
@@ -304,10 +554,63 @@ API_QUERY_LOG_SHOW=permittedonly
 API_PRIVACY_MODE=false
 EOF
 
-    # Instalar Pi-hole
-    if ! run_with_progress "Instalação Pi-hole" "curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended"; then
-        show_message "error" "Erro Pi-hole" "Falha na instalação do Pi-hole"
-        return 1
+    # Corrigir problemas comuns antes da instalação
+    fix_pihole_common_issues
+
+    # Mostrar progresso mais detalhado
+    show_message "info" "Instalando Pi-hole" "Iniciando instalação do Pi-hole...\nEsta operação pode levar 5-15 minutos.\nPor favor, aguarde sem interromper o processo."
+
+    # Instalar Pi-hole com timeout maior e melhor feedback
+    local pihole_install_cmd="curl -sSL https://install.pi-hole.net | timeout 25m bash /dev/stdin --unattended"
+
+    if ! run_with_progress "Instalação Pi-hole" "$pihole_install_cmd" "25"; then
+        log_error "Tentativa de instalação automática do Pi-hole falhou"
+
+        # Executar diagnóstico para identificar problema
+        diagnose_pihole_status
+
+        # Tentar método alternativo
+        if dialog --title "Erro na Instalação" --yesno "Instalação automática falhou.\n\nTentar instalação manual do Pi-hole?\n(Método alternativo - pode levar 10-20 minutos)" 12 65; then
+
+            show_message "info" "Instalação Manual" "Tentando instalação manual...\nEsta operação pode levar mais tempo.\nNão interrompa o processo."
+
+            # Instalação manual como fallback
+            (
+                echo "10"
+                apt update &>/dev/null
+                echo "25"
+                apt install -y curl wget git dialog &>/dev/null
+                echo "40"
+                # Limpar instalação anterior se existir
+                rm -rf /tmp/pi-hole 2>/dev/null || true
+                echo "50"
+                git clone --depth 1 https://github.com/pi-hole/pi-hole.git /tmp/pi-hole &>/dev/null || true
+                echo "70"
+                if [[ -d /tmp/pi-hole ]]; then
+                    cd "/tmp/pi-hole/automated install/" && timeout 15m bash basic-install.sh --unattended &>/dev/null
+                fi
+                echo "90"
+                # Aplicar configurações personalizadas
+                if [[ -f /tmp/pihole-setupvars.conf ]] && [[ -f /etc/pihole/setupVars.conf ]]; then
+                    cp /tmp/pihole-setupvars.conf /etc/pihole/setupVars.conf
+                    pihole reconfigure --unattended &>/dev/null || true
+                fi
+                echo "100"
+            ) | dialog --title "Instalação Manual Pi-hole" --gauge "Instalando via método alternativo..." 8 70 0
+
+            # Verificar se funcionou
+            sleep 5
+            if ! systemctl is-active --quiet pihole-FTL; then
+                # Último diagnóstico
+                diagnose_pihole_status
+                show_message "error" "Erro Pi-hole" "Falha na instalação manual do Pi-hole.\n\nConsulte os logs em /var/log/boxserver-installer.log\ne tente a instalação manual posteriormente."
+                return 1
+            else
+                log_success "Instalação manual do Pi-hole bem-sucedida"
+            fi
+        else
+            return 1
+        fi
     fi
 
     # Aplicar configurações personalizadas
@@ -375,10 +678,28 @@ EOF
 # ============================================================================
 
 install_unbound() {
+    log_info "Verificando instalação do Unbound..."
+
+    # Verificar se Unbound já está instalado
+    if check_service_installed "unbound" "unbound"; then
+        log_info "Unbound detectado, verificando configuração..."
+
+        if systemctl is-active --quiet unbound; then
+            show_message "info" "Unbound já instalado" "Unbound já está instalado e funcionando.\nVerificando configuração..."
+            # Verificar se configuração do Pi-hole existe
+            if [[ -f /etc/unbound/unbound.conf.d/pi-hole.conf ]]; then
+                log_success "Configuração do Unbound já está otimizada"
+                return 0
+            else
+                log_info "Aplicando configuração otimizada..."
+            fi
+        fi
+    fi
+
     log_info "Iniciando instalação do Unbound..."
 
     # Instalar Unbound
-    if ! run_with_progress "Instalação Unbound" "apt update && apt install -y unbound"; then
+    if ! run_with_progress "Instalação Unbound" "apt update && apt install -y unbound" "5"; then
         show_message "error" "Erro Unbound" "Falha na instalação do Unbound"
         return 1
     fi
@@ -511,10 +832,23 @@ test_unbound_dns() {
 # ============================================================================
 
 install_wireguard() {
+    log_info "Verificando instalação do WireGuard..."
+
+    # Verificar se WireGuard já está instalado
+    if check_service_installed "wg-quick@wg0" "wireguard"; then
+        if systemctl is-active --quiet wg-quick@wg0 2>/dev/null; then
+            show_message "info" "WireGuard já instalado" "WireGuard já está instalado e ativo.\nVerificando configuração..."
+            log_success "WireGuard já configurado e funcionando"
+            return 0
+        else
+            log_info "WireGuard instalado mas não configurado, reconfigurando..."
+        fi
+    fi
+
     log_info "Iniciando instalação do WireGuard..."
 
     # Instalar WireGuard
-    if ! run_with_progress "Instalação WireGuard" "apt update && apt install -y wireguard wireguard-tools"; then
+    if ! run_with_progress "Instalação WireGuard" "apt update && apt install -y wireguard wireguard-tools" "5"; then
         show_message "error" "Erro WireGuard" "Falha na instalação do WireGuard"
         return 1
     fi
@@ -635,10 +969,27 @@ setup_wireguard_network() {
 # ============================================================================
 
 install_rng_tools() {
+    log_info "Verificando instalação do RNG-tools..."
+
+    # Verificar se RNG-tools já está instalado
+    if check_service_installed "rng-tools" "rng-tools"; then
+        if systemctl is-active --quiet rng-tools; then
+            local entropy=$(cat /proc/sys/kernel/random/entropy_avail)
+            show_message "info" "RNG-tools já instalado" "RNG-tools já está ativo.\nEntropia atual: $entropy\nVerificando otimizações..."
+
+            if [[ $entropy -gt 1000 ]]; then
+                log_success "RNG-tools já configurado e funcionando adequadamente"
+                return 0
+            else
+                log_info "RNG-tools ativo mas entropia baixa, reotimizando..."
+            fi
+        fi
+    fi
+
     log_info "Iniciando instalação do RNG-tools..."
 
     # Instalar rng-tools
-    if ! run_with_progress "Instalação RNG-tools" "apt update && apt install -y rng-tools"; then
+    if ! run_with_progress "Instalação RNG-tools" "apt update && apt install -y rng-tools" "3"; then
         show_message "error" "Erro RNG-tools" "Falha na instalação do RNG-tools"
         return 1
     fi
@@ -1156,24 +1507,32 @@ full_installation() {
                         "apply_system_optimizations")
 
         local failed_components=()
+        local total_components=${#components[@]}
 
         for i in "${!components[@]}"; do
             local component="${components[i]}"
             local func="${functions[i]}"
+            local progress=$(( (i + 1) * 100 / total_components ))
 
-            log_info "Instalando: $component"
+            log_info "Instalando: $component ($((i+1))/$total_components)"
 
-            (
-                echo "25"
-                eval "$func" &>/dev/null
-                echo "100"
-            ) | dialog --title "Instalando $component" --gauge "Por favor, aguarde..." 6 60 0
+            # Mostrar progresso geral
+            echo "$progress" | dialog --title "Instalação Completa" --gauge "Instalando $component ($((i+1))/$total_components)" 8 60 0 &
+            local gauge_pid=$!
 
-            if [ $? -ne 0 ]; then
+            # Executar função
+            if eval "$func"; then
+                log_success "Instalação concluída: $component"
+                kill $gauge_pid 2>/dev/null
+            else
                 failed_components+=("$component")
                 log_error "Falha na instalação: $component"
-            else
-                log_success "Instalação concluída: $component"
+                kill $gauge_pid 2>/dev/null
+
+                # Perguntar se deve continuar
+                if ! dialog --title "Erro na Instalação" --yesno "Falha ao instalar $component.\n\nDeseja continuar com os outros componentes?" 8 50; then
+                    break
+                fi
             fi
         done
 
