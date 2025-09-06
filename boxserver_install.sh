@@ -1418,8 +1418,7 @@ create_backup() {
         /etc/unbound/unbound.conf.d/ \
         /etc/wireguard/ \
         /etc/cloudflared/ \
-        /etc/boxserver/ \
-        2>/dev/null
+        /etc/boxserver/ 2>/dev/null
 
     if [[ -f "$backup_file" ]]; then
         show_info "Backup criado com sucesso!\nArquivo: $backup_file"
