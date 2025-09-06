@@ -4,7 +4,7 @@
 # Automatização completa com interface TUI
 # Versão: 2.0
 # Compatível: Debian/Ubuntu/Armbian
-# Hardware: Otimizado para ARM RK322x
+# Hardware: Otimizado para ARM RK322x (Linux 4.4.194-rk322x)
 
 set -euo pipefail
 
@@ -281,28 +281,17 @@ install_basic_tools() {
 install_entropy() {
     log_message "Configurando entropia..."
 
-    # Para ARM, tentar rng-tools primeiro
-    if uname -m | grep -q arm; then
-        apt install -y rng-tools
+    # RK322x: usar rng-tools com urandom
+    apt install -y rng-tools
 
-        cat > /etc/default/rng-tools <<EOF
-RNGDEVICE="/dev/hwrng"
+    cat > /etc/default/rng-tools <<EOF
+RNGDEVICE="/dev/urandom"
 RNGDOPTIONS="--fill-watermark=2048 --feed-interval=60 --timeout=10"
 EOF
 
-        # Se hwrng não existir, usar urandom
-        if [[ ! -e /dev/hwrng ]]; then
-            sed -i 's|/dev/hwrng|/dev/urandom|' /etc/default/rng-tools
-        fi
-
-        systemctl enable rng-tools
-        systemctl restart rng-tools
-    else
-        # Para x86, usar haveged
-        apt install -y haveged
-        systemctl enable haveged
-        systemctl restart haveged
-    fi
+    # Ativar serviço (kernel 4.4: rng-tools)
+    systemctl enable rng-tools 2>/dev/null || true
+    systemctl restart rng-tools 2>/dev/null || true
 
     # Verificar entropia
     local entropy=$(cat /proc/sys/kernel/random/entropy_avail)
@@ -348,20 +337,22 @@ EOF
 optimize_system() {
     log_message "Aplicando otimizações do sistema..."
 
-    # Otimizações para ARM
+    # Otimizações para RK322x (kernel 4.4)
     cat >> /etc/sysctl.conf <<EOF
 
-# Otimizações BoxServer para ARM
+# Otimizações BoxServer para RK322x
 vm.swappiness=1
 vm.vfs_cache_pressure=50
 net.ipv4.ip_forward=1
+vm.dirty_ratio=10
+vm.dirty_background_ratio=5
 EOF
 
     sysctl -p
 
-    # Governor para ARM
+    # Governor para RK322x (kernel 4.4)
     if [[ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]]; then
-        echo ondemand | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+        echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
     fi
 
     # Script de controle de temperatura
@@ -854,13 +845,8 @@ install_cloudflare() {
     log_message "Instalando Cloudflare Tunnel..."
 
     # Detectar arquitetura
-    local arch
-    case "$(uname -m)" in
-        x86_64) arch="amd64" ;;
-        armv7l) arch="arm" ;;
-        aarch64) arch="arm64" ;;
-        *) arch="arm" ;;
-    esac
+    # Forçar ARMv7 para RK322x
+    local arch="arm"
 
     # Baixar cloudflared
     wget -O /tmp/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
@@ -1220,6 +1206,7 @@ full_installation() {
     log_message "Iniciando instalação completa do BoxServer"
 
     local steps=(
+        "Atualização do sistema"
         "Verificação do sistema"
         "Instalação de ferramentas básicas"
         "Configuração de entropia"
