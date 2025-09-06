@@ -414,14 +414,12 @@ install_unbound() {
     # Baixar root hints
     wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
 
-    # Configurar trust anchor
-    rm -f /var/lib/unbound/root.key
-    unbound-anchor -a /var/lib/unbound/root.key
+    # Limpar configurações anteriores
+    rm -rf /var/lib/unbound/root.key* /etc/unbound/unbound.conf.d/pi-hole.conf
+    mkdir -p /var/lib/unbound
 
-    # Ajustar permissões
-    chown -R unbound:unbound /var/lib/unbound/
-    chmod 644 /var/lib/unbound/root.hints
-    chmod 644 /var/lib/unbound/root.key
+    # Baixar e configurar root hints
+    wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
 
     # Configuração otimizada para ARM
     cat > /etc/unbound/unbound.conf.d/pi-hole.conf <<EOF
@@ -434,13 +432,14 @@ server:
     do-tcp: yes
     do-ip6: no
     prefer-ip6: no
+
+    # DNSSEC
+    auto-trust-anchor-file: "/var/lib/unbound/root.key"
+    root-hints: "/var/lib/unbound/root.hints"
     harden-glue: yes
     harden-dnssec-stripped: yes
-    use-caps-for-id: no
-    edns-buffer-size: 1232
-    prefetch: yes
 
-    # Otimizado para ARM/baixa RAM
+    # Otimizações
     num-threads: 1
     msg-cache-slabs: 1
     rrset-cache-slabs: 1
@@ -448,8 +447,15 @@ server:
     key-cache-slabs: 1
     so-rcvbuf: 512k
     so-sndbuf: 512k
+    edns-buffer-size: 1232
+    prefetch: yes
+    use-caps-for-id: no
 
-    # Configurações de privacidade
+    # Cache
+    cache-min-ttl: 0
+    cache-max-ttl: 86400
+
+    # Privacidade
     private-address: 192.168.0.0/16
     private-address: 169.254.0.0/16
     private-address: 172.16.0.0/12
@@ -458,12 +464,16 @@ server:
     private-address: fe80::/10
     hide-identity: yes
     hide-version: yes
-
-    # Trust anchor e root hints
-    auto-trust-anchor-file: "/var/lib/unbound/root.key"
-    root-hints: "/var/lib/unbound/root.hints"
-    trust-anchor-file: ""
 EOF
+
+    # Configurar permissões
+    chown -R unbound:unbound /var/lib/unbound
+    chmod 755 /var/lib/unbound
+    chmod 644 /var/lib/unbound/root.hints
+
+    # Gerar trust anchor inicial
+    unbound-anchor -a /var/lib/unbound/root.key -r /var/lib/unbound/root.hints
+    chmod 644 /var/lib/unbound/root.key
 
     # Verificar configuração
     if ! unbound-checkconf; then
