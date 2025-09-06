@@ -414,11 +414,22 @@ install_unbound() {
     # Parar serviço do Unbound
     systemctl stop unbound
 
+    # Criar arquivo de configuração principal
+    cat > /etc/unbound/unbound.conf <<EOF
+server:
+    verbosity: 1
+    directory: "/etc/unbound"
+    username: unbound
+    chroot: ""
+    pidfile: "/var/run/unbound.pid"
+    include: "/etc/unbound/unbound.conf.d/*.conf"
+EOF
+
     # Limpar TODAS as configurações existentes
     rm -rf /var/lib/unbound/*
     rm -rf /etc/unbound/unbound.conf.d/*
-    rm -f /etc/unbound/*.conf
     rm -f /etc/unbound/keys.d/*
+    mkdir -p /etc/unbound/unbound.conf.d
     mkdir -p /var/lib/unbound
 
     # Baixar root hints
@@ -470,12 +481,12 @@ server:
 EOF
 
     # Configurar permissões
-    # Configurar permissões
     chown -R unbound:unbound /var/lib/unbound /etc/unbound
     chmod 755 /var/lib/unbound
     chmod 644 /var/lib/unbound/root.hints
-    chmod -R 644 /etc/unbound/unbound.conf.d/*
+    chmod 644 /etc/unbound/unbound.conf
     chmod 755 /etc/unbound/unbound.conf.d
+    chmod 644 /etc/unbound/unbound.conf.d/*.conf
 
     # Verificar configuração
     if ! unbound-checkconf; then
