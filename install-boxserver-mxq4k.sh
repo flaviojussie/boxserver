@@ -1,228 +1,548 @@
 #!/bin/bash
-#
-# Box-Server TUI Installer
-#
-# Este script fornece uma interface de usuário de texto (TUI) para instalar e
-# configurar os componentes do Box-Server.
-#
 
-# --- Variáveis Globais ---
-readonly DIALOG_TITLE="Instalador Box-Server"
-readonly DIALOG_BACKTITLE="MXQ-4K (RK322x) Home Server"
-readonly DIALOG_OK_LABEL="Selecionar"
-readonly DIALOG_CANCEL_LABEL="Sair"
-readonly DIALOG_HEIGHT=20
-readonly DIALOG_WIDTH=70
+# BoxServer Setup Script
+# Automatização completa com interface TUI
+# Versão: 2.0
+# Compatível: Debian/Ubuntu/Armbian
+# Hardware: Otimizado para ARM RK322x (Linux 4.4.194-rk322x)
 
-# --- Funções ---
+set -euo pipefail
 
-# Exibe o menu principal
-show_main_menu() {
-    dialog --title "$DIALOG_TITLE" \
-           --backtitle "$DIALOG_BACKTITLE" \
-           --ok-label "$DIALOG_OK_LABEL" \
-           --cancel-label "$DIALOG_CANCEL_LABEL" \
-           --menu "Selecione uma opção:" \
-           $DIALOG_HEIGHT $DIALOG_WIDTH 10 \
-           1 "Verificações Iniciais" \
-           2 "Instalar Pi-hole" \
-           3 "Instalar Unbound" \
-           4 "Configurar Pi-hole com Unbound" \
-           5 "Instalar WireGuard" \
-           6 "Configurar Entropia" \
-           7 "Otimizações e Ajustes" \
-           8 "Testes Finais" \
-           9 "Monitoramento (Health Check)" \
-           10 "Instalação Completa" \
-           2> /tmp/menu_choice
+# =============================================================================
+# CONFIGURAÇÕES GLOBAIS
+# =============================================================================
 
+SCRIPT_NAME="BoxServer Setup"
+SCRIPT_VERSION="2.0"
+LOG_FILE="/var/log/boxserver-setup.log"
+CONFIG_DIR="/etc/boxserver"
+BACKUP_DIR="/etc/boxserver/backups"
+TEMP_DIR="/tmp/boxserver-setup"
+
+# Cores para output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configurações padrão (podem ser alteradas pelo usuário)
+DEFAULT_PIHOLE_IP="192.168.0.50"
+DEFAULT_PIHOLE_PORT="80"
+DEFAULT_UNBOUND_PORT="5335"
+DEFAULT_WIREGUARD_PORT="51820"
+DEFAULT_VPN_NETWORK="10.200.200.0/24"
+DEFAULT_VPN_SERVER_IP="10.200.200.1"
+
+# =============================================================================
+# FUNÇÕES UTILITÁRIAS
+# =============================================================================
+
+# Diagnóstico inteligente dos serviços principais
+diagnose_boxserver() {
+    local summary=""
+    local all_ok=true
+
+    summary+="Diagnóstico do BoxServer:\n\n"
+
+    # Entropia
+    local entropy_state
+    entropy_state=$(detect_service_state "rng-tools")
+    if [[ "$entropy_state" =~ installed=true ]] && [[ "$entropy_state" =~ configured=true ]] && [[ "$entropy_state" =~ running=true ]]; then
+        summary+="✅ Entropia (rng-tools): OK\n"
+    else
+        summary+="❌ Entropia (rng-tools): FALTA instalar/configurar\n"
+        all_ok=false
+    fi
+
+    # NTP
+    local ntp_state
+    ntp_state=$(detect_service_state "chrony")
+    if [[ "$ntp_state" =~ installed=true ]] && [[ "$ntp_state" =~ configured=true ]] && [[ "$ntp_state" =~ running=true ]]; then
+        summary+="✅ NTP (chrony): OK\n"
+    else
+        summary+="❌ NTP (chrony): FALTA instalar/configurar\n"
+        all_ok=false
+    fi
+
+    # Unbound
+    local unbound_state
+    unbound_state=$(detect_service_state "unbound")
+    if [[ "$unbound_state" =~ installed=true ]] && [[ "$unbound_state" =~ configured=true ]] && [[ "$unbound_state" =~ running=true ]]; then
+        summary+="✅ Unbound DNS: OK\n"
+    else
+        summary+="❌ Unbound DNS: FALTA instalar/configurar\n"
+        all_ok=false
+    fi
+
+    # Pi-hole
+    local pihole_state
+    pihole_state=$(detect_service_state "pihole")
+    if [[ "$pihole_state" =~ installed=true ]] && [[ "$pihole_state" =~ configured=true ]] && [[ "$pihole_state" =~ running=true ]]; then
+        summary+="✅ Pi-hole: OK\n"
+    else
+        summary+="❌ Pi-hole: FALTA instalar/configurar\n"
+        all_ok=false
+    fi
+
+    # WireGuard
+    local wg_state
+    wg_state=$(detect_service_state "wireguard")
+    if [[ "$wg_state" =~ installed=true ]] && [[ "$wg_state" =~ configured=true ]] && [[ "$wg_state" =~ running=true ]]; then
+        summary+="✅ WireGuard VPN: OK\n"
+    else
+        summary+="❌ WireGuard VPN: FALTA instalar/configurar\n"
+        all_ok=false
+    fi
+
+    # Cloudflared
+    local cf_state
+    cf_state=$(detect_service_state "cloudflared")
+    if [[ "$cf_state" =~ installed=true ]] && [[ "$cf_state" =~ configured=true ]] && [[ "$cf_state" =~ running=true ]]; then
+        summary+="✅ Cloudflare Tunnel: OK\n"
+    else
+        summary+="❌ Cloudflare Tunnel: FALTA instalar/configurar\n"
+        all_ok=false
+    fi
+
+    whiptail --title "Diagnóstico do BoxServer" --msgbox "$summary" 20 70
+
+    $all_ok && return 0 || return 1
+}
+
+# Função para decidir se deve reinstalar/reconfigurar um serviço
+should_reinstall_service() {
+    local service_name="$1"
+    local human_name="$2"
+    local state
+    state=$(detect_service_state "$service_name")
+    if [[ "$state" =~ installed=true ]] && [[ "$state" =~ configured=true ]] && [[ "$state" =~ running=true ]]; then
+        if ask_yes_no "$human_name já está instalado, configurado e rodando.\nDeseja reinstalar/reconfigurar?"; then
+            return 0
+        else
+            log_message "$human_name já funcional, pulando reinstalação."
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Logging
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+# TUI Functions
+show_info() {
+    whiptail --title "$SCRIPT_NAME" --msgbox "$1" 12 70
+}
+
+show_error() {
+    whiptail --title "ERRO" --msgbox "$1" 10 60
+    log_message "ERRO: $1"
+}
+
+ask_yes_no() {
+    whiptail --title "$SCRIPT_NAME" --yesno "$1" 10 60
     return $?
 }
 
-# Executa as verificações iniciais
-run_initial_checks() {
-    local log_file="/tmp/boxserver_checks.log"
-    echo "[$(date)] Iniciando verificações do sistema" > "$log_file"
-    
-    dialog --infobox "Executando verificações iniciais..." 4 40
-    
-    local checks_passed=0
-    local total_checks=5
-    local error_msg=""
-    local warning_msg=""
-    
-    # Verificar se é root
-    if [ "$(id -u)" -eq 0 ]; then
-        error_msg+="❌ Não execute este script como root!\n"
-        echo "[$(date)] ERRO: Script executado como root" >> "$log_file"
-    else
-        checks_passed=$((checks_passed + 1))
-        echo "[$(date)] OK: Usuário não-root detectado" >> "$log_file"
+get_input() {
+    local title="$1"
+    local prompt="$2"
+    local default="${3:-}"
+    whiptail --title "$title" --inputbox "$prompt" 10 60 "$default" 3>&1 1>&2 2>&3
+}
+
+get_password() {
+    local title="$1"
+    local prompt="$2"
+    whiptail --title "$title" --passwordbox "$prompt" 10 60 3>&1 1>&2 2>&3
+}
+
+show_menu() {
+    local title="$1"
+    shift
+    whiptail --title "$title" --menu "Escolha uma opção:" 20 70 12 "$@" 3>&1 1>&2 2>&3
+}
+
+show_checklist() {
+    local title="$1"
+    shift
+    whiptail --title "$title" --checklist "Selecione os itens:" 20 70 10 "$@" 3>&1 1>&2 2>&3
+}
+
+# Verificar se é root
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        show_error "Este script precisa ser executado como root (sudo)."
+        exit 1
     fi
-    
-    # Verificar conexão com internet
-    if ping -c 1 8.8.8.8 > /dev/null 2>&1; then
-        checks_passed=$((checks_passed + 1))
-        echo "[$(date)] OK: Conectividade com internet" >> "$log_file"
-    else
-        error_msg+="❌ Sem conexão com a internet!\n"
-        echo "[$(date)] ERRO: Sem conectividade com internet" >> "$log_file"
+}
+
+# Criar diretórios necessários
+create_directories() {
+    mkdir -p "$CONFIG_DIR" "$BACKUP_DIR" "$TEMP_DIR"
+    chmod 700 "$CONFIG_DIR" "$BACKUP_DIR"
+}
+
+# Verificar conectividade
+check_internet() {
+    if ! ping -c 1 8.8.8.8 &> /dev/null; then
+        show_error "Sem conexão com a internet. Verificar conectividade."
+        return 1
     fi
-    
-    # Verificar se dialog está instalado
-    if command -v dialog > /dev/null 2>&1; then
-        checks_passed=$((checks_passed + 1))
-        echo "[$(date)] OK: Dialog instalado" >> "$log_file"
-    else
-        error_msg+="❌ Dialog não está instalado!\n"
-        echo "[$(date)] ERRO: Dialog não encontrado" >> "$log_file"
+    return 0
+}
+
+# Detectar interface de rede
+detect_network_interface() {
+    local interface
+    interface=$(ip route | grep default | awk '{print $5}' | head -1)
+    if [[ -z "$interface" ]]; then
+        show_error "Não foi possível detectar a interface de rede principal."
+        return 1
     fi
-    
-    # Verificar se curl está instalado
-    if command -v curl > /dev/null 2>&1; then
-        checks_passed=$((checks_passed + 1))
-        echo "[$(date)] OK: Curl instalado" >> "$log_file"
-    else
-        error_msg+="❌ Curl não está instalado!\n"
-        echo "[$(date)] ERRO: Curl não encontrado" >> "$log_file"
-    fi
-    
-    # Verificar espaço em disco (mínimo 2GB)
-    local available_space
-    available_space=$(df / | awk 'NR==2 {print $4}')
-    local available_gb=$((available_space / 1048576))
-    if [ "$available_space" -gt 2097152 ]; then  # 2GB em KB
-        checks_passed=$((checks_passed + 1))
-        echo "[$(date)] OK: Espaço em disco suficiente (${available_gb}GB)" >> "$log_file"
-    else
-        error_msg+="❌ Espaço insuficiente em disco (${available_gb}GB disponível, mínimo 2GB)!\n"
-        echo "[$(date)] ERRO: Espaço insuficiente (${available_gb}GB)" >> "$log_file"
-    fi
-    
-    # Verificações adicionais (warnings)
-    local ram_mb
+    echo "$interface"
+}
+
+# Verificar hardware
+check_hardware() {
+    local ram_mb cpu_temp_c disk_usage
+
+    # RAM em MB
     ram_mb=$(free -m | awk 'NR==2{print $2}')
-    if [ "$ram_mb" -lt 512 ]; then
-        warning_msg+="⚠️ RAM baixa (${ram_mb}MB). Recomendado: 512MB+\n"
-        echo "[$(date)] AVISO: RAM baixa (${ram_mb}MB)" >> "$log_file"
-    fi
-    
-    # Verificar arquitetura ARM
-    local arch
-    arch=$(uname -m)
-    if [[ "$arch" == "armv7l" || "$arch" == "aarch64" ]]; then
-        echo "[$(date)] INFO: Arquitetura ARM detectada ($arch)" >> "$log_file"
+
+    # Temperatura CPU (se disponível)
+    if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
+        cpu_temp_c=$(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))
     else
-        warning_msg+="⚠️ Arquitetura não-ARM detectada ($arch)\n"
-        echo "[$(date)] AVISO: Arquitetura não-ARM ($arch)" >> "$log_file"
+        cpu_temp_c="N/A"
     fi
-    
-    # Informações do sistema
-    local network_interface=$(ip route | grep default | awk '{print $5}' | head -1)
-    local ram_info=$(free -h)
-    local disk_info=$(df -h)
-    local cpu_info=$(lscpu | grep "Model name")
-    
-    # Resultado final
-    local result_msg=""
-    if [ $checks_passed -eq $total_checks ]; then
-        result_msg="✅ Todas as verificações passaram!\n\nSistema pronto para instalação."
-        if [ -n "$warning_msg" ]; then
-            result_msg+="\n\n$warning_msg"
+
+    # Uso do disco
+    disk_usage=$(df / | awk 'NR==2{print $5}' | sed 's/%//')
+
+    # Verificações críticas
+    if [[ $ram_mb -lt 512 ]]; then
+        if ! ask_yes_no "RAM detectada: ${ram_mb}MB (recomendado: 1GB+)\nContinuar mesmo assim?"; then
+            exit 1
         fi
-        echo "[$(date)] SUCESSO: Todas as verificações passaram" >> "$log_file"
-    else
-        result_msg="⚠️ Algumas verificações falharam:\n\n$error_msg"
-        if [ -n "$warning_msg" ]; then
-            result_msg+="\n$warning_msg"
-        fi
-        result_msg+="\nCorreja os problemas antes de continuar.\n\n📋 Log: $log_file"
-        echo "[$(date)] FALHA: $((total_checks - checks_passed)) verificações falharam" >> "$log_file"
     fi
-    
-    # Adicionar informações do sistema
-    result_msg+="\n\n📊 Informações do Sistema:\n"
-    result_msg+="Interface de Rede: $network_interface\n"
-    result_msg+="RAM: ${ram_mb}MB\n"
-    result_msg+="Arquitetura: $arch\n"
-    result_msg+="Espaço Disponível: ${available_gb}GB"
-    
-    dialog --title "Verificações Iniciais" --msgbox "$result_msg" 20 80
+
+    # Apenas logar a temperatura sem bloquear
+    if [[ "$cpu_temp_c" != "N/A" ]] && [[ $cpu_temp_c -gt 75 ]]; then
+        log_message "AVISO: Temperatura CPU alta: ${cpu_temp_c}°C"
+    fi
+
+
+    if [[ $disk_usage -gt 90 ]]; then
+        if ! ask_yes_no "Disco com ${disk_usage}% de uso. Continuar?"; then
+            exit 1
+        fi
+    fi
+
+    log_message "Hardware verificado: RAM=${ram_mb}MB, CPU=${cpu_temp_c}°C, Disco=${disk_usage}%"
 }
 
-# Instalação do Pi-hole
-run_pihole_installation() {
-    dialog --title "Instalação do Pi-hole" --yesno "Isso iniciará o instalador oficial do Pi-hole. O script é interativo e solicitará informações. Deseja continuar?" 10 60
-    if [ $? -ne 0 ]; then
-        return
-    fi
+# =============================================================================
+# CONFIGURAÇÃO INICIAL
+# =============================================================================
 
-    # Sair do dialog para executar o instalador interativo
-    clear
-    echo "Iniciando o instalador do Pi-hole..."
-    curl -sSL https://install.pi-hole.net | bash
+configure_system_settings() {
+    local pihole_ip pihole_port unbound_port wireguard_port vpn_network
 
-    dialog --title "Configuração Pós-Instalação" --msgbox "A instalação básica do Pi-hole foi concluída. Agora vamos para a configuração." 10 60
+    show_info "Vamos configurar os parâmetros básicos do sistema."
 
-    local password
-    password=$(dialog --passwordbox "Digite a nova senha de admin do Pi-hole:" 10 60 3>&1 1>&2 2>&3 3>&-)
-    if [ -n "$password" ]; then
-        pihole -a -p "$password"
-        dialog --infobox "Senha do admin atualizada." 5 40
-        sleep 2
-    fi
+    # IP do Pi-hole
+    pihole_ip=$(get_input "Configuração IP" "IP fixo para Pi-hole:" "$DEFAULT_PIHOLE_IP")
+    [[ -z "$pihole_ip" ]] && pihole_ip="$DEFAULT_PIHOLE_IP"
 
-    dialog --title "Configuração Avançada" --yesno "Deseja configurar as variáveis avançadas agora (setupVars.conf)? (Recomendado)" 10 60
-    if [ $? -eq 0 ]; then
-        local network_interface
-        network_interface=$(ip route | grep default | awk '{print $5}' | head -1)
-        local ipv4_address
-        ipv4_address=$(dialog --inputbox "Digite o endereço IP estático para o Pi-hole (ex: 192.168.0.50/24):" 10 60 "192.168.0.50/24" 3>&1 1>&2 2>&3 3>&-)
+    # Portas dos serviços
+    pihole_port=$(get_input "Configuração Portas" "Porta do Pi-hole (web):" "$DEFAULT_PIHOLE_PORT")
+    [[ -z "$pihole_port" ]] && pihole_port="$DEFAULT_PIHOLE_PORT"
 
-        local config_content="PIHOLE_INTERFACE=$network_interface\n"
-        config_content+="IPV4_ADDRESS=$ipv4_address\n"
-        config_content+="PIHOLE_DNS_1=127.0.0.1#5335\n"
-        config_content+="DNS_FQDN_REQUIRED=true\n"
-        config_content+="DNS_BOGUS_PRIV=true\n"
-        config_content+="DNSSEC=true\n"
+    unbound_port=$(get_input "Configuração Portas" "Porta do Unbound DNS:" "$DEFAULT_UNBOUND_PORT")
+    [[ -z "$unbound_port" ]] && unbound_port="$DEFAULT_UNBOUND_PORT"
 
-        dialog --title "Conteúdo de setupVars.conf" --yesno "O seguinte conteúdo será escrito em /etc/pihole/setupVars.conf. Confirma?\n\n$config_content" 20 70
+    wireguard_port=$(get_input "Configuração Portas" "Porta do WireGuard VPN:" "$DEFAULT_WIREGUARD_PORT")
+    [[ -z "$wireguard_port" ]] && wireguard_port="$DEFAULT_WIREGUARD_PORT"
 
-        if [ $? -eq 0 ]; then
-            echo -e "$config_content" | sudo tee /etc/pihole/setupVars.conf > /dev/null
-            dialog --infobox "Arquivo de configuração atualizado." 5 40
-            sleep 2
-        fi
-    fi
+    # Rede VPN
+    vpn_network=$(get_input "Configuração VPN" "Rede VPN (CIDR):" "$DEFAULT_VPN_NETWORK")
+    [[ -z "$vpn_network" ]] && vpn_network="$DEFAULT_VPN_NETWORK"
 
-    local status_ftl
-    status_ftl=$(sudo systemctl status pihole-FTL --no-pager)
-    local status_pihole
-    status_pihole=$(pihole status)
-    dialog --title "Status do Pi-hole" --msgbox "Status dos serviços:\n\npihole-FTL:\n$status_ftl\n\nPi-hole Status:\n$status_pihole" 20 70
+    # Salvar configurações
+    cat > "$CONFIG_DIR/config.conf" <<EOF
+# BoxServer Configuration
+PIHOLE_IP="$pihole_ip"
+PIHOLE_PORT="$pihole_port"
+UNBOUND_PORT="$unbound_port"
+WIREGUARD_PORT="$wireguard_port"
+VPN_NETWORK="$vpn_network"
+VPN_SERVER_IP="$(echo "$vpn_network" | sed 's|/.*|.1|')"
+NETWORK_INTERFACE="$(detect_network_interface)"
+INSTALLATION_DATE="$(date)"
+EOF
+
+    log_message "Configurações salvas em $CONFIG_DIR/config.conf"
+    show_info "Configurações salvas com sucesso!"
 }
 
-# Instalação do Unbound
-run_unbound_installation() {
-    dialog --title "Instalação do Unbound" --infobox "Instalando Unbound..." 5 40
-    sudo apt install unbound -y > /tmp/unbound_install.log 2>&1
+# Carregar configurações
+load_config() {
+    if [[ -f "$CONFIG_DIR/config.conf" ]]; then
+        source "$CONFIG_DIR/config.conf"
+        return 0
+    else
+        return 1
+    fi
+}
 
-    dialog --title "Configuração do Unbound" --yesno "Deseja criar o arquivo de configuração para o Pi-hole agora? (Recomendado)" 10 60
-    if [ $? -eq 0 ]; then
-        local unbound_config='''server:
+# =============================================================================
+# DETECÇÃO DE ESTADO DOS SERVIÇOS
+# =============================================================================
+
+detect_service_state() {
+    local service_name="$1"
+    local config_file="${2:-}"
+
+    local installed=false
+    local configured=false
+    local running=false
+
+    # Verificar se está instalado
+    case "$service_name" in
+        "pihole")
+            [[ -f /usr/local/bin/pihole ]] && installed=true
+            [[ -f /etc/pihole/setupVars.conf ]] && configured=true
+            systemctl is-active --quiet pihole-FTL && running=true
+            ;;
+        "unbound")
+            which unbound &>/dev/null && installed=true
+            [[ -f /etc/unbound/unbound.conf.d/pi-hole.conf ]] && configured=true
+            systemctl is-active --quiet unbound && running=true
+            ;;
+        "wireguard")
+            which wg &>/dev/null && installed=true
+            [[ -f /etc/wireguard/wg0.conf ]] && configured=true
+            systemctl is-active --quiet wg-quick@wg0 && running=true
+            ;;
+        "cloudflared")
+            which cloudflared &>/dev/null && installed=true
+            [[ -f /etc/cloudflared/config.yml ]] && configured=true
+            systemctl is-active --quiet cloudflared && running=true
+            ;;
+        "rng-tools"|"haveged")
+            if which rng-tools &>/dev/null || which haveged &>/dev/null; then
+                installed=true
+                configured=true
+                if systemctl is-active --quiet rng-tools || systemctl is-active --quiet haveged; then
+                    running=true
+                fi
+            fi
+            ;;
+        "chrony")
+            which chrony &>/dev/null && installed=true
+            [[ -f /etc/chrony/chrony.conf ]] && configured=true
+            systemctl is-active --quiet chrony && running=true
+            ;;
+    esac
+
+    echo "installed=$installed configured=$configured running=$running"
+}
+
+# =============================================================================
+# FUNÇÕES DE INSTALAÇÃO
+# =============================================================================
+
+install_basic_tools() {
+    log_message "Instalando ferramentas básicas..."
+
+    apt update
+    apt install -y curl wget gnupg lsb-release software-properties-common \
+                   dnsutils net-tools htop iotop qrencode dialog whiptail \
+                   ufw fail2ban logrotate cron
+
+    log_message "Ferramentas básicas instaladas"
+}
+
+install_entropy() {
+    if ! should_reinstall_service "rng-tools" "Entropia (rng-tools)"; then
+        return 0
+    fi
+    log_message "Configurando entropia..."
+
+    # RK322x: usar rng-tools com urandom
+    apt install -y rng-tools
+
+    cat > /etc/default/rng-tools <<EOF
+RNGDEVICE="/dev/urandom"
+RNGDOPTIONS="--fill-watermark=2048 --feed-interval=60 --timeout=10"
+EOF
+
+    # Ativar serviço (kernel 4.4: rng-tools)
+    systemctl enable rng-tools 2>/dev/null || true
+    systemctl restart rng-tools 2>/dev/null || true
+
+    # Verificar entropia
+    local entropy=$(cat /proc/sys/kernel/random/entropy_avail)
+    if [[ $entropy -lt 1000 ]]; then
+        show_error "Entropia baixa: $entropy (recomendado: >1000)"
+        return 1
+    fi
+
+    log_message "Entropia configurada: $entropy"
+}
+
+install_ntp() {
+    if ! should_reinstall_service "chrony" "NTP (chrony)"; then
+        return 0
+    fi
+    log_message "Instalando e configurando NTP..."
+
+    apt install -y chrony
+
+    # Backup da configuração original
+    cp /etc/chrony/chrony.conf "$BACKUP_DIR/chrony.conf.backup"
+
+    # Configurar servidores NTP brasileiros
+    cat >> /etc/chrony/chrony.conf <<EOF
+
+# Servidores NTP brasileiros
+server a.st1.ntp.br iburst
+server b.st1.ntp.br iburst
+server c.st1.ntp.br iburst
+server d.st1.ntp.br iburst
+EOF
+
+    systemctl enable chrony
+    systemctl restart chrony
+
+    # Aguardar sincronização
+    sleep 5
+
+    if chrony sources &>/dev/null; then
+        log_message "NTP configurado e sincronizado"
+    else
+        log_message "AVISO: NTP instalado mas pode não estar sincronizado"
+    fi
+}
+
+optimize_system() {
+    log_message "Aplicando otimizações do sistema..."
+
+    # Otimizações para RK322x (kernel 4.4)
+    cat >> /etc/sysctl.conf <<EOF
+
+# Otimizações BoxServer para RK322x
+vm.swappiness=1
+vm.vfs_cache_pressure=50
+net.ipv4.ip_forward=1
+vm.dirty_ratio=10
+vm.dirty_background_ratio=5
+EOF
+
+    sysctl -p
+
+    # Governor para RK322x (kernel 4.4)
+    if [[ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]]; then
+        echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+    fi
+
+    # Script de controle de temperatura
+    cat > /etc/cron.hourly/check-temp <<'EOF'
+#!/bin/bash
+if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
+    TEMP=$(cat /sys/class/thermal/thermal_zone0/temp)
+    TEMP_C=$((TEMP/1000))
+    if [[ $TEMP_C -gt 75 ]]; then
+        logger "ALERTA: CPU acima de 75°C ($TEMP_C°C)! Reduzindo clock."
+        if [[ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq ]]; then
+            echo 816000 > /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq
+        fi
+    fi
+fi
+EOF
+
+    chmod +x /etc/cron.hourly/check-temp
+
+    log_message "Otimizações aplicadas"
+}
+
+setup_basic_firewall() {
+    log_message "Configurando firewall básico..."
+
+    # Resetar regras UFW
+    ufw --force reset
+
+    # Configurações básicas
+    ufw default deny incoming
+    ufw default allow outgoing
+
+    # Permitir SSH
+    ufw allow ssh
+
+    # Não habilitar ainda - aguardar configuração completa
+    log_message "Firewall configurado (não habilitado ainda)"
+}
+
+install_unbound() {
+    if ! should_reinstall_service "unbound" "Unbound DNS"; then
+        return 0
+    fi
+    log_message "Instalando Unbound..."
+
+    if ! load_config; then
+        show_error "Configuração não encontrada. Execute a configuração inicial primeiro."
+        return 1
+    fi
+
+    apt install -y unbound
+
+    # Parar serviço do Unbound
+    systemctl stop unbound
+
+    # Criar arquivo de configuração principal
+    cat > /etc/unbound/unbound.conf <<EOF
+server:
+    verbosity: 1
+    directory: "/etc/unbound"
+    username: unbound
+    chroot: ""
+    pidfile: "/var/run/unbound.pid"
+    include: "/etc/unbound/unbound.conf.d/*.conf"
+EOF
+
+    # Limpar TODAS as configurações existentes
+    rm -rf /var/lib/unbound/*
+    rm -rf /etc/unbound/unbound.conf.d/*
+    rm -f /etc/unbound/keys.d/*
+    mkdir -p /etc/unbound/unbound.conf.d
+    mkdir -p /var/lib/unbound
+
+    # Baixar root hints
+    wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
+
+    # Configuração otimizada para ARM
+    cat > /etc/unbound/unbound.conf.d/pi-hole.conf <<EOF
+server:
     verbosity: 1
     interface: 127.0.0.1
-    port: 5335
+    port: $UNBOUND_PORT
     do-ip4: yes
     do-udp: yes
     do-tcp: yes
     do-ip6: no
     prefer-ip6: no
-    harden-glue: yes
-    harden-dnssec-stripped: yes
-    use-caps-for-id: no
-    edns-buffer-size: 1232
-    prefetch: yes
+
+    # Configurações básicas de DNS
+    root-hints: "/var/lib/unbound/root.hints"
+    trust-anchor-file: ""
+    auto-trust-anchor-file: ""
+    module-config: "iterator"
+
+    # Otimizações
     num-threads: 1
     msg-cache-slabs: 1
     rrset-cache-slabs: 1
@@ -230,6 +550,15 @@ run_unbound_installation() {
     key-cache-slabs: 1
     so-rcvbuf: 512k
     so-sndbuf: 512k
+    edns-buffer-size: 1232
+    prefetch: yes
+    use-caps-for-id: no
+
+    # Cache
+    cache-min-ttl: 0
+    cache-max-ttl: 86400
+
+    # Privacidade
     private-address: 192.168.0.0/16
     private-address: 169.254.0.0/16
     private-address: 172.16.0.0/12
@@ -238,1140 +567,1182 @@ run_unbound_installation() {
     private-address: fe80::/10
     hide-identity: yes
     hide-version: yes
-    auto-trust-anchor-file: "/var/lib/unbound/root.key"
-    root-hints: "/var/lib/unbound/root.hints"'''
+EOF
 
-        echo "$unbound_config" | sudo tee /etc/unbound/unbound.conf.d/pi-hole.conf > /dev/null
-        dialog --infobox "Arquivo de configuração do Unbound criado." 5 50
-        sleep 2
+    # Configurar permissões
+    chown -R unbound:unbound /var/lib/unbound /etc/unbound
+    chmod 755 /var/lib/unbound
+    chmod 644 /var/lib/unbound/root.hints
+    chmod 644 /etc/unbound/unbound.conf
+    chmod 755 /etc/unbound/unbound.conf.d
+    chmod 644 /etc/unbound/unbound.conf.d/*.conf
+
+    # Verificar configuração
+    if ! unbound-checkconf; then
+        show_error "Erro na configuração do Unbound"
+        return 1
     fi
 
-    dialog --title "Configurar Trust Anchor" --infobox "Baixando root hints e configurando trust anchor..." 5 60
-    sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root > /tmp/unbound_setup.log 2>&1
-    sudo unbound-anchor -a /var/lib/unbound/root.key >> /tmp/unbound_setup.log 2>&1
+    systemctl enable unbound
+    systemctl restart unbound
 
-    if [ $? -ne 0 ]; then
-        dialog --infobox "Método principal falhou. Usando método manual para trust anchor..." 5 70
-        sudo wget -O /tmp/root.key https://data.iana.org/root-anchors/icannbundle.pem >> /tmp/unbound_setup.log 2>&1
-        sudo mv /tmp/root.key /var/lib/unbound/root.key
-    fi
-
-    sudo chown unbound:unbound /var/lib/unbound/root.key /var/lib/unbound/root.hints
-    sudo chmod 644 /var/lib/unbound/root.key /var/lib/unbound/root.hints
-    dialog --infobox "Trust anchor configurado." 5 40
-    sleep 2
-
-    dialog --title "Testar Configuração" --infobox "Verificando a configuração do Unbound..." 5 50
-    local checkconf_output
-    checkconf_output=$(sudo unbound-checkconf)
-    if [ $? -eq 0 ]; then
-        dialog --infobox "Configuração do Unbound OK.\n$checkconf_output" 10 70
-        sleep 3
+    # Testar funcionamento
+    sleep 3
+    if dig @127.0.0.1 -p "$UNBOUND_PORT" google.com +short &>/dev/null; then
+        log_message "Unbound instalado e funcionando"
     else
-        dialog --msgbox "Erro na configuração do Unbound:\n$checkconf_output" 15 70
-        return
-    fi
-
-    sudo systemctl restart unbound
-    sudo systemctl enable unbound
-
-    dialog --title "Testar DNS" --infobox "Testando resolução de DNS com Unbound..." 5 60
-    local dig_result
-    dig_result=$(dig @127.0.0.1 -p 5335 google.com)
-    dialog --title "Resultado do Teste de DNS" --msgbox "Resultado:\n\n$dig_result" 20 70
-}
-
-# Configurar Pi-hole com Unbound
-run_configure_pihole_unbound() {
-    dialog --title "Configurar Pi-hole com Unbound" --yesno "Isso configurará o Pi-hole para usar o Unbound como seu resolvedor de DNS recursivo.\n\nIsso modificará o arquivo /etc/pihole/setupVars.conf e reiniciará o serviço de DNS. Deseja continuar?" 12 75
-    if [ $? -ne 0 ]; then
-        return
-    fi
-
-    dialog --infobox "Configurando Pi-hole para usar Unbound..." 4 50
-    
-    # Backup do arquivo original
-    sudo cp /etc/pihole/setupVars.conf /etc/pihole/setupVars.conf.backup
-    
-    # Atualizar configuração DNS no setupVars.conf
-    sudo sed -i 's/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
-    sudo sed -i 's/^PIHOLE_DNS_2=.*/PIHOLE_DNS_2=/' /etc/pihole/setupVars.conf
-    
-    # Adicionar configurações se não existirem
-    if ! grep -q "PIHOLE_DNS_1" /etc/pihole/setupVars.conf; then
-        echo "PIHOLE_DNS_1=127.0.0.1#5335" | sudo tee -a /etc/pihole/setupVars.conf > /dev/null
-    fi
-    if ! grep -q "PIHOLE_DNS_2" /etc/pihole/setupVars.conf; then
-        echo "PIHOLE_DNS_2=" | sudo tee -a /etc/pihole/setupVars.conf > /dev/null
-    fi
-    
-    dialog --infobox "Configuração atualizada. Reiniciando serviços do Pi-hole..." 5 60
-    sleep 2
-    
-    # Reiniciar serviços
-    sudo systemctl restart pihole-FTL
-    sudo pihole restartdns > /tmp/pihole_restart.log 2>&1
-    
-    # Testar integração
-    dialog --infobox "Testando integração Pi-hole + Unbound..." 4 50
-    sleep 2
-    local test_result
-    test_result=$(dig @127.0.0.1 google.com +short 2>/dev/null | head -1)
-    
-    if [ -n "$test_result" ]; then
-        dialog --title "Sucesso" --msgbox "Pi-hole foi configurado para usar o Unbound com sucesso!\n\nTeste de DNS: $test_result" 10 60
-    else
-        dialog --title "Aviso" --msgbox "Configuração aplicada, mas o teste de DNS falhou. Verifique os logs em /tmp/pihole_restart.log" 10 60
+        show_error "Unbound instalado mas não está funcionando corretamente"
+        return 1
     fi
 }
 
-# Instalação do WireGuard
-run_wireguard_installation() {
-    dialog --title "Instalação do WireGuard" --yesno "Isso instalará o WireGuard com configuração manual otimizada para RK322x.\n\nDeseja continuar?" 10 70
-    if [ $? -ne 0 ]; then
-        return
+install_pihole() {
+    if ! should_reinstall_service "pihole" "Pi-hole"; then
+        return 0
     fi
-    
-    # Detectar interface de rede principal
-    dialog --infobox "Detectando interface de rede..." 4 40
-    local main_interface
-    main_interface=$(ip route | grep default | awk '{print $5}' | head -n1)
-    
-    if [ -z "$main_interface" ]; then
-        main_interface="eth0"
-        dialog --infobox "Interface padrão não detectada. Usando eth0" 4 50
+    log_message "Instalando Pi-hole..."
+
+    if ! load_config; then
+        show_error "Configuração não encontrada."
+        return 1
+    fi
+
+    # Configurar setupVars.conf antes da instalação
+    mkdir -p /etc/pihole
+    cat > /etc/pihole/setupVars.conf <<EOF
+PIHOLE_INTERFACE=$NETWORK_INTERFACE
+IPV4_ADDRESS=$PIHOLE_IP/24
+IPV6_ADDRESS=
+PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT
+PIHOLE_DNS_2=
+DNS_FQDN_REQUIRED=true
+DNS_BOGUS_PRIV=true
+DNSSEC=true
+DNSMASQ_LISTENING=single
+PIHOLE_DOMAIN=lan
+LIGHTTPD_ENABLED=true
+WEBPORT=$PIHOLE_PORT
+EOF
+
+    # Instalar Pi-hole automaticamente
+    curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
+
+    # Configurar senha admin
+    local admin_password
+    admin_password=$(get_password "Pi-hole Admin" "Digite a senha do admin do Pi-hole:")
+
+    if [[ -n "$admin_password" ]]; then
+        pihole -a -p "$admin_password"
+    fi
+
+    # Reiniciar para aplicar configurações
+    systemctl restart pihole-FTL
+
+    # Testar funcionamento
+    sleep 5
+    if dig @127.0.0.1 google.com +short &>/dev/null; then
+        log_message "Pi-hole instalado e funcionando"
     else
-        dialog --infobox "Interface detectada: $main_interface" 4 40
+        show_error "Pi-hole instalado mas não está funcionando corretamente"
+        return 1
     fi
-    sleep 2
-    
-    # Instalar WireGuard
-    dialog --infobox "Instalando WireGuard..." 4 30
-    sudo apt-get update > /tmp/wg_install.log 2>&1
-    sudo apt-get install wireguard wireguard-tools qrencode -y >> /tmp/wg_install.log 2>&1
-    
+}
+
+# =============================================================================
+# WIREGUARD COM GESTÃO DE CLIENTES
+# =============================================================================
+
+install_wireguard() {
+    if ! should_reinstall_service "wireguard" "WireGuard VPN"; then
+        return 0
+    fi
+    log_message "Instalando WireGuard..."
+
+    if ! load_config; then
+        show_error "Configuração não encontrada."
+        return 1
+    fi
+
+    apt install -y wireguard wireguard-tools
+
+    # Criar diretório para chaves
+    mkdir -p /etc/wireguard/keys /etc/wireguard/clients
+    chmod 700 /etc/wireguard/keys /etc/wireguard/clients
+
+    cd /etc/wireguard/keys
+
     # Gerar chaves do servidor
-    dialog --infobox "Gerando chaves do servidor..." 4 35
-    sudo mkdir -p /etc/wireguard
-    cd /etc/wireguard
-    sudo wg genkey | sudo tee server_private.key | sudo wg pubkey | sudo tee server_public.key > /dev/null
-    sudo chmod 600 server_private.key
-    
-    # Obter IP público
-    dialog --infobox "Obtendo IP público..." 4 30
-    local public_ip
-    public_ip=$(curl -s ifconfig.me || curl -s ipinfo.io/ip || echo "SEU_IP_PUBLICO")
-    
-    # Configurar servidor WireGuard
-    dialog --infobox "Configurando servidor WireGuard..." 4 40
-    local server_private_key
-    server_private_key=$(sudo cat server_private.key)
-    
-    sudo tee /etc/wireguard/wg0.conf > /dev/null << EOF
+    umask 077
+    wg genkey | tee server_private.key | wg pubkey > server_public.key
+
+    # Configuração do servidor
+    cat > /etc/wireguard/wg0.conf <<EOF
 [Interface]
-# Servidor WireGuard - Box-Server RK322x
-PrivateKey = $server_private_key
-Address = 10.8.0.1/24
-ListenPort = 51820
-SaveConfig = true
+PrivateKey = $(cat server_private.key)
+Address = $VPN_SERVER_IP/24
+ListenPort = $WIREGUARD_PORT
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $NETWORK_INTERFACE -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $NETWORK_INTERFACE -j MASQUERADE
 
-# Regras de iptables para NAT
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $main_interface -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $main_interface -j MASQUERADE
 EOF
-    
-    # Habilitar IP forwarding
-    dialog --infobox "Habilitando IP forwarding..." 4 35
-    echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf > /dev/null
-    sudo sysctl -p > /dev/null 2>&1
-    
-    # Configurar firewall básico
-    dialog --infobox "Configurando firewall..." 4 30
-    sudo ufw allow 51820/udp > /dev/null 2>&1
-    sudo ufw allow OpenSSH > /dev/null 2>&1
-    
-    # Configurar Firewall UFW
-    dialog --infobox "Configurando firewall UFW..." 4 40
-    
-    # Instalar UFW se não estiver instalado
-    if ! command -v ufw >/dev/null 2>&1; then
-        sudo apt-get install ufw -y
-    fi
-    
-    # Configurar regras básicas do UFW
-    sudo ufw --force reset >/dev/null 2>&1
-    sudo ufw default deny incoming
-    sudo ufw default allow outgoing
-    
-    # Permitir SSH (porta 22)
-    sudo ufw allow ssh
-    
-    # Permitir Pi-hole (porta 80 para interface web)
-    sudo ufw allow 80/tcp
-    
-    # Permitir WireGuard (porta 51820)
-    sudo ufw allow 51820/udp
-    
-    # Permitir DNS (porta 53) apenas da rede local
-    sudo ufw allow from 192.168.0.0/16 to any port 53
-    sudo ufw allow from 10.0.0.0/8 to any port 53
-    sudo ufw allow from 172.16.0.0/12 to any port 53
-    
-    # Configurar NAT para WireGuard no UFW
-    sudo tee -a /etc/ufw/before.rules >/dev/null << 'EOF'
 
-# START WIREGUARD RULES
-# NAT table rules
-*nat
-:POSTROUTING ACCEPT [0:0]
-# Allow traffic from WireGuard client to $main_interface
--A POSTROUTING -s 10.8.0.0/24 -o $main_interface -j MASQUERADE
-COMMIT
-# END WIREGUARD RULES
+    # Salvar informações do servidor
+    cat > /etc/wireguard/server.conf <<EOF
+SERVER_PUBLIC_KEY=$(cat server_public.key)
+SERVER_ENDPOINT=$PIHOLE_IP:$WIREGUARD_PORT
+VPN_NETWORK=$VPN_NETWORK
+VPN_SERVER_IP=$VPN_SERVER_IP
+DNS_SERVER=$VPN_SERVER_IP
+NEXT_CLIENT_IP=2
 EOF
-    
-    # Configurar forwarding no UFW
-    sudo sed -i 's/DEFAULT_FORWARD_POLICY="DROP"/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
-    
-    # Habilitar UFW
-    sudo ufw --force enable
-    
-    # Configurar IP forwarding permanente
-    if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
-        echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf
+
+    systemctl enable wg-quick@wg0
+    systemctl start wg-quick@wg0
+
+    log_message "WireGuard instalado e configurado"
+}
+
+generate_client_config() {
+    local client_name="$1"
+    local client_ip="$2"
+
+    if ! load_config; then
+        show_error "Configuração não encontrada."
+        return 1
     fi
-    
-    if ! grep -q "net.ipv6.conf.all.forwarding=1" /etc/sysctl.conf; then
-        echo 'net.ipv6.conf.all.forwarding=1' | sudo tee -a /etc/sysctl.conf
-    fi
-    
-    # Aplicar configurações de sysctl
-    sudo sysctl -p
-    
-    # Habilitar e iniciar serviço
-    sudo systemctl enable wg-quick@wg0 > /dev/null 2>&1
-    sudo systemctl start wg-quick@wg0 > /dev/null 2>&1
-    
-    # Verificar status
-    local wg_status
-    wg_status=$(sudo systemctl is-active wg-quick@wg0)
-    
-    # Criar script para adicionar clientes
-    sudo tee /usr/local/bin/add-wg-client > /dev/null << 'EOF'
-#!/bin/bash
-# Script para adicionar cliente WireGuard
 
-if [ $# -ne 1 ]; then
-    echo "Uso: $0 <nome_do_cliente>"
-    exit 1
-fi
+    source /etc/wireguard/server.conf
 
-CLIENT_NAME="$1"
-SERVER_PUBLIC_KEY=$(sudo cat /etc/wireguard/server_public.key)
-SERVER_IP=$(curl -s ifconfig.me)
-NEXT_IP=$(sudo wg show wg0 | grep -oP '(?<=allowed-ips )\d+\.\d+\.\d+\.\d+' | cut -d. -f4 | sort -n | tail -1)
-NEXT_IP=$((NEXT_IP + 1))
-if [ $NEXT_IP -eq 1 ]; then NEXT_IP=2; fi
+    # Gerar chaves do cliente
+    cd /etc/wireguard/keys
+    wg genkey | tee "${client_name}_private.key" | wg pubkey > "${client_name}_public.key"
 
-# Gerar chaves do cliente
-cd /etc/wireguard
-sudo wg genkey | sudo tee ${CLIENT_NAME}_private.key | sudo wg pubkey | sudo tee ${CLIENT_NAME}_public.key > /dev/null
-CLIENT_PRIVATE_KEY=$(sudo cat ${CLIENT_NAME}_private.key)
-CLIENT_PUBLIC_KEY=$(sudo cat ${CLIENT_NAME}_public.key)
+    local client_private_key=$(cat "${client_name}_private.key")
+    local client_public_key=$(cat "${client_name}_public.key")
 
-# Adicionar cliente ao servidor
-sudo wg set wg0 peer $CLIENT_PUBLIC_KEY allowed-ips 10.8.0.$NEXT_IP/32
-sudo wg-quick save wg0
-
-# Criar arquivo de configuração do cliente
-sudo tee /etc/wireguard/${CLIENT_NAME}.conf > /dev/null << EOC
+    # Configuração do cliente
+    cat > "/etc/wireguard/clients/${client_name}.conf" <<EOF
 [Interface]
-PrivateKey = $CLIENT_PRIVATE_KEY
-Address = 10.8.0.$NEXT_IP/24
-DNS = 10.8.0.1
+PrivateKey = $client_private_key
+Address = $client_ip/32
+DNS = $DNS_SERVER
 
 [Peer]
 PublicKey = $SERVER_PUBLIC_KEY
-Endpoint = $SERVER_IP:51820
+Endpoint = $SERVER_ENDPOINT
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
-EOC
-
-echo "Cliente $CLIENT_NAME criado com IP 10.8.0.$NEXT_IP"
-echo "Arquivo de configuração: /etc/wireguard/${CLIENT_NAME}.conf"
-
-# Gerar QR Code
-echo "QR Code para configuração:"
-sudo qrencode -t ansiutf8 < /etc/wireguard/${CLIENT_NAME}.conf
 EOF
-    
-    sudo chmod +x /usr/local/bin/add-wg-client
-    
-    # Exibir resultado
-    local server_public_key
-    server_public_key=$(sudo cat /etc/wireguard/server_public.key)
-    
-    # Verificar se UFW está ativo
-    local ufw_status
-    ufw_status=$(sudo ufw status | grep "Status:" | awk '{print $2}')
-    
-    local status_msg="WireGuard instalado e configurado!\n\n"
-    status_msg+="Status do serviço: $wg_status\n"
-    status_msg+="🔒 Firewall UFW: $ufw_status\n"
-    status_msg+="🌐 IP Forwarding: Habilitado\n"
-    status_msg+="Interface: $main_interface\n"
-    status_msg+="IP público: $public_ip\n"
-    status_msg+="Porta: 51820/udp\n"
-    status_msg+="Rede VPN: 10.8.0.0/24\n\n"
-    status_msg+="📋 Comandos úteis:\n"
-    status_msg+="• Adicionar cliente: sudo add-wg-client <nome>\n"
-    status_msg+="• Ver status VPN: sudo wg show\n"
-    status_msg+="• Ver status firewall: sudo ufw status\n"
-    status_msg+="• Ver logs: sudo journalctl -u wg-quick@wg0\n\n"
-    status_msg+="Chave pública do servidor:\n$server_public_key"
-    
-    dialog --title "WireGuard Configurado" --msgbox "$status_msg" 22 80
-}
 
-# Configuração de Entropia (Otimizada para RK322x)
-run_entropy_configuration() {
-    dialog --title "Configuração de Entropia" --yesno "Isso instalará o 'rng-tools' otimizado para sistemas ARM RK322x para melhorar a geração de números aleatórios (entropia), crucial para operações criptográficas.\n\nDeseja continuar?" 12 75
-    if [ $? -ne 0 ]; then
-        return
-    fi
+    # Adicionar peer ao servidor
+    cat >> /etc/wireguard/wg0.conf <<EOF
+# Cliente: $client_name
+[Peer]
+PublicKey = $client_public_key
+AllowedIPs = $client_ip/32
 
-    dialog --infobox "Instalando rng-tools..." 4 50
-    sudo apt-get install rng-tools -y > /tmp/rng_install.log 2>&1
-    
-    # Verificar dispositivos RNG disponíveis
-    dialog --infobox "Verificando dispositivos RNG disponíveis..." 4 50
-    sleep 1
-    
-    local rng_device="/dev/urandom"
-    if [ -e "/dev/hwrng" ]; then
-        rng_device="/dev/hwrng"
-        dialog --infobox "Hardware RNG detectado: /dev/hwrng" 4 50
-    else
-        dialog --infobox "Usando /dev/urandom como fallback" 4 50
-    fi
-    sleep 2
-    
-    # Configurar rng-tools para ARM
-    dialog --infobox "Configurando rng-tools para RK322x..." 4 50
-    sudo tee /etc/default/rng-tools > /dev/null << EOF
-# Configuração otimizada para RK322x
-RNGDEVICE="$rng_device"
-# Opções otimizadas para ARM
-RNGDOPTIONS="--fill-watermark=2048 --feed-interval=60 --timeout=10"
 EOF
-    
-    # Iniciar e habilitar serviço
-    sudo systemctl enable rng-tools > /dev/null 2>&1
-    sudo systemctl restart rng-tools > /dev/null 2>&1
-    sleep 3
-    
-    # Verificar status e entropia
-    local rng_status
-    rng_status=$(systemctl is-active rng-tools)
-    local available_entropy
-    available_entropy=$(cat /proc/sys/kernel/random/entropy_avail)
-    
-    # Instalar haveged como backup se entropia ainda estiver baixa
-    if [ "$available_entropy" -lt 1000 ]; then
-        dialog --infobox "Entropia baixa. Instalando haveged como backup..." 4 60
-        sudo apt-get install haveged -y >> /tmp/rng_install.log 2>&1
-        sudo systemctl enable haveged > /dev/null 2>&1
-        sudo systemctl start haveged > /dev/null 2>&1
-        sleep 2
-        available_entropy=$(cat /proc/sys/kernel/random/entropy_avail)
-    fi
-    
-    local status_msg="Configuração de entropia concluída.\n\n"
-    status_msg+="Status rng-tools: $rng_status\n"
-    status_msg+="Dispositivo RNG: $rng_device\n"
-    status_msg+="Entropia disponível: $available_entropy bits\n\n"
-    
-    if [ "$available_entropy" -gt 1000 ]; then
-        status_msg+="✅ Entropia adequada para operações criptográficas"
-    else
-        status_msg+="⚠️ Entropia baixa - considere verificar a configuração"
-    fi
-    
-    dialog --title "Status da Entropia" --msgbox "$status_msg" 15 70
+
+    # Reiniciar WireGuard
+    systemctl restart wg-quick@wg0
+
+    # Gerar QR Code
+    local qr_file="/tmp/wireguard_${client_name}_qr.txt"
+    qrencode -t ansiutf8 < "/etc/wireguard/clients/${client_name}.conf" > "$qr_file"
+
+    # Exibir QR Code na TUI
+    whiptail --title "QR Code - $client_name" --textbox "$qr_file" 25 80
+
+    # Salvar informações do cliente
+    echo "$client_name:$client_ip:$client_public_key:$(date)" >> /etc/wireguard/clients.db
+
+    # Atualizar próximo IP
+    local next_ip=$((${client_ip##*.} + 1))
+    sed -i "s/NEXT_CLIENT_IP=.*/NEXT_CLIENT_IP=$next_ip/" /etc/wireguard/server.conf
+
+    rm -f "$qr_file"
+
+    log_message "Cliente WireGuard '$client_name' criado com IP $client_ip"
 }
 
-# Otimizações e Ajustes Finais
-run_final_optimizations() {
-    dialog --title "Otimizações e Ajustes Finais" --msgbox "Esta seção aplicará otimizações para melhorar o desempenho e a longevidade do seu Box-Server." 10 70
-
-    # Instalação do Log2Ram
-    dialog --title "Log2Ram" --yesno "Deseja instalar o Log2Ram? Isso move os logs para a RAM, reduzindo o desgaste da memória NAND e melhorando a performance." 10 70
-    if [ $? -eq 0 ]; then
-        dialog --infobox "Instalando Log2Ram..." 4 40
-        echo "deb [signed-by=/usr/share/keyrings/azlux-archive-keyring.gpg] http://packages.azlux.fr/debian/ buster main" | sudo tee /etc/apt/sources.list.d/azlux.list
-        sudo wget -O /usr/share/keyrings/azlux-archive-keyring.gpg  https://azlux.fr/repo.gpg
-        sudo apt update > /tmp/optimizations.log 2>&1
-        sudo apt install log2ram -y >> /tmp/optimizations.log 2>&1
-        dialog --msgbox "Log2Ram instalado com sucesso!" 6 40
-    fi
-
-    # Instalação do ZRAM
-    dialog --title "ZRAM" --yesno "Deseja instalar o ZRAM? Ele cria um dispositivo de bloco compactado na RAM que atua como swap, melhorando o desempenho em sistemas com pouca memória." 12 70
-    if [ $? -eq 0 ]; then
-        dialog --infobox "Instalando ZRAM..." 4 40
-        sudo apt install zram-tools -y >> /tmp/optimizations.log 2>&1
-        
-        local zram_config='''# ALGO=lz4
-# PERCENT=50
-# SIZE=... '''
-        echo "$zram_config" | sudo tee /etc/default/zramswap > /dev/null
-        sudo systemctl restart zramswap
-        dialog --msgbox "ZRAM instalado e configurado com os padrões. Você pode ajustar as configurações em /etc/default/zramswap." 10 70
-    fi
-
-    # CPU Governor
-    dialog --title "CPU Governor" --yesno "Deseja otimizar o CPU Governor para 'performance'? Isso pode melhorar a responsividade do sistema." 10 70
-    if [ $? -eq 0 ]; then
-        dialog --infobox "Configurando CPU Governor..." 4 40
-        sudo apt install cpufrequtils -y >> /tmp/optimizations.log 2>&1
-        echo 'GOVERNOR="performance"' | sudo tee /etc/default/cpufrequtils
-        sudo systemctl restart cpufrequtils
-        local current_governor
-        current_governor=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)
-        dialog --msgbox "CPU Governor configurado para: $current_governor" 6 50
-    fi
-
-    # Configuração NTP/Chrony
-    dialog --title "Otimizações" --yesno "Configurar sincronização de tempo (NTP)?\n\nIsso garante que o sistema tenha a hora correta, importante para logs e certificados." 8 70
-    if [ $? -eq 0 ]; then
-        run_ntp_configuration
-    fi
-
-    dialog --title "Concluído" --msgbox "Otimizações e ajustes finais foram aplicados." 6 50
-}
-
-# Configuração NTP/Chrony
-run_ntp_configuration() {
-    dialog --infobox "Configurando sincronização de tempo..." 4 45
-    
-    # Verificar se systemd-timesyncd está ativo e desabilitá-lo
-    if systemctl is-active --quiet systemd-timesyncd; then
-        sudo systemctl stop systemd-timesyncd
-        sudo systemctl disable systemd-timesyncd
-    fi
-    
-    # Instalar chrony
-    sudo apt-get update > /dev/null 2>&1
-    sudo apt-get install chrony -y > /dev/null 2>&1
-    
-    # Backup da configuração original
-    sudo cp /etc/chrony/chrony.conf /etc/chrony/chrony.conf.backup
-    
-    # Configurar chrony com servidores NTP brasileiros e internacionais
-    sudo tee /etc/chrony/chrony.conf > /dev/null << 'EOF'
-# Servidores NTP brasileiros (mais rápidos para o Brasil)
-server a.st1.ntp.br iburst
-server b.st1.ntp.br iburst
-server c.st1.ntp.br iburst
-server d.st1.ntp.br iburst
-
-# Servidores NTP internacionais como backup
-server 0.pool.ntp.org iburst
-server 1.pool.ntp.org iburst
-server 2.pool.ntp.org iburst
-server 3.pool.ntp.org iburst
-
-# Configurações para sistemas embarcados/ARM
-driftfile /var/lib/chrony/chrony.drift
-makestep 1.0 3
-rtcsync
-
-# Permitir sincronização de clientes na rede local
-allow 192.168.0.0/16
-allow 10.0.0.0/8
-allow 172.16.0.0/12
-
-# Configurações de log
-logdir /var/log/chrony
-log measurements statistics tracking
-
-# Configurações para melhor precisão em ARM
-maxupdateskew 100.0
-leapsectz right/UTC
-
-# Configuração para sistemas com pouca memória
-cmdallow 127.0.0.1
-cmdallow ::1
-EOF
-    
-    # Configurar timezone para Brasil (se não estiver configurado)
-    local current_tz
-    current_tz=$(timedatectl show --property=Timezone --value)
-    if [[ "$current_tz" != "America/Sao_Paulo" ]]; then
-        dialog --title "Configuração de Timezone" --yesno "Timezone atual: $current_tz\n\nConfigurar para America/Sao_Paulo (Brasília)?" 8 60
-        if [ $? -eq 0 ]; then
-            sudo timedatectl set-timezone America/Sao_Paulo
-        fi
-    fi
-    
-    # Habilitar e iniciar chrony
-    sudo systemctl enable chrony
-    sudo systemctl restart chrony
-    
-    # Aguardar sincronização inicial
-    sleep 3
-    
-    # Verificar status da sincronização
-    local sync_status
-    local ntp_servers
-    local time_offset
-    
-    if systemctl is-active --quiet chrony; then
-        sync_status="✅ Ativo"
-        ntp_servers=$(sudo chronyc sources | grep "^\^\*" | wc -l)
-        time_offset=$(sudo chronyc tracking | grep "Last offset" | awk '{print $4, $5}')
-        
-        if [ "$ntp_servers" -gt 0 ]; then
-            sync_status+=" (Sincronizado)"
-        else
-            sync_status+="ão sincronizado)"
-        fi
-    else
-        sync_status="❌ Inativo"
-        ntp_servers="0"
-        time_offset="N/A"
-    fi
-    
-    # Configurar firewall para NTP (se UFW estiver ativo)
-    if command -v ufw >/dev/null 2>&1 && sudo ufw status | grep -q "Status: active"; then
-        sudo ufw allow out 123/udp > /dev/null 2>&1
-        sudo ufw allow 123/udp > /dev/null 2>&1
-    fi
-    
-    # Exibir resultado
-    local result_msg="🕐 Sincronização de Tempo Configurada\n\n"
-    result_msg+="Status do Chrony: $sync_status\n"
-    result_msg+="Servidores sincronizados: $ntp_servers\n"
-    result_msg+="Último offset: $time_offset\n"
-    result_msg+="Timezone: $(timedatectl show --property=Timezone --value)\n"
-    result_msg+="Data/Hora atual: $(date)\n\n"
-    result_msg+="📋 Comandos úteis:\n"
-    result_msg+="• Ver status: sudo chronyc tracking\n"
-    result_msg+="• Ver servidores: sudo chronyc sources\n"
-    result_msg+="• Forçar sincronização: sudo chronyc makestep\n"
-    result_msg+="• Ver logs: sudo journalctl -u chrony"
-    
-    dialog --title "NTP Configurado" --msgbox "$result_msg" 20 70
-}
-
-
-# Monitoramento e Health Check
-run_monitoring() {
-    dialog --title "Monitoramento do Sistema" --yesno "Isso criará um script de monitoramento contínuo e exibirá o status atual do sistema.\n\nDeseja continuar?" 10 70
-    if [ $? -ne 0 ]; then
-        return
-    fi
-    
-    # Criar script de monitoramento
-    dialog --infobox "Criando script de monitoramento..." 4 40
-    sudo tee /usr/local/bin/boxserver-monitor > /dev/null << 'EOF'
-#!/bin/bash
-# Box-Server Health Monitor
-
-LOG_FILE="/var/log/boxserver-health.log"
-ALERT_THRESHOLD_CPU=80
-ALERT_THRESHOLD_MEM=85
-ALERT_THRESHOLD_TEMP=70
-
-log_message() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
-}
-
-check_service() {
-    local service="$1"
-    local name="$2"
-    if systemctl is-active --quiet "$service"; then
-        echo "✅ $name: Ativo"
-        log_message "$name: OK"
-    else
-        echo "❌ $name: Inativo"
-        log_message "ALERT: $name está inativo!"
-        return 1
-    fi
-}
-
-check_resources() {
-    # CPU
-    local cpu_usage
-    cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1)
-    cpu_usage=${cpu_usage%.*}
-    
-    # Memória
-    local mem_usage
-    mem_usage=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
-    
-    # Temperatura
-    local temp="N/A"
-    if [ -f "/sys/class/thermal/thermal_zone0/temp" ]; then
-        temp=$(cat /sys/class/thermal/thermal_zone0/temp)
-        temp=$((temp / 1000))
-    fi
-    
-    echo "📊 Recursos do Sistema:"
-    echo "   CPU: ${cpu_usage}%"
-    echo "   Memória: ${mem_usage}%"
-    echo "   Temperatura: ${temp}°C"
-    
-    # Alertas
-    if [ "$cpu_usage" -gt "$ALERT_THRESHOLD_CPU" ]; then
-        log_message "ALERT: CPU usage high: ${cpu_usage}%"
-    fi
-    
-    if [ "$mem_usage" -gt "$ALERT_THRESHOLD_MEM" ]; then
-        log_message "ALERT: Memory usage high: ${mem_usage}%"
-    fi
-    
-    if [ "$temp" != "N/A" ] && [ "$temp" -gt "$ALERT_THRESHOLD_TEMP" ]; then
-        log_message "ALERT: Temperature high: ${temp}°C"
-    fi
-}
-
-check_connectivity() {
-    if ping -c 1 8.8.8.8 > /dev/null 2>&1; then
-        echo "🌐 Conectividade: OK"
-        log_message "Connectivity: OK"
-    else
-        echo "❌ Conectividade: Falha"
-        log_message "ALERT: No internet connectivity!"
-        return 1
-    fi
-}
-
-check_dns() {
-    if nslookup google.com 127.0.0.1 > /dev/null 2>&1; then
-        echo "🔍 DNS Local: OK"
-        log_message "DNS: OK"
-    else
-        echo "❌ DNS Local: Falha"
-        log_message "ALERT: Local DNS resolution failed!"
-        return 1
-    fi
-}
-
-check_disk_space() {
-    local disk_usage
-    disk_usage=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-    echo "💾 Espaço em Disco: ${disk_usage}% usado"
-    
-    if [ "$disk_usage" -gt 90 ]; then
-        log_message "ALERT: Disk space critical: ${disk_usage}%"
-    elif [ "$disk_usage" -gt 80 ]; then
-        log_message "WARNING: Disk space high: ${disk_usage}%"
-    fi
-}
-
-check_entropy() {
-    local entropy
-    entropy=$(cat /proc/sys/kernel/random/entropy_avail)
-    echo "🎲 Entropia: ${entropy} bits"
-    
-    if [ "$entropy" -lt 500 ]; then
-        log_message "ALERT: Low entropy: ${entropy} bits"
-    fi
-}
-
-# Função principal
-main() {
-    echo "=== Box-Server Health Check ==="
-    echo "$(date)"
-    echo ""
-    
-    local failed_checks=0
-    
-    # Verificar serviços
-    echo "🔧 Serviços:"
-    check_service "pihole-FTL" "Pi-hole" || ((failed_checks++))
-    check_service "unbound" "Unbound" || ((failed_checks++))
-    check_service "wg-quick@wg0" "WireGuard" || ((failed_checks++))
-    check_service "rng-tools" "RNG Tools" || ((failed_checks++))
-    echo ""
-    
-    # Verificar recursos
-    check_resources
-    echo ""
-    
-    # Verificar conectividade
-    check_connectivity || ((failed_checks++))
-    echo ""
-    
-    # Verificar DNS
-    check_dns || ((failed_checks++))
-    echo ""
-    
-    # Verificar espaço em disco
-    check_disk_space
-    echo ""
-    
-    # Verificar entropia
-    check_entropy
-    echo ""
-    
-    # Resumo
-    if [ "$failed_checks" -eq 0 ]; then
-        echo "🎉 Status: TODOS OS SISTEMAS OK"
-        log_message "Health check: ALL SYSTEMS OK"
-    else
-        echo "⚠️ Status: $failed_checks PROBLEMAS DETECTADOS"
-        log_message "Health check: $failed_checks issues detected"
-    fi
-    
-    echo "================================"
-}
-
-# Executar verificação
-if [ "$1" = "--continuous" ]; then
+manage_wireguard_clients() {
     while true; do
-        main
-        sleep 300  # 5 minutos
-        clear
+        local choice
+        choice=$(show_menu "Gerenciar Clientes WireGuard" \
+            "1" "Criar novo cliente" \
+            "2" "Listar clientes" \
+            "3" "Exibir QR Code de cliente existente" \
+            "4" "Remover cliente" \
+            "5" "Mostrar configuração de cliente" \
+            "0" "Voltar")
+
+        case $choice in
+            1) create_new_wireguard_client ;;
+            2) list_wireguard_clients ;;
+            3) show_existing_qr ;;
+            4) remove_wireguard_client ;;
+            5) show_client_config ;;
+            0) break ;;
+        esac
     done
-else
-    main
+}
+
+create_new_wireguard_client() {
+    local client_name client_ip
+
+    source /etc/wireguard/server.conf
+    local next_ip="$VPN_SERVER_IP"
+    next_ip="${next_ip%.*}.$NEXT_CLIENT_IP"
+
+    client_name=$(get_input "Novo Cliente WireGuard" "Nome do cliente:" "")
+    if [[ -z "$client_name" ]]; then
+        show_error "Nome do cliente é obrigatório."
+        return 1
+    fi
+
+    # Verificar se cliente já existe
+    if [[ -f "/etc/wireguard/clients/${client_name}.conf" ]]; then
+        show_error "Cliente '$client_name' já existe."
+        return 1
+    fi
+
+    client_ip=$(get_input "IP do Cliente" "IP do cliente VPN:" "$next_ip")
+    if [[ -z "$client_ip" ]]; then
+        client_ip="$next_ip"
+    fi
+
+    # Validar IP
+    if ! [[ "$client_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        show_error "IP inválido: $client_ip"
+        return 1
+    fi
+
+    # Verificar se IP já está em uso
+    if grep -q "$client_ip/32" /etc/wireguard/wg0.conf; then
+        show_error "IP $client_ip já está em uso."
+        return 1
+    fi
+
+    generate_client_config "$client_name" "$client_ip"
+    show_info "Cliente '$client_name' criado com sucesso!\nIP: $client_ip\nArquivo de configuração: /etc/wireguard/clients/${client_name}.conf"
+}
+
+list_wireguard_clients() {
+    if [[ ! -f /etc/wireguard/clients.db ]]; then
+        show_info "Nenhum cliente configurado ainda."
+        return
+    fi
+
+    local clients_info
+    clients_info="Clientes WireGuard configurados:\n\n"
+    clients_info+="Nome | IP | Data de Criação | Status\n"
+    clients_info+="-----|----|-----------------|--------\n"
+
+    local found_any=false
+    local line_num=0
+
+    while IFS=':' read -r name ip pubkey date; do
+        line_num=$((line_num+1))
+        # Validação básica: todos os campos devem estar presentes
+        if [[ -z "$name" || -z "$ip" || -z "$pubkey" || -z "$date" ]]; then
+            clients_info+="[Linha $line_num inválida no .db]\n"
+            continue
+        fi
+        # Checar se arquivo .conf existe
+        if [[ -f "/etc/wireguard/clients/${name}.conf" ]]; then
+            clients_info+="$name | $ip | $date | OK\n"
+            found_any=true
+        else
+            clients_info+="$name | $ip | $date | FALTA .conf\n"
+        fi
+    done < /etc/wireguard/clients.db
+
+    if [[ "$found_any" = false ]]; then
+        clients_info+="\nNenhum cliente válido encontrado."
+    fi
+
+    whiptail --title "Lista de Clientes WireGuard" --msgbox "$clients_info" 20 70
+}
+
+show_existing_qr() {
+    if [[ ! -f /etc/wireguard/clients.db ]]; then
+        show_info "Nenhum cliente configurado."
+        return
+    fi
+
+    local clients=()
+    local line_num=0
+    while IFS=':' read -r name ip pubkey date; do
+        line_num=$((line_num+1))
+        # Validação básica
+        if [[ -n "$name" && -n "$ip" && -n "$pubkey" && -n "$date" && -f "/etc/wireguard/clients/${name}.conf" ]]; then
+            clients+=("$name" "$ip")
+        fi
+    done < /etc/wireguard/clients.db
+
+    if [[ ${#clients[@]} -eq 0 ]]; then
+        show_info "Nenhum cliente válido encontrado."
+        return
+    fi
+
+    local selected_client
+    selected_client=$(show_menu "Selecionar Cliente" "${clients[@]}")
+
+    if [[ -n "$selected_client" ]]; then
+        local conf_file="/etc/wireguard/clients/${selected_client}.conf"
+        if [[ -f "$conf_file" ]]; then
+            local qr_file="/tmp/wireguard_${selected_client}_qr.txt"
+            qrencode -t ansiutf8 < "$conf_file" > "$qr_file"
+            whiptail --title "QR Code - $selected_client" --textbox "$qr_file" 25 80
+            rm -f "$qr_file"
+        else
+            show_error "Arquivo de configuração do cliente '$selected_client' não encontrado."
+        fi
+    fi
+}
+
+remove_wireguard_client() {
+    if [[ ! -f /etc/wireguard/clients.db ]]; then
+        show_info "Nenhum cliente configurado."
+        return
+    fi
+
+    local clients=()
+    local line_num=0
+    while IFS=':' read -r name ip pubkey date; do
+        line_num=$((line_num+1))
+        if [[ -n "$name" && -n "$ip" && -n "$pubkey" && -n "$date" && -f "/etc/wireguard/clients/${name}.conf" ]]; then
+            clients+=("$name" "$ip")
+        fi
+    done < /etc/wireguard/clients.db
+
+    if [[ ${#clients[@]} -eq 0 ]]; then
+        show_info "Nenhum cliente válido encontrado."
+        return
+    fi
+
+    local selected_client
+    selected_client=$(show_menu "Remover Cliente" "${clients[@]}")
+
+    if [[ -n "$selected_client" ]]; then
+        if ask_yes_no "Tem certeza que deseja remover o cliente '$selected_client'?"; then
+            # Remover peer do servidor
+            local client_pubkey
+            client_pubkey=$(grep "^${selected_client}:" /etc/wireguard/clients.db | cut -d: -f3)
+
+            # Remover seção do peer do wg0.conf
+            sed -i "/# Cliente: $selected_client/,/^$/d" /etc/wireguard/wg0.conf
+
+            # Remover arquivos do cliente
+            rm -f "/etc/wireguard/clients/${selected_client}.conf"
+            rm -f "/etc/wireguard/keys/${selected_client}_private.key"
+            rm -f "/etc/wireguard/keys/${selected_client}_public.key"
+
+            # Remover da base de dados
+            sed -i "/^${selected_client}:/d" /etc/wireguard/clients.db
+
+            # Reiniciar WireGuard
+            systemctl restart wg-quick@wg0
+
+            log_message "Cliente WireGuard '$selected_client' removido"
+            show_info "Cliente '$selected_client' removido com sucesso!"
+        fi
+    fi
+}
+
+show_client_config() {
+    if [[ ! -f /etc/wireguard/clients.db ]]; then
+        show_info "Nenhum cliente configurado."
+        return
+    fi
+
+    local clients=()
+    local line_num=0
+    while IFS=':' read -r name ip pubkey date; do
+        line_num=$((line_num+1))
+        if [[ -n "$name" && -n "$ip" && -n "$pubkey" && -n "$date" && -f "/etc/wireguard/clients/${name}.conf" ]]; then
+            clients+=("$name" "$ip")
+        fi
+    done < /etc/wireguard/clients.db
+
+    if [[ ${#clients[@]} -eq 0 ]]; then
+        show_info "Nenhum cliente válido encontrado."
+        return
+    fi
+
+    local selected_client
+    selected_client=$(show_menu "Mostrar Configuração" "${clients[@]}")
+
+    if [[ -n "$selected_client" ]]; then
+        local conf_file="/etc/wireguard/clients/${selected_client}.conf"
+        if [[ -f "$conf_file" ]]; then
+            whiptail --title "Configuração - $selected_client" --textbox "$conf_file" 20 70
+        else
+            show_error "Arquivo de configuração do cliente '$selected_client' não encontrado."
+        fi
+    fi
+}
+
+# =============================================================================
+# CLOUDFLARE TUNNEL
+# =============================================================================
+
+install_cloudflare() {
+    if ! should_reinstall_service "cloudflared" "Cloudflare Tunnel"; then
+        return 0
+    fi
+    log_message "Instalando Cloudflare Tunnel..."
+
+    # Detectar arquitetura
+    # Forçar ARMv7 para RK322x
+    local arch="arm"
+
+    # Baixar cloudflared
+    wget -O /tmp/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
+    chmod +x /tmp/cloudflared
+    mv /tmp/cloudflared /usr/local/bin/cloudflared
+
+    # Verificar instalação
+    if ! cloudflared --version; then
+        show_error "Erro na instalação do cloudflared"
+        return 1
+    fi
+
+    # Remover certificado antigo se existir
+    if [[ -f /root/.cloudflared/cert.pem ]]; then
+        mv /root/.cloudflared/cert.pem /root/.cloudflared/cert.pem.bak
+    fi
+
+    log_message "Cloudflared instalado"
+}
+
+configure_cloudflare() {
+    local domain tunnel_name
+
+    show_info "Configuração do Cloudflare Tunnel\n\nVocê precisará:\n1. Conta no Cloudflare (gratuita)\n2. Domínio configurado no Cloudflare\n3. Fazer login no navegador durante o processo"
+
+    domain=$(get_input "Configuração Cloudflare" "Seu domínio (ex: exemplo.com):" "")
+    if [[ -z "$domain" ]]; then
+        show_error "Domínio é obrigatório"
+        return 1
+    fi
+
+    tunnel_name=$(get_input "Nome do Tunnel" "Nome do tunnel:" "boxserver")
+    if [[ -z "$tunnel_name" ]]; then
+        tunnel_name="boxserver"
+    fi
+
+    show_info "Faça login no Cloudflare. Uma janela do navegador será aberta."
+
+    # Login no Cloudflare
+    if ! cloudflared tunnel login; then
+        show_error "Erro no login do Cloudflare"
+        return 1
+    fi
+
+    # Verificar se túnel já existe
+    if cloudflared tunnel list | grep -q "$tunnel_name"; then
+        show_info "Túnel '$tunnel_name' já existe. Usando túnel existente."
+        tunnel_uuid=$(cloudflared tunnel list | grep "$tunnel_name" | awk '{print $1}')
+    else
+        # Criar novo túnel
+        if ! cloudflared tunnel create "$tunnel_name"; then
+            show_error "Erro ao criar tunnel"
+            return 1
+        fi
+        tunnel_uuid=$(cloudflared tunnel list | grep "$tunnel_name" | awk '{print $1}')
+    fi
+
+    # Verificar se obtivemos o UUID
+    local tunnel_uuid
+    tunnel_uuid=$(cloudflared tunnel list | grep "$tunnel_name" | awk '{print $1}')
+
+    if [[ -z "$tunnel_uuid" ]]; then
+        show_error "Não foi possível obter UUID do tunnel"
+        return 1
+    fi
+
+    # Configurar DNS
+    local subdomains=("pihole" "admin" "vpn")
+    for subdomain in "${subdomains[@]}"; do
+        if ask_yes_no "Configurar subdomínio ${subdomain}.${domain}?"; then
+            cloudflared tunnel route dns "$tunnel_name" "${subdomain}.${domain}"
+            log_message "DNS configurado: ${subdomain}.${domain}"
+        fi
+    done
+
+    # Criar configuração
+    mkdir -p /etc/cloudflared
+
+    cat > /etc/cloudflared/config.yml <<EOF
+tunnel: $tunnel_name
+credentials-file: /root/.cloudflared/${tunnel_uuid}.json
+
+ingress:
+  # Pi-hole Admin Interface
+  - hostname: pihole.${domain}
+    service: http://localhost:${PIHOLE_PORT}
+    originRequest:
+      httpHostHeader: pihole.${domain}
+
+  # Admin Panel
+  - hostname: admin.${domain}
+    service: http://localhost:${PIHOLE_PORT}
+    originRequest:
+      httpHostHeader: admin.${domain}
+
+  # VPN Management (se configurado)
+  - hostname: vpn.${domain}
+    service: http://localhost:8080
+    originRequest:
+      httpHostHeader: vpn.${domain}
+
+  # Catch-all rule (obrigatório)
+  - service: http_status:404
+EOF
+
+    # Copiar credenciais
+    cp "/root/.cloudflared/${tunnel_uuid}.json" /etc/cloudflared/
+
+    # Ajustar permissões
+    chown root:root /etc/cloudflared/config.yml
+    chmod 600 /etc/cloudflared/config.yml
+    chmod 600 /etc/cloudflared/*.json
+
+    # Instalar como serviço
+    cloudflared service install --config /etc/cloudflared/config.yml
+
+    # Iniciar serviço
+    systemctl start cloudflared
+    systemctl enable cloudflared
+
+    # Configurar Pi-hole para Cloudflare
+    pihole -w cloudflare.com cloudflareinsights.com cloudflarestream.com cloudflarestatus.com
+    pihole restartdns
+
+    # Salvar configuração
+    echo "CLOUDFLARE_DOMAIN=$domain" >> "$CONFIG_DIR/config.conf"
+    echo "CLOUDFLARE_TUNNEL=$tunnel_name" >> "$CONFIG_DIR/config.conf"
+
+    log_message "Cloudflare Tunnel configurado: $tunnel_name"
+    show_info "Cloudflare Tunnel configurado!\n\nDomínios disponíveis:\n- https://pihole.${domain}\n- https://admin.${domain}\n- https://vpn.${domain}"
+}
+
+# =============================================================================
+# FINALIZAÇÃO E TESTES
+# =============================================================================
+
+finalize_firewall() {
+    log_message "Finalizando configuração do firewall..."
+
+    if ! load_config; then
+        show_error "Configuração não encontrada."
+        return 1
+    fi
+
+    # Permitir portas específicas
+    ufw allow "$WIREGUARD_PORT"/udp comment "WireGuard VPN"
+
+    if ask_yes_no "Permitir acesso externo ao Pi-hole na porta $PIHOLE_PORT?"; then
+        ufw allow "$PIHOLE_PORT" comment "Pi-hole Web"
+    fi
+
+    # Habilitar firewall
+    ufw --force enable
+
+    log_message "Firewall habilitado e configurado"
+}
+
+setup_monitoring() {
+    log_message "Configurando monitoramento..."
+
+    # Script de saúde do sistema
+    cat > /usr/local/bin/boxserver-health <<'EOF'
+#!/bin/bash
+# Script de monitoramento de saúde do BoxServer
+
+echo "==========================================="
+echo "    RELATÓRIO DE SAÚDE DO BOXSERVER"
+echo "==========================================="
+echo "Data: $(date)"
+echo
+
+# Informações do sistema
+echo "=== SISTEMA ==="
+echo "Uptime: $(uptime -p)"
+echo "Load Average: $(uptime | awk -F'load average:' '{print $2}')"
+echo "Memória: $(free -h | awk 'NR==2{printf "%.1f%% (%s/%s)", $3*100/$2, $3, $2}')"
+echo "Disco: $(df -h / | awk 'NR==2{printf "%s usado de %s (%s)", $3, $2, $5}')"
+if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
+    echo "Temperatura CPU: $(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))°C"
 fi
-EOF
-    
-    sudo chmod +x /usr/local/bin/boxserver-monitor
-    
-    # Criar serviço systemd para monitoramento contínuo
-    dialog --infobox "Configurando serviço de monitoramento..." 4 45
-    sudo tee /etc/systemd/system/boxserver-monitor.service > /dev/null << EOF
-[Unit]
-Description=Box-Server Health Monitor
-After=network.target
+echo
 
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/boxserver-monitor --continuous
-Restart=always
-RestartSec=30
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    
-    # Executar verificação inicial
-    dialog --infobox "Executando verificação inicial..." 4 40
-    local health_output
-    health_output=$(/usr/local/bin/boxserver-monitor 2>&1)
-    
-    # Perguntar se deseja habilitar monitoramento contínuo
-    dialog --title "Monitoramento Contínuo" --yesno "Deseja habilitar o monitoramento contínuo em background?\n\nIsso criará logs em /var/log/boxserver-health.log" 10 70
-    if [ $? -eq 0 ]; then
-        sudo systemctl enable boxserver-monitor > /dev/null 2>&1
-        sudo systemctl start boxserver-monitor > /dev/null 2>&1
-        local monitor_status
-        monitor_status=$(systemctl is-active boxserver-monitor)
-        health_output+="\n\n🔄 Monitoramento contínuo: $monitor_status"
+# Status dos serviços
+echo "=== SERVIÇOS ==="
+services=("pihole-FTL" "unbound" "wg-quick@wg0" "rng-tools" "haveged" "chrony" "cloudflared")
+for service in "${services[@]}"; do
+    if systemctl is-active --quiet "$service" 2>/dev/null; then
+        echo "✅ $service: ATIVO"
+    elif systemctl list-unit-files "$service.service" --no-legend | grep -q "$service"; then
+        echo "❌ $service: INATIVO"
     fi
-    
-    dialog --title "Status do Sistema" --msgbox "$health_output" 25 80
+done
+echo
+
+# Testes de conectividade
+echo "=== CONECTIVIDADE ==="
+echo "Entropia: $(cat /proc/sys/kernel/random/entropy_avail)"
+echo "DNS Pi-hole: $(timeout 5 dig @127.0.0.1 google.com +short | head -1 || echo 'FALHOU')"
+if [[ -f /etc/boxserver/config.conf ]]; then
+    source /etc/boxserver/config.conf
+    echo "DNS Unbound: $(timeout 5 dig @127.0.0.1 -p ${UNBOUND_PORT:-5335} google.com +short | head -1 || echo 'FALHOU')"
+fi
+echo "Internet: $(timeout 5 ping -c 1 8.8.8.8 >/dev/null 2>&1 && echo 'OK' || echo 'FALHOU')"
+
+# WireGuard
+if systemctl is-active --quiet wg-quick@wg0 2>/dev/null; then
+    echo "VPN Ativa: SIM"
+    if command -v wg >/dev/null; then
+        echo "VPN Clientes: $(wg show wg0 peers 2>/dev/null | wc -l)"
+    fi
+else
+    echo "VPN Ativa: NÃO"
+fi
+
+# Cloudflare Tunnel
+if systemctl is-active --quiet cloudflared 2>/dev/null; then
+    echo "Cloudflare Tunnel: ATIVO"
+    if command -v cloudflared >/dev/null 2>&1; then
+        echo "Tunnels: $(cloudflared tunnel list 2>/dev/null | grep -c 'HEALTHY' || echo '0')"
+    fi
+else
+    echo "Cloudflare Tunnel: INATIVO"
+fi
+echo
+
+# Alertas
+echo "=== ALERTAS ==="
+RAM_USAGE=$(free | awk 'NR==2{printf "%.0f", $3*100/$2}')
+if [[ $RAM_USAGE -gt 80 ]]; then
+    echo "⚠️  Uso de RAM alto: ${RAM_USAGE}%"
+fi
+
+DISK_USAGE=$(df / | awk 'NR==2{print $5}' | sed 's/%//')
+if [[ $DISK_USAGE -gt 85 ]]; then
+    echo "⚠️  Uso de disco alto: ${DISK_USAGE}%"
+fi
+
+ENTROPY=$(cat /proc/sys/kernel/random/entropy_avail)
+if [[ $ENTROPY -lt 1000 ]]; then
+    echo "⚠️  Entropia baixa: $ENTROPY"
+fi
+
+if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
+    TEMP=$(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))
+    if [[ $TEMP -gt 75 ]]; then
+        echo "⚠️  Temperatura alta: ${TEMP}°C"
+    fi
+fi
+
+echo "==========================================="
+EOF
+
+    chmod +x /usr/local/bin/boxserver-health
+
+    # Script de limpeza
+    cat > /etc/cron.weekly/cleanup-boxserver <<'EOF'
+#!/bin/bash
+# Script de limpeza automática do Boxserver
+
+# Limpeza de pacotes
+apt autoremove --purge -y
+apt clean
+
+# Limpeza de logs (manter últimos 7 dias)
+journalctl --vacuum-time=7d
+
+# Limpeza de logs do Pi-hole (manter últimos 30 dias)
+find /var/log -name "pihole*.log*" -mtime +30 -delete 2>/dev/null
+
+# Verificar espaço em disco
+df -h > /var/log/disk-usage.log
+
+# Verificar entropia
+echo "Entropia: $(cat /proc/sys/kernel/random/entropy_avail)" >> /var/log/system-health.log
+
+echo "Limpeza concluída em $(date)" >> /var/log/cleanup.log
+EOF
+
+    chmod +x /etc/cron.weekly/cleanup-boxserver
+
+    # Agendar relatório de saúde diário
+    echo "0 8 * * * root /usr/local/bin/boxserver-health >> /var/log/boxserver-health.log" >> /etc/crontab
+
+    # Configurar logrotate para Pi-hole
+    cat > /etc/logrotate.d/pihole <<'EOF'
+/var/log/pihole.log {
+    daily
+    missingok
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    create 644 pihole pihole
+    postrotate
+        systemctl reload pihole-FTL
+    endscript
+}
+EOF
+
+    log_message "Monitoramento configurado"
 }
 
-# Testes Finais
 run_final_tests() {
-    dialog --title "Testes Finais" --yesno "Isso executará uma bateria de testes para verificar se todos os serviços estão funcionando corretamente.\n\nDeseja continuar?" 10 70
-    if [ $? -ne 0 ]; then
-        return
+    log_message "Executando testes finais..."
+
+    local failed_tests=()
+
+    # Testar serviços
+    echo "Testando serviços..."
+    local services=("pihole-FTL" "unbound" "chrony")
+
+    if systemctl list-unit-files | grep -q "wg-quick@wg0"; then
+        services+=("wg-quick@wg0")
     fi
-    
-    local test_results=""
-    local all_tests_passed=true
-    
-    # Teste 1: Verificar Pi-hole
-    dialog --infobox "Testando Pi-hole..." 4 25
-    if systemctl is-active --quiet pihole-FTL; then
-        test_results+="✅ Pi-hole: Ativo\n"
-    else
-        test_results+="❌ Pi-hole: Inativo\n"
-        all_tests_passed=false
+
+    if systemctl list-unit-files | grep -q "cloudflared"; then
+        services+=("cloudflared")
     fi
-    
-    # Teste 2: Verificar Unbound
-    dialog --infobox "Testando Unbound..." 4 25
-    if systemctl is-active --quiet unbound; then
-        test_results+="✅ Unbound: Ativo\n"
-        # Testar resolução DNS
-        if dig @127.0.0.1 -p 5335 google.com +short > /dev/null 2>&1; then
-            test_results+="✅ DNS Recursivo: Funcionando\n"
-        else
-            test_results+="❌ DNS Recursivo: Falha\n"
-            all_tests_passed=false
+
+    for service in "${services[@]}"; do
+        if ! systemctl is-active --quiet "$service"; then
+            failed_tests+=("Serviço $service não está ativo")
         fi
-    else
-        test_results+="❌ Unbound: Inativo\n"
-        all_tests_passed=false
+    done
+
+    # Testar DNS
+    echo "Testando DNS..."
+    if ! timeout 5 dig @127.0.0.1 google.com +short >/dev/null; then
+        failed_tests+=("Pi-hole DNS não está funcionando")
     fi
-    
-    # Teste 3: Verificar WireGuard
-    dialog --infobox "Testando WireGuard..." 4 25
-    if systemctl is-active --quiet wg-quick@wg0; then
-        test_results+="✅ WireGuard: Ativo\n"
-        # Verificar interface
-        if ip link show wg0 > /dev/null 2>&1; then
-            test_results+="✅ Interface wg0: Configurada\n"
-        else
-            test_results+="❌ Interface wg0: Não encontrada\n"
-            all_tests_passed=false
+
+    if [[ -f /etc/boxserver/config.conf ]]; then
+        source /etc/boxserver/config.conf
+        if ! timeout 5 dig @127.0.0.1 -p "${UNBOUND_PORT:-5335}" google.com +short >/dev/null; then
+            failed_tests+=("Unbound DNS não está funcionando")
         fi
+    fi
+
+    # Testar conectividade
+    echo "Testando conectividade..."
+    if ! timeout 10 ping -c 3 8.8.8.8 >/dev/null; then
+        failed_tests+=("Sem conectividade com internet")
+    fi
+
+    # Verificar entropia
+    local entropy=$(cat /proc/sys/kernel/random/entropy_avail)
+    if [[ $entropy -lt 1000 ]]; then
+        failed_tests+=("Entropia baixa: $entropy")
+    fi
+
+    # Mostrar resultados
+    if [[ ${#failed_tests[@]} -eq 0 ]]; then
+        show_info "✅ TODOS OS TESTES PASSARAM!\n\nBoxServer está funcionando corretamente."
+        log_message "Testes finais: SUCESSO"
     else
-        test_results+="❌ WireGuard: Inativo\n"
-        all_tests_passed=false
-    fi
-    
-    # Teste 4: Verificar Entropia
-    dialog --infobox "Testando Entropia..." 4 25
-    local entropy_level
-    entropy_level=$(cat /proc/sys/kernel/random/entropy_avail)
-    if [ "$entropy_level" -gt 1000 ]; then
-        test_results+="✅ Entropia: $entropy_level bits (Adequada)\n"
-    else
-        test_results+="⚠️ Entropia: $entropy_level bits (Baixa)\n"
-    fi
-    
-    # Teste 5: Verificar conectividade externa
-    dialog --infobox "Testando conectividade..." 4 30
-    if ping -c 1 8.8.8.8 > /dev/null 2>&1; then
-        test_results+="✅ Conectividade: Internet OK\n"
-    else
-        test_results+="❌ Conectividade: Sem internet\n"
-        all_tests_passed=false
-    fi
-    
-    # Teste 6: Verificar resolução DNS via Pi-hole
-    dialog --infobox "Testando DNS via Pi-hole..." 4 35
-    if nslookup google.com 127.0.0.1 > /dev/null 2>&1; then
-        test_results+="✅ DNS Pi-hole: Funcionando\n"
-    else
-        test_results+="❌ DNS Pi-hole: Falha\n"
-        all_tests_passed=false
-    fi
-    
-    # Teste 7: Verificar uso de memória
-    dialog --infobox "Verificando recursos..." 4 30
-    local mem_usage
-    mem_usage=$(free | grep Mem | awk '{printf "%.1f", $3/$2 * 100.0}')
-    test_results+="📊 Uso de Memória: ${mem_usage}%\n"
-    
-    # Teste 8: Verificar temperatura (se disponível)
-    if [ -f "/sys/class/thermal/thermal_zone0/temp" ]; then
-        local temp
-        temp=$(cat /sys/class/thermal/thermal_zone0/temp)
-        temp=$((temp / 1000))
-        test_results+="🌡️ Temperatura: ${temp}°C\n"
-    fi
-    
-    # Resultado final
-    test_results+="\n"
-    if [ "$all_tests_passed" = true ]; then
-        test_results+="🎉 TODOS OS TESTES PASSARAM!\n"
-        test_results+="Box-Server está funcionando corretamente."
-    else
-        test_results+="⚠️ ALGUNS TESTES FALHARAM!\n"
-        test_results+="Verifique os serviços marcados com ❌."
-    fi
-    
-    dialog --title "Resultados dos Testes" --msgbox "$test_results" 20 60
-}
-
-# Instalação Completa
-run_complete_installation() {
-    dialog --title "Instalação Completa" --yesno "Isso executará TODOS os passos de instalação automaticamente:\n\n1. Verificações Iniciais\n2. Instalar Pi-hole\n3. Instalar Unbound\n4. Configurar Pi-hole + Unbound\n5. Instalar WireGuard\n6. Configurar Entropia\n7. Otimizações Finais\n8. Testes Finais\n\nEste processo pode levar 30-60 minutos.\nDeseja continuar?" 18 75
-    if [ $? -ne 0 ]; then
-        return
-    fi
-    
-    local start_time
-    start_time=$(date +%s)
-    local step=1
-    local total_steps=8
-    local failed_steps=""
-    
-    # Função para exibir progresso
-    show_progress() {
-        local current_step="$1"
-        local step_name="$2"
-        local percentage=$((current_step * 100 / total_steps))
-        dialog --title "Instalação Completa" --gauge "Executando: $step_name\n\nPasso $current_step de $total_steps" 10 70 $percentage
-    }
-    
-    # Passo 1: Verificações Iniciais
-    show_progress $step "Verificações Iniciais"
-    if ! run_initial_checks_silent; then
-        failed_steps+="1. Verificações Iniciais\n"
-    fi
-    step=$((step + 1))
-    
-    # Passo 2: Instalar Pi-hole
-    show_progress $step "Instalando Pi-hole"
-    if ! run_pihole_installation_silent; then
-        failed_steps+="2. Instalação do Pi-hole\n"
-    fi
-    step=$((step + 1))
-    
-    # Passo 3: Instalar Unbound
-    show_progress $step "Instalando Unbound"
-    if ! run_unbound_installation_silent; then
-        failed_steps+="3. Instalação do Unbound\n"
-    fi
-    step=$((step + 1))
-    
-    # Passo 4: Configurar Pi-hole + Unbound
-    show_progress $step "Configurando Pi-hole + Unbound"
-    if ! run_configure_pihole_unbound_silent; then
-        failed_steps+="4. Configuração Pi-hole + Unbound\n"
-    fi
-    step=$((step + 1))
-    
-    # Passo 5: Instalar WireGuard
-    show_progress $step "Instalando WireGuard"
-    if ! run_wireguard_installation_silent; then
-        failed_steps+="5. Instalação do WireGuard\n"
-    fi
-    step=$((step + 1))
-    
-    # Passo 6: Configurar Entropia
-    show_progress $step "Configurando Entropia"
-    if ! run_entropy_configuration_silent; then
-        failed_steps+="6. Configuração de Entropia\n"
-    fi
-    step=$((step + 1))
-    
-    # Passo 7: Otimizações Finais
-    show_progress $step "Aplicando Otimizações"
-    if ! run_final_optimizations_silent; then
-        failed_steps+="7. Otimizações Finais\n"
-    fi
-    step=$((step + 1))
-    
-    # Passo 8: Testes Finais
-    show_progress $step "Executando Testes"
-    sleep 2  # Aguardar serviços estabilizarem
-    local test_result
-    test_result=$(run_final_tests_silent)
-    step=$((step + 1))
-    
-    # Calcular tempo total
-    local end_time
-    end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-    local minutes=$((duration / 60))
-    local seconds=$((duration % 60))
-    
-    # Preparar relatório final
-    local report="=== INSTALAÇÃO COMPLETA FINALIZADA ===\n\n"
-    report+="⏱️ Tempo total: ${minutes}m ${seconds}s\n\n"
-    
-    if [ -z "$failed_steps" ]; then
-        report+="🎉 SUCESSO! Todos os componentes foram instalados.\n\n"
-        report+="✅ Pi-hole: Bloqueador de anúncios\n"
-        report+="✅ Unbound: DNS recursivo\n"
-        report+="✅ WireGuard: VPN segura\n"
-        report+="✅ Entropia: Otimizada para RK322x\n"
-        report+="✅ Otimizações: Sistema otimizado\n\n"
-        report+="🔧 Comandos úteis:\n"
-        report+="• Adicionar cliente VPN: sudo add-wg-client <nome>\n"
-        report+="• Monitorar sistema: sudo boxserver-monitor\n"
-        report+="• Interface Pi-hole: http://$(hostname -I | awk '{print $1}')/admin\n\n"
-        report+="📊 Resultados dos testes:\n$test_result"
-    else
-        report+="⚠️ INSTALAÇÃO PARCIAL - Alguns passos falharam:\n\n"
-        report+="❌ Passos com falha:\n$failed_steps\n"
-        report+="💡 Recomendação: Execute os passos falhados manualmente\n"
-        report+="   através do menu principal.\n\n"
-        report+="📊 Resultados dos testes:\n$test_result"
-    fi
-    
-    # Perguntar sobre reinicialização
-    dialog --title "Instalação Finalizada" --msgbox "$report" 25 80
-    
-    dialog --title "Reinicialização" --yesno "Para garantir que todas as configurações sejam aplicadas corretamente, é recomendado reiniciar o sistema.\n\nDeseja reiniciar agora?" 10 70
-    if [ $? -eq 0 ]; then
-        dialog --infobox "Reiniciando o sistema em 5 segundos..." 4 45
-        sleep 5
-        sudo reboot
+        local failures
+        failures=$(printf "❌ %s\n" "${failed_tests[@]}")
+        show_error "ALGUNS TESTES FALHARAM:\n\n$failures"
+        log_message "Testes finais: FALHAS - ${failed_tests[*]}"
+        return 1
     fi
 }
 
-# Versões silenciosas das funções (para instalação completa)
-run_initial_checks_silent() {
-    # Implementação simplificada das verificações
-    command -v dialog >/dev/null 2>&1 && \
-    command -v curl >/dev/null 2>&1 && \
-    [ "$(id -u)" -ne 0 ] && \
-    ping -c 1 8.8.8.8 >/dev/null 2>&1
+# =============================================================================
+# INSTALAÇÃO COMPLETA
+# =============================================================================
+
+full_installation() {
+    log_message "Iniciando instalação completa do BoxServer"
+
+    local steps=(
+        "Atualização do sistema"
+        "Verificação do sistema"
+        "Instalação de ferramentas básicas"
+        "Configuração de entropia"
+        "Sincronização temporal"
+        "Otimizações do sistema"
+        "Firewall básico"
+        "Unbound DNS"
+        "Pi-hole"
+        "WireGuard VPN"
+        "Cloudflare Tunnel (opcional)"
+        "Finalização do firewall"
+        "Monitoramento"
+        "Testes finais"
+    )
+
+    local total_steps=${#steps[@]}
+    local current_step=0
+
+    for step in "${steps[@]}"; do
+        current_step=$((current_step + 1))
+        echo "[$current_step/$total_steps] $step..." | tee -a "$LOG_FILE"
+
+        case "$step" in
+            "Verificação do sistema")
+                check_hardware || return 1
+                ;;
+            "Instalação de ferramentas básicas")
+                install_basic_tools || return 1
+                ;;
+            "Configuração de entropia")
+                install_entropy || return 1
+                ;;
+            "Sincronização temporal")
+                install_ntp || return 1
+                ;;
+            "Otimizações do sistema")
+                optimize_system || return 1
+                ;;
+            "Firewall básico")
+                setup_basic_firewall || return 1
+                ;;
+            "Unbound DNS")
+                install_unbound || return 1
+                ;;
+            "Pi-hole")
+                install_pihole || return 1
+                ;;
+            "WireGuard VPN")
+                install_wireguard || return 1
+                ;;
+            "Cloudflare Tunnel (opcional)")
+                if ask_yes_no "Deseja configurar Cloudflare Tunnel para acesso remoto seguro?"; then
+                    install_cloudflare && configure_cloudflare
+                fi
+                ;;
+            "Finalização do firewall")
+                finalize_firewall || return 1
+                ;;
+            "Monitoramento")
+                setup_monitoring || return 1
+                ;;
+            "Testes finais")
+                run_final_tests || return 1
+                ;;
+        esac
+    done
+
+    show_info "🎉 INSTALAÇÃO COMPLETA!\n\nBoxServer foi instalado e configurado com sucesso.\n\nExecute: sudo boxserver-setup\nPara gerenciar o sistema."
+    log_message "Instalação completa finalizada com sucesso"
 }
 
-run_pihole_installation_silent() {
-    curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended \
-        --enable-dhcp=false \
-        --pihole-interface=eth0 \
-        --pihole-dns-1=1.1.1.1 \
-        --pihole-dns-2=1.0.0.1 \
-        --query-logging=true \
-        --install-web-server=true \
-        --install-web-interface=true \
-        --lighttpd-enabled=true >/tmp/pihole_auto_install.log 2>&1
+# =============================================================================
+# MENU PRINCIPAL
+# =============================================================================
+
+show_main_menu() {
+    local choice
+    choice=$(show_menu "$SCRIPT_NAME v$SCRIPT_VERSION" \
+        "1" "Instalação completa" \
+        "2" "Configuração inicial" \
+        "3" "Instalar componente específico" \
+        "4" "Gerenciar WireGuard" \
+        "5" "Diagnóstico do sistema" \
+        "6" "Ver logs" \
+        "7" "Backup/Restaurar configuração" \
+        "8" "Desinstalar serviços" \
+        "0" "Sair")
+
+    echo "$choice"
 }
 
-run_unbound_installation_silent() {
-    sudo apt-get install unbound -y >/tmp/unbound_auto_install.log 2>&1 && \
-    sudo tee /etc/unbound/unbound.conf.d/pi-hole.conf >/dev/null << 'EOF'
-server:
-    verbosity: 0
-    interface: 127.0.0.1
-    port: 5335
-    do-ip4: yes
-    do-udp: yes
-    do-tcp: yes
-    do-ip6: no
-    prefer-ip6: no
-    harden-glue: yes
-    harden-dnssec-stripped: yes
-    use-caps-for-id: no
-    edns-buffer-size: 1232
-    prefetch: yes
-    num-threads: 1
-    so-rcvbuf: 1m
-    private-address: 192.168.0.0/16
-    private-address: 169.254.0.0/16
-    private-address: 172.16.0.0/12
-    private-address: 10.0.0.0/8
-    private-address: fd00::/8
-    private-address: fe80::/10
-EOF
-    sudo systemctl enable unbound >/dev/null 2>&1 && \
-    sudo systemctl start unbound >/dev/null 2>&1
+component_menu() {
+    local choice
+    choice=$(show_menu "Instalar Componente" \
+        "1" "Pi-hole" \
+        "2" "Unbound DNS" \
+        "3" "WireGuard VPN" \
+        "4" "Cloudflare Tunnel" \
+        "5" "Entropia (RNG-tools)" \
+        "6" "NTP (Chrony)" \
+        "7" "Monitoramento" \
+        "0" "Voltar")
+
+    case $choice in
+        1) install_pihole ;;
+        2) install_unbound ;;
+        3) install_wireguard ;;
+        4) install_cloudflare && configure_cloudflare ;;
+        5) install_entropy ;;
+        6) install_ntp ;;
+        7) setup_monitoring ;;
+    esac
 }
 
-run_configure_pihole_unbound_silent() {
-    sudo cp /etc/pihole/setupVars.conf /etc/pihole/setupVars.conf.backup && \
-    sudo sed -i 's/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf && \
-    sudo sed -i 's/^PIHOLE_DNS_2=.*/PIHOLE_DNS_2=/' /etc/pihole/setupVars.conf && \
-    sudo systemctl restart pihole-FTL >/dev/null 2>&1 && \
-    sudo pihole restartdns >/dev/null 2>&1
-}
+show_logs() {
+    local choice
+    choice=$(show_menu "Visualizar Logs" \
+        "1" "Log do BoxServer Setup" \
+        "2" "Log do Pi-hole" \
+        "3" "Log do Unbound" \
+        "4" "Log do WireGuard" \
+        "5" "Log do Cloudflared" \
+        "6" "Log do Sistema" \
+        "0" "Voltar")
 
-run_wireguard_installation_silent() {
-    sudo apt-get install wireguard wireguard-tools qrencode -y >/tmp/wg_auto_install.log 2>&1 && \
-    sudo mkdir -p /etc/wireguard && \
-    cd /etc/wireguard && \
-    sudo wg genkey | sudo tee server_private.key | sudo wg pubkey | sudo tee server_public.key >/dev/null && \
-    sudo chmod 600 server_private.key && \
-    local main_interface && \
-    main_interface=$(ip route | grep default | awk '{print $5}' | head -n1) && \
-    local server_private_key && \
-    server_private_key=$(sudo cat server_private.key) && \
-    sudo tee /etc/wireguard/wg0.conf >/dev/null << EOF
-[Interface]
-PrivateKey = $server_private_key
-Address = 10.8.0.1/24
-ListenPort = 51820
-SaveConfig = true
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $main_interface -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $main_interface -j MASQUERADE
-EOF
-    echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf >/dev/null && \
-    sudo sysctl -p >/dev/null 2>&1 && \
-    sudo systemctl enable wg-quick@wg0 >/dev/null 2>&1 && \
-    sudo systemctl start wg-quick@wg0 >/dev/null 2>&1
-}
-
-run_entropy_configuration_silent() {
-    sudo apt-get install rng-tools -y >/tmp/rng_auto_install.log 2>&1 && \
-    local rng_device="/dev/urandom" && \
-    [ -e "/dev/hwrng" ] && rng_device="/dev/hwrng" && \
-    sudo tee /etc/default/rng-tools >/dev/null << EOF
-RNGDEVICE="$rng_device"
-RNGDOPTIONS="--fill-watermark=2048 --feed-interval=60 --timeout=10"
-EOF
-    sudo systemctl enable rng-tools >/dev/null 2>&1 && \
-    sudo systemctl restart rng-tools >/dev/null 2>&1
-}
-
-run_final_optimizations_silent() {
-    # Log2Ram
-    curl -Lo log2ram.tar.gz https://github.com/azlux/log2ram/archive/master.tar.gz >/dev/null 2>&1 && \
-    tar xf log2ram.tar.gz && \
-    cd log2ram-master && \
-    sudo ./install.sh >/dev/null 2>&1 && \
-    cd .. && rm -rf log2ram* && \
-    
-    # ZRAM
-    sudo apt-get install zram-tools -y >/dev/null 2>&1 && \
-    echo 'ALGO=lz4' | sudo tee -a /etc/default/zramswap >/dev/null && \
-    echo 'PERCENT=25' | sudo tee -a /etc/default/zramswap >/dev/null && \
-    sudo systemctl enable zramswap >/dev/null 2>&1 && \
-    
-    # CPU Governor
-    echo 'performance' | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor >/dev/null 2>&1
-}
-
-run_final_tests_silent() {
-    local results=""
-    systemctl is-active --quiet pihole-FTL && results+="✅ Pi-hole\n" || results+="❌ Pi-hole\n"
-    systemctl is-active --quiet unbound && results+="✅ Unbound\n" || results+="❌ Unbound\n"
-    systemctl is-active --quiet wg-quick@wg0 && results+="✅ WireGuard\n" || results+="❌ WireGuard\n"
-    systemctl is-active --quiet rng-tools && results+="✅ RNG Tools\n" || results+="❌ RNG Tools\n"
-    ping -c 1 8.8.8.8 >/dev/null 2>&1 && results+="✅ Conectividade\n" || results+="❌ Conectividade\n"
-    echo "$results"
-}
-
-# --- Fluxo Principal ---
-
-while true; do
-    show_main_menu
-    
-    # Se o usuário pressionar "Sair"
-    if [ $? -ne 0 ]; then
-        clear
-        break
-    fi
-
-    choice=$(cat /tmp/menu_choice)
     case $choice in
         1)
-            run_initial_checks
+            if [[ -f "$LOG_FILE" ]]; then
+                whiptail --title "Log BoxServer Setup" --textbox "$LOG_FILE" 25 80
+            else
+                show_info "Arquivo de log não encontrado."
+            fi
             ;;
         2)
-            run_pihole_installation
+            if [[ -f /var/log/pihole.log ]]; then
+                whiptail --title "Log Pi-hole" --textbox /var/log/pihole.log 25 80
+            else
+                show_info "Log do Pi-hole não encontrado."
+            fi
             ;;
         3)
-            run_unbound_installation
+            journalctl -u unbound --no-pager > /tmp/unbound.log
+            whiptail --title "Log Unbound" --textbox /tmp/unbound.log 25 80
+            rm -f /tmp/unbound.log
             ;;
         4)
-            run_configure_pihole_unbound
+            journalctl -u wg-quick@wg0 --no-pager > /tmp/wireguard.log
+            whiptail --title "Log WireGuard" --textbox /tmp/wireguard.log 25 80
+            rm -f /tmp/wireguard.log
             ;;
         5)
-            run_wireguard_installation
+            journalctl -u cloudflared --no-pager > /tmp/cloudflared.log
+            whiptail --title "Log Cloudflared" --textbox /tmp/cloudflared.log 25 80
+            rm -f /tmp/cloudflared.log
             ;;
         6)
-            run_entropy_configuration
-            ;;
-        7)
-            run_final_optimizations
-            ;;
-        8)
-            run_final_tests
-            ;;
-        9)
-            run_monitoring
-            ;;
-        10)
-            run_complete_installation
+            journalctl --no-pager -n 100 > /tmp/system.log
+            whiptail --title "Log do Sistema" --textbox /tmp/system.log 25 80
+            rm -f /tmp/system.log
             ;;
     esac
-done
+}
 
-# Limpeza
-rm -f /tmp/menu_choice
+backup_restore_menu() {
+    local choice
+    choice=$(show_menu "Backup/Restaurar" \
+        "1" "Criar backup completo" \
+        "2" "Restaurar backup" \
+        "3" "Listar backups" \
+        "4" "Remover backup" \
+        "0" "Voltar")
+
+    case $choice in
+        1) create_backup ;;
+        2) restore_backup ;;
+        3) list_backups ;;
+        4) remove_backup ;;
+    esac
+}
+
+create_backup() {
+    local backup_name backup_file
+
+    backup_name=$(get_input "Criar Backup" "Nome do backup:" "backup-$(date +%Y%m%d-%H%M%S)")
+    if [[ -z "$backup_name" ]]; then
+        backup_name="backup-$(date +%Y%m%d-%H%M%S)"
+    fi
+
+    backup_file="$BACKUP_DIR/${backup_name}.tar.gz"
+
+    echo "Criando backup..." | tee -a "$LOG_FILE"
+
+    # Criar arquivo de backup
+    tar -czf "$backup_file" \
+        /etc/pihole/ \
+        /etc/unbound/unbound.conf.d/ \
+        /etc/wireguard/ \
+        /etc/cloudflared/ \
+        /etc/boxserver/ 2>/dev/null
+
+    if [[ -f "$backup_file" ]]; then
+        show_info "Backup criado com sucesso!\nArquivo: $backup_file"
+        log_message "Backup criado: $backup_file"
+    else
+        show_error "Erro ao criar backup"
+        return 1
+    fi
+}
+
+list_backups() {
+    if [[ ! -d "$BACKUP_DIR" ]] || [[ -z "$(ls -A "$BACKUP_DIR")" ]]; then
+        show_info "Nenhum backup encontrado."
+        return
+    fi
+
+    local backup_list
+    backup_list="Backups disponíveis:\n\n"
+
+    for backup in "$BACKUP_DIR"/*.tar.gz; do
+        if [[ -f "$backup" ]]; then
+            local filename=$(basename "$backup")
+            local size=$(du -h "$backup" | cut -f1)
+            local date=$(stat -c %y "$backup" | cut -d' ' -f1)
+            backup_list+="$filename ($size) - $date\n"
+        fi
+    done
+
+    whiptail --title "Lista de Backups" --msgbox "$backup_list" 20 70
+}
+
+system_diagnosis() {
+    echo "Executando diagnóstico..." | tee -a "$LOG_FILE"
+
+    # Executar script de saúde se existir
+    if [[ -x /usr/local/bin/boxserver-health ]]; then
+        /usr/local/bin/boxserver-health > /tmp/diagnosis.log 2>&1
+        whiptail --title "Diagnóstico do Sistema" --textbox /tmp/diagnosis.log 25 80
+        rm -f /tmp/diagnosis.log
+    else
+        # Diagnóstico básico
+        local diag_info
+        diag_info="DIAGNÓSTICO DO BOXSERVER\n"
+        diag_info+="========================\n\n"
+        diag_info+="Sistema: $(uname -a)\n"
+        diag_info+="Uptime: $(uptime)\n"
+        diag_info+="Memória: $(free -h | grep Mem)\n"
+        diag_info+="Disco: $(df -h / | tail -1)\n"
+
+        if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
+            diag_info+="CPU: $(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))°C\n"
+        fi
+
+        diag_info+="\nServiços:\n"
+        local services=("pihole-FTL" "unbound" "wg-quick@wg0" "cloudflared" "chrony")
+        for service in "${services[@]}"; do
+            if systemctl is-active --quiet "$service" 2>/dev/null; then
+                diag_info+="✅ $service\n"
+            else
+                diag_info+="❌ $service\n"
+            fi
+        done
+
+        echo -e "$diag_info" > /tmp/diagnosis.log
+        whiptail --title "Diagnóstico do Sistema" --textbox /tmp/diagnosis.log 25 80
+        rm -f /tmp/diagnosis.log
+    fi
+}
+
+# =============================================================================
+# INSTALAÇÃO DO SCRIPT NO SISTEMA
+# =============================================================================
+
+install_script() {
+    local install_path="/usr/local/bin/boxserver-setup"
+
+    # Copiar script para local permanente
+    cp "$0" "$install_path"
+    chmod +x "$install_path"
+
+    # Criar link simbólico para facilitar
+    ln -sf "$install_path" /usr/local/bin/boxserver
+
+    log_message "Script instalado em $install_path"
+    show_info "Script instalado com sucesso!\n\nExecute: sudo boxserver-setup\nou: sudo boxserver\n\nPara acessar este menu."
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+main() {
+    # Verificações iniciais
+    check_root
+    check_internet || exit 1
+    create_directories
+
+    # Diagnóstico antes de qualquer coisa
+    diagnose_boxserver
+    if ask_yes_no "Deseja instalar/reinstalar/configurar os componentes que NÃO estão OK?"; then
+        full_installation
+    else
+        show_info "Nenhuma ação foi tomada. Use o menu para instalar ou configurar componentes específicos."
+        exit 0
+    fi
+}
+
+uninstall_services() {
+    log_message "Iniciando desinstalação de serviços..."
+
+    local services_to_remove=()
+
+    # Verificar quais serviços estão instalados
+    if systemctl list-unit-files | grep -q pihole-FTL; then
+        services_to_remove+=("Pi-hole")
+    fi
+
+    if systemctl list-unit-files | grep -q unbound; then
+        services_to_remove+=("Unbound")
+    fi
+
+    if systemctl list-unit-files | grep -q "wg-quick@wg0"; then
+        services_to_remove+=("WireGuard")
+    fi
+
+    if systemctl list-unit-files | grep -q cloudflared; then
+        services_to_remove+=("Cloudflare")
+    fi
+
+    if [[ ${#services_to_remove[@]} -eq 0 ]]; then
+        show_info "Nenhum serviço do BoxServer encontrado para remover."
+        return 0
+    fi
+
+    local services_list
+    services_list=$(printf "- %s\n" "${services_to_remove[@]}")
+
+    if ! ask_yes_no "Serviços encontrados para remoção:\n\n$services_list\n\nContinuar com a desinstalação?"; then
+        return 0
+    fi
+
+    # Parar e desabilitar serviços
+    echo "Parando serviços..." | tee -a "$LOG_FILE"
+    systemctl stop pihole-FTL unbound wg-quick@wg0 cloudflared 2>/dev/null || true
+    systemctl disable pihole-FTL unbound wg-quick@wg0 cloudflared 2>/dev/null || true
+
+    # Remover pacotes
+    echo "Removendo pacotes..." | tee -a "$LOG_FILE"
+    apt remove --purge -y pihole unbound wireguard wireguard-tools 2>/dev/null || true
+
+    # Remover cloudflared
+    rm -f /usr/local/bin/cloudflared
+
+    # Remover arquivos de configuração
+    echo "Removendo arquivos de configuração..." | tee -a "$LOG_FILE"
+    rm -rf /etc/pihole /etc/unbound/unbound.conf.d/pi-hole.conf
+    rm -rf /etc/wireguard /etc/cloudflared
+    rm -rf /usr/local/bin/boxserver-health
+    rm -f /etc/cron.weekly/cleanup-boxserver
+    rm -f /etc/cron.hourly/check-temp
+
+    # Remover configurações do sistema
+    sed -i '/# Otimizações BoxServer/,$d' /etc/sysctl.conf 2>/dev/null || true
+
+    # Resetar firewall
+    ufw --force reset 2>/dev/null || true
+
+    # Limpeza final
+    apt autoremove --purge -y
+    apt autoclean
+
+    show_info "Desinstalação concluída!\n\nTodos os serviços do BoxServer foram removidos."
+    log_message "Desinstalação concluída com sucesso"
+}
+
+# Executar função principal se script for executado diretamente
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
