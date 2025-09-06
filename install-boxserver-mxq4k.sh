@@ -1513,10 +1513,10 @@ show_main_menu() {
 
     # Adicionar opções padrão
     menu_options+=(
-        "7" "Diagnóstico do sistema"
-        "8" "Ver logs"
-        "9" "Backup/Restaurar configuração"
-        "10" "Desinstalar serviços"
+        "6" "Diagnóstico do sistema"
+        "7" "Ver logs"
+        "8" "Backup/Restaurar configuração"
+        "9" "Desinstalar serviços"
         "0" "Sair"
     )
 
@@ -1595,6 +1595,30 @@ show_logs() {
             rm -f /tmp/system.log
             ;;
     esac
+}
+
+configure_wireguard() {
+    if [[ ! -f /etc/wireguard/wg0.conf ]]; then
+        show_error "WireGuard não está instalado. Instale-o primeiro."
+        return 1
+    fi
+
+    local wireguard_port vpn_network
+    wireguard_port=$(get_input "Configuração WireGuard" "Porta do WireGuard VPN:" "$DEFAULT_WIREGUARD_PORT")
+    vpn_network=$(get_input "Configuração WireGuard" "Rede VPN (CIDR):" "$DEFAULT_VPN_NETWORK")
+
+    # Atualizar configurações
+    sed -i "s/^WIREGUARD_PORT=.*/WIREGUARD_PORT=\"$wireguard_port\"/" "$CONFIG_DIR/config.conf"
+    sed -i "s/^VPN_NETWORK=.*/VPN_NETWORK=\"$vpn_network\"/" "$CONFIG_DIR/config.conf"
+
+    # Atualizar configuração do WireGuard
+    sed -i "s/^ListenPort = .*/ListenPort = $wireguard_port/" /etc/wireguard/wg0.conf
+    sed -i "s/^Address = .*/Address = ${vpn_network%/*}.1\/24/" /etc/wireguard/wg0.conf
+
+    systemctl restart wg-quick@wg0
+
+    log_message "Configuração do WireGuard atualizada: Porta=$wireguard_port, Rede=$vpn_network"
+    show_info "Configuração do WireGuard atualizada com sucesso!"
 }
 
 backup_restore_menu() {
