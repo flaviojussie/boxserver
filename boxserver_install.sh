@@ -411,14 +411,11 @@ install_unbound() {
 
     apt install -y unbound
 
-    # Baixar root hints
-    wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
-
     # Limpar configurações anteriores
-    rm -rf /var/lib/unbound/root.key* /etc/unbound/unbound.conf.d/pi-hole.conf
+    rm -rf /var/lib/unbound/* /etc/unbound/unbound.conf.d/*
     mkdir -p /var/lib/unbound
 
-    # Baixar e configurar root hints
+    # Baixar root hints
     wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
 
     # Configuração otimizada para ARM
@@ -433,11 +430,11 @@ server:
     do-ip6: no
     prefer-ip6: no
 
-    # DNSSEC
-    auto-trust-anchor-file: "/var/lib/unbound/root.key"
+    # DNS Security (DNSSEC desabilitado inicialmente)
     root-hints: "/var/lib/unbound/root.hints"
-    harden-glue: yes
-    harden-dnssec-stripped: yes
+    harden-glue: no
+    harden-dnssec-stripped: no
+    do-dnssec: no
 
     # Otimizações
     num-threads: 1
@@ -470,10 +467,6 @@ EOF
     chown -R unbound:unbound /var/lib/unbound
     chmod 755 /var/lib/unbound
     chmod 644 /var/lib/unbound/root.hints
-
-    # Gerar trust anchor inicial
-    unbound-anchor -a /var/lib/unbound/root.key -r /var/lib/unbound/root.hints
-    chmod 644 /var/lib/unbound/root.key
 
     # Verificar configuração
     if ! unbound-checkconf; then
