@@ -411,8 +411,14 @@ install_unbound() {
 
     apt install -y unbound
 
-    # Limpar configurações anteriores
-    rm -rf /var/lib/unbound/* /etc/unbound/unbound.conf.d/*
+    # Parar serviço do Unbound
+    systemctl stop unbound
+
+    # Limpar TODAS as configurações existentes
+    rm -rf /var/lib/unbound/*
+    rm -rf /etc/unbound/unbound.conf.d/*
+    rm -f /etc/unbound/*.conf
+    rm -f /etc/unbound/keys.d/*
     mkdir -p /var/lib/unbound
 
     # Baixar root hints
@@ -430,11 +436,11 @@ server:
     do-ip6: no
     prefer-ip6: no
 
-    # DNS Security (DNSSEC desabilitado inicialmente)
+    # Configurações básicas de DNS
     root-hints: "/var/lib/unbound/root.hints"
-    harden-glue: no
-    harden-dnssec-stripped: no
-    do-dnssec: no
+    trust-anchor-file: ""
+    auto-trust-anchor-file: ""
+    module-config: "iterator"
 
     # Otimizações
     num-threads: 1
@@ -464,9 +470,12 @@ server:
 EOF
 
     # Configurar permissões
-    chown -R unbound:unbound /var/lib/unbound
+    # Configurar permissões
+    chown -R unbound:unbound /var/lib/unbound /etc/unbound
     chmod 755 /var/lib/unbound
     chmod 644 /var/lib/unbound/root.hints
+    chmod -R 644 /etc/unbound/unbound.conf.d/*
+    chmod 755 /etc/unbound/unbound.conf.d
 
     # Verificar configuração
     if ! unbound-checkconf; then
