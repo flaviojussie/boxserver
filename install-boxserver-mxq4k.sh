@@ -352,6 +352,47 @@ detect_service_state() {
     echo "installed=$installed configured=$configured running=$running"
 }
 
+test_installed_components() {
+    COMPONENTS_STATUS=()
+
+    # Verificar Pi-hole
+    local pihole_state
+    pihole_state=$(detect_service_state "pihole")
+    if [[ "$pihole_state" =~ installed=true ]] && [[ "$pihole_state" =~ configured=true ]] && [[ "$pihole_state" =~ running=true ]]; then
+        COMPONENTS_STATUS+=("Pi-hole: INSTALADO e FUNCIONANDO")
+    else
+        COMPONENTS_STATUS+=("Pi-hole: NÃO INSTALADO ou INCOMPLETO")
+    fi
+
+    # Verificar Unbound
+    local unbound_state
+    unbound_state=$(detect_service_state "unbound")
+    if [[ "$unbound_state" =~ installed=true ]] && [[ "$unbound_state" =~ configured=true ]] && [[ "$unbound_state" =~ running=true ]]; then
+        COMPONENTS_STATUS+=("Unbound: INSTALADO e FUNCIONANDO")
+    else
+        COMPONENTS_STATUS+=("Unbound: NÃO INSTALADO ou INCOMPLETO")
+    fi
+
+    # Verificar WireGuard
+    local wireguard_state
+    wireguard_state=$(detect_service_state "wireguard")
+    if [[ "$wireguard_state" =~ installed=true ]] && [[ "$wireguard_state" =~ configured=true ]] && [[ "$wireguard_state" =~ running=true ]]; then
+        COMPONENTS_STATUS+=("WireGuard: INSTALADO e FUNCIONANDO")
+    else
+        COMPONENTS_STATUS+=("WireGuard: NÃO INSTALADO ou INCOMPLETO")
+    fi
+
+    # Verificar Cloudflared
+    local cloudflared_state
+    cloudflared_state=$(detect_service_state "cloudflared")
+    if [[ "$cloudflared_state" =~ installed=true ]] && [[ "$cloudflared_state" =~ configured=true ]] && [[ "$cloudflared_state" =~ running=true ]]; then
+        COMPONENTS_STATUS+=("Cloudflared: INSTALADO e FUNCIONANDO")
+    else
+        COMPONENTS_STATUS+=("Cloudflared: NÃO INSTALADO ou INCOMPLETO")
+    fi
+}
+}
+
 detect_installed_components() {
     COMPONENTS_STATUS=()
 
@@ -1484,12 +1525,17 @@ full_installation() {
 # =============================================================================
 
 show_main_menu() {
-    detect_installed_components
+    test_installed_components
 
     local menu_options=(
         "1" "Instalação completa"
         "2" "Configuração inicial"
     )
+
+    # Adicionar status dos componentes ao menu
+    for status in "${COMPONENTS_STATUS[@]}"; do
+        menu_options+=("$status")
+    done
 
     # Adicionar opções de configuração para componentes instalados
     for status in "${COMPONENTS_STATUS[@]}"; do
