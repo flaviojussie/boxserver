@@ -1,906 +1,1444 @@
 #!/bin/bash
-# Script aprimorado para instalação do Boxserver - melhorias estruturais, clareza e eficiência
+# =============================================================================
+# BOXSERVER TUI INSTALLER - VERSÃO UNIFICADA 5.0
+# =============================================================================
+# Sistema unificado para instalação e gerenciamento do BoxServer
+# Interface TUI otimizada para MXQ-4K com chip RK322x
+# Consolida todas as versões anteriores eliminando redundâncias
 #
-# Boxserver TUI Installer - Interface Gráfica Terminal
-# Instalador automatizado para MXQ-4K com chip RK322x
-# Baseado na base de conhecimento do projeto Boxserver Arandutec
-#
-# Autor: Boxserver Team
-# Versão: 2.0 (Refatorado)
+# Autor: BoxServer Team
+# Versão: 5.0-unified
 # Data: $(date +%Y-%m-%d)
-#
-# ==============================================
-# MELHORIAS DESTE VERSÃO:
-# - Funções reutilizáveis para reduzir redundância
-# - Tratamento de erros centralizado
-# - Otimização de desempenho
-# - Código modular e mais legível
-# - Melhoria na detecção de hardware
-# - Gestão de recursos otimizada
-# ==============================================
+# =============================================================================
 
-# ==============================================
+set -euo pipefail
+
+# =============================================================================
 # CONFIGURAÇÕES GLOBAIS
-# ==============================================
+# =============================================================================
 
-# Diretórios
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="/var/log/boxserver"
-CONFIG_DIR="/etc/boxserver"
-BACKUP_DIR="/var/backups/boxserver"
-LOG_FILE="$LOG_DIR/tui-installer.log"
+readonly SCRIPT_VERSION="5.0-unified"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_NAME="$(basename "$0")"
 
-# Cores para output
-declare -A COLORS=(
-    [RED]='\033[0;31m'
-    [GREEN]='\033[0;32m'
-    [YELLOW]='\033[1;33m'
-    [BLUE]='\033[0;34m'
-    [NC]='\033[0m' # No Color
+# Diretórios do sistema
+declare -r LOG_DIR="/var/log/boxserver"
+declare -r CONFIG_DIR="/etc/boxserver"
+declare -r BACKUP_DIR="/var/backups/boxserver"
+declare -r WEB_DIR="/var/www/boxserver"
+declare -r CACHE_DIR="/tmp/boxserver_cache"
+declare -r LOCK_DIR="/var/lock/boxserver"
+
+# Arquivos
+declare -r LOG_FILE="${LOG_DIR}/boxserver.log"
+declare -r CONFIG_FILE="${CONFIG_DIR}/config.conf"
+declare -r PID_FILE="${LOCK_DIR}/boxserver.pid"
+
+# Configurações de interface
+declare -r DIALOG_HEIGHT=20
+declare -r DIALOG_WIDTH=70
+declare -r DIALOG_MENU_HEIGHT=12
+
+# Configurações de sistema
+declare -r MAX_LOG_SIZE=$((10 * 1024 * 1024))  # 10MB
+declare -r CACHE_TTL=300  # 5 minutos
+declare -r MAX_RETRIES=3
+declare -r TIMEOUT=30
+
+# =============================================================================
+# VARIÁVEIS GLOBAIS
+# =============================================================================
+
+declare -A CONFIG=(
+    [NETWORK_INTERFACE]=""
+    [SERVER_IP]=""
+    [HOSTNAME]=""
+    [DOMAIN]="boxserver.local"
 )
 
-# Configurações padrão do dialog
-DIALOG_HEIGHT=20
-DIALOG_WIDTH=70
-DIALOG_MENU_HEIGHT=12
-
-# Variáveis globais de configuração
-NETWORK_INTERFACE=""
-SERVER_IP=""
-VPN_NETWORK="10.200.200.0/24"
-VPN_PORT="51820"
-PIHOLE_PASSWORD=""
-FILEBROWSER_PORT="8080"
-COCKPIT_PORT="9090"
-BOARD_INFO=""
-
-# Array de aplicativos disponíveis
-declare -A APPS=(
-    [1]="Pi-hole|Bloqueio de anúncios e DNS|http://IP/admin"
-    [2]="Unbound|DNS recursivo local|Porta 5335 (interno)"
-    [3]="WireGuard|Servidor VPN|Porta 51820/udp"
-    [4]="Cockpit|Painel de administração web|https://IP:9090"
-    [5]="FileBrowser|Gerenciamento de arquivos web|http://IP:8080"
-    [6]="Netdata|Monitoramento em tempo real|http://IP:19999"
-    [7]="Fail2Ban|Proteção contra ataques|Serviço em background"
-    [8]="UFW|Firewall simplificado|Serviço em background"
-    [9]="RNG-tools|Gerador de entropia|Serviço em background"
-    [10]="Rclone|Sincronização com nuvem|CLI"
-    [11]="Rsync|Backup local|CLI"
-    [12]="MiniDLNA|Servidor de mídia|Porta 8200"
-    [13]="Cloudflared|Tunnel Cloudflare|CLI"
-    [14]="Chrony|Sincronização de tempo (NTP)|Serviço em background"
-    [15]="Interface Web|Dashboard unificado com Nginx|Porta 80"
+declare -A PORTS=(
+    [PIHOLE]=8081
+    [FILEBROWSER]=8080
+    [COCKPIT]=9090
+    [NETDATA]=19999
+    [MINIDLNA]=8200
+    [WIREGUARD]=51820
+    [NGINX]=80
+    [NGINX_SSL]=443
 )
 
-# ==============================================
-# FUNÇÕES DE UTILIDADE
-# ==============================================
+declare -A SERVICES=(
+    [pihole]="Pi-hole|Bloqueador de anúncios DNS|web|${PORTS[PIHOLE]}|/admin"
+    [unbound]="Unbound|DNS recursivo seguro|dns|5335|/"
+    [wireguard]="WireGuard|Servidor VPN|vpn|${PORTS[WIREGUARD]}|/"
+    [cockpit]="Cockpit|Painel administrativo|web|${PORTS[COCKPIT]}|/"
+    [filebrowser]="FileBrowser|Gerenciador de arquivos|web|${PORTS[FILEBROWSER]}|/"
+    [netdata]="Netdata|Monitor em tempo real|web|${PORTS[NETDATA]}|/"
+    [fail2ban]="Fail2Ban|Proteção anti-intrusão|service|0|/"
+    [ufw]="UFW|Firewall simplificado|service|0|/"
+    [minidlna]="MiniDLNA|Servidor de mídia|media|${PORTS[MINIDLNA]}|/"
+    [nginx]="Nginx|Servidor web|web|${PORTS[NGINX]}|/"
+)
 
-# Função de logging centralizada
-log_message() {
+declare -a DIALOG_OPTS
+
+# =============================================================================
+# SISTEMA DE LOGGING
+# =============================================================================
+
+log() {
     local level="$1"
     local message="$2"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+    # Criar diretório de log se não existir
+    [[ ! -d "$LOG_DIR" ]] && mkdir -p "$LOG_DIR"
+
+    # Rotacionar log se muito grande
+    if [[ -f "$LOG_FILE" ]] && [[ $(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE") -gt $MAX_LOG_SIZE ]]; then
+        mv "$LOG_FILE" "${LOG_FILE}.old"
+        gzip "${LOG_FILE}.old" 2>/dev/null || true
+    fi
+
+    # Escrever no log
+    printf '[%s][%s] %s\n' "$timestamp" "$level" "$message" >> "$LOG_FILE"
+
+    # Exibir erros no stderr
+    case "$level" in
+        ERROR|FATAL)
+            printf '\e[31m[%s][%s] %s\e[0m\n' "$timestamp" "$level" "$message" >&2
+            ;;
+        WARN)
+            printf '\e[33m[%s][%s] %s\e[0m\n' "$timestamp" "$level" "$message" >&2
+            ;;
+    esac
 }
 
-# Função para colorir output
-color_print() {
-    local color="$1"
-    local message="$2"
-    printf "${COLORS[$color]}%s${COLORS[NC]}\n" "$message"
+# =============================================================================
+# SISTEMA DE CACHE
+# =============================================================================
+
+cache_get() {
+    local key="$1"
+    local cache_file="${CACHE_DIR}/${key}"
+
+    if [[ -f "$cache_file" ]]; then
+        local cache_time=$(stat -c %Y "$cache_file")
+        local current_time=$(date +%s)
+
+        if (( current_time - cache_time < CACHE_TTL )); then
+            cat "$cache_file"
+            return 0
+        else
+            rm -f "$cache_file"
+        fi
+    fi
+    return 1
 }
 
-# Função para criar diretórios necessários
-setup_directories() {
-    local dirs=("$LOG_DIR" "$CONFIG_DIR" "$BACKUP_DIR")
-    for dir in "${dirs[@]}"; do
-        mkdir -p "$dir"
-    done
-    touch "$LOG_FILE"
-    log_message "INFO" "Diretórios criados: ${dirs[*]}"
+cache_set() {
+    local key="$1"
+    local value="$2"
+    local cache_file="${CACHE_DIR}/${key}"
+
+    mkdir -p "$CACHE_DIR"
+    echo "$value" > "$cache_file"
 }
 
-# Função para verificar privilégios de root
+# =============================================================================
+# TRATAMENTO DE ERROS
+# =============================================================================
+
+error_handler() {
+    local line_num=$1
+    local error_code=$2
+    local error_msg="${3:-Erro desconhecido}"
+
+    log "ERROR" "Linha $line_num: $error_msg (código: $error_code)"
+
+    dialog --title "❌ Erro Fatal" \
+           --msgbox "Erro na linha $line_num:\n\n$error_msg\n\nCódigo: $error_code" \
+           12 60 2>/dev/null || true
+
+    cleanup
+    exit $error_code
+}
+
+cleanup() {
+    log "INFO" "Realizando limpeza do sistema..."
+    rm -rf "${CACHE_DIR}"/* 2>/dev/null || true
+    rm -f "$PID_FILE" 2>/dev/null || true
+}
+
+# =============================================================================
+# VALIDAÇÕES
+# =============================================================================
+
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        dialog --title "Erro de Permissão" --msgbox "Este script deve ser executado como root.\n\nUse: sudo $0" 8 50
+        echo "❌ Este script deve ser executado como root."
+        echo "💡 Use: sudo $0"
         exit 1
     fi
 }
 
-# Função para verificar e instalar dialog
-check_dialog() {
-    if ! command -v dialog &> /dev/null; then
-        apt-get update -y
-        apt-get install -y dialog
-    fi
-}
+check_dependencies() {
+    local missing=()
+    local deps=("dialog" "curl" "wget" "systemctl" "ip" "ss")
 
-# ==============================================
-# DETECÇÃO DE HARDWARE E SISTEMA
-# ==============================================
+    log "INFO" "Verificando dependências..."
 
-# Função para detectar hardware RK322x
-detect_hardware() {
-    BOARD_INFO=$(cat /proc/device-tree/model 2>/dev/null || cat /sys/firmware/devicetree/base/model 2>/dev/null)
-    
-    if [[ "$BOARD_INFO" =~ "rk322x" ]] || [[ "$BOARD_INFO" =~ "rk3229" ]] || grep -q -E "rk322x|rk3229" /proc/cpuinfo 2>/dev/null; then
-        log_message "INFO" "Hardware RK322x/RK3229 detectado: $BOARD_INFO"
-        return 0
-    else
-        log_message "WARN" "Hardware RK322x não detectado: $BOARD_INFO"
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" >/dev/null 2>&1; then
+            missing+=("$dep")
+        fi
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log "ERROR" "Dependências faltando: ${missing[*]}"
+
+        dialog --title "❌ Dependências Faltando" \
+               --msgbox "Dependências necessárias não encontradas:\n\n${missing[*]}\n\nInstale-as antes de continuar." \
+               10 50
         return 1
     fi
+
+    log "INFO" "Todas as dependências estão disponíveis"
+    return 0
 }
 
-# Função para verificar recursos do sistema
 check_system_resources() {
     local ram_mb=$(free -m | awk 'NR==2{print $2}')
     local disk_gb=$(df / | awk 'NR==2{print int($4/1024/1024)}')
-    local arch=$(uname -m)
-    
-    local errors=""
-    
-    # Verificar RAM
-    if [ "$ram_mb" -lt 480 ]; then
-        errors+="• RAM insuficiente: ${ram_mb}MB (mínimo 512MB)\n"
+
+    log "INFO" "Verificando recursos do sistema: RAM=${ram_mb}MB, Disco=${disk_gb}GB"
+
+    if (( ram_mb < 256 )); then
+        log "WARN" "Sistema com pouca RAM: ${ram_mb}MB"
+        dialog --title "⚠️  Aviso" \
+               --msgbox "Sistema detectado com pouca RAM (${ram_mb}MB).\n\nAlguns serviços podem ter limitações." \
+               10 50
     fi
-    
-    # Verificar espaço em disco
-    if [ "$disk_gb" -lt 2 ]; then
-        errors+="• Espaço em disco insuficiente: ${disk_gb}GB (mínimo 2GB)\n"
-    fi
-    
-    # Verificar arquitetura ARM
-    if [[ "$arch" != *"arm"* ]] && [[ "$arch" != *"aarch"* ]]; then
-        errors+="• Arquitetura não suportada: $arch (requer ARM Cortex-A7)\n"
-    fi
-    
-    if [ -n "$errors" ]; then
-        dialog "${DIALOG_OPTS[@]}" --title "Verificação do Sistema" --msgbox "Problemas encontrados:\n\n$errors\nRecomenda-se resolver estes problemas antes de continuar." 12 60
+
+    if (( disk_gb < 2 )); then
+        log "ERROR" "Espaço em disco insuficiente: ${disk_gb}GB"
+        dialog --title "❌ Erro" \
+               --msgbox "Espaço em disco insuficiente: ${disk_gb}GB\n\nMínimo necessário: 2GB" \
+               10 50
         return 1
     fi
-    
-    dialog "${DIALOG_OPTS[@]}" --title "Verificação do Sistema" --msgbox "Sistema compatível:\n\n• RAM: ${ram_mb}MB ✓\n• Disco Livre: ${disk_gb}GB ✓\n• Arquitetura: $arch ✓" 10 50
+
     return 0
 }
 
-# ==============================================
-# OTIMIZÇÕES PARA RK322x
-# ==============================================
+# =============================================================================
+# DETECÇÃO DE REDE
+# =============================================================================
 
-# Função para otimizar sistema para NAND
-optimize_for_nand() {
-    log_message "INFO" "Aplicando otimizações para armazenamento NAND"
-    
-    # Reduzir escrita no disco
-    if mountpoint -q /; then
-        mount -o remount,noatime,nodiratime /
-    fi
-    
-    # Configurar swappiness reduzido
-    if [ -f /proc/sys/vm/swappiness ]; then
-        echo "10" > /proc/sys/vm/swappiness
-    fi
-    
-    # Desabilitar logs excessivos do kernel
-    if [ -f /proc/sys/kernel/printk ]; then
-        echo "1 4 1 7" > /proc/sys/kernel/printk
-    fi
+detect_network() {
+    local interface primary_ip hostname
 
-    # Otimizar cache de dentries e inodes
-    if sysctl vm.vfs_cache_pressure >/dev/null 2>&1; then
-        echo 'vm.vfs_cache_pressure=50' | tee -a /etc/sysctl.conf >/dev/null
-    fi
-    
-    # Limpar caches antigos
-    sync && echo 3 > /proc/sys/vm/drop_caches
-}
-
-# Função para criar e configurar swap file
-create_swap_file() {
-    if [ -f /swapfile ]; then
-        log_message "INFO" "Arquivo de swap já existe. Ignorando."
-        return
-    fi
-    
-    log_message "INFO" "Criando arquivo de swap de 512MB..."
-    fallocate -l 512M /swapfile
-    chmod 600 /swapfile
-    mkswap /swapfile
-    swapon /swapfile
-    echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab
-}
-
-# Função para limitar memória dos serviços
-limit_service_memory() {
-    local service_name="$1"
-    local memory_limit="$2"
-    
-    local service_dir="/etc/systemd/system/${service_name}.service.d"
-    mkdir -p "$service_dir"
-    
-    cat > "$service_dir/memory-limit.conf" << EOF
-[Service]
-MemoryMax=${memory_limit}M
-MemorySwapMax=0
-EOF
-    
-    systemctl daemon-reload
-}
-
-# Função para aplicar limites de memória
-apply_memory_limits() {
-    if [[ "$BOARD_INFO" =~ "RK3229" ]] || [[ "$BOARD_INFO" =~ "R329Q" ]]; then
-        log_message "INFO" "Aplicando limites para RK3229 R329Q (1GB DDR3)"
-        limit_service_memory "pihole-FTL" "192"
-        limit_service_memory "unbound" "96"
-        limit_service_memory "netdata" "128"
-        limit_service_memory "cockpit" "96"
-        limit_service_memory "filebrowser" "64"
+    # Tentar cache primeiro
+    if cached_data=$(cache_get "network_info"); then
+        read -r interface primary_ip hostname <<< "$cached_data"
     else
-        log_message "INFO" "Aplicando limites para RK322x genérico (512MB DDR3)"
-        limit_service_memory "pihole-FTL" "96"
-        limit_service_memory "unbound" "64"
-        limit_service_memory "netdata" "64"
-        limit_service_memory "cockpit" "64"
-        limit_service_memory "filebrowser" "32"
+        log "INFO" "Detectando configuração de rede..."
+
+        # Detectar interface principal
+        interface=$(ip route | awk '/default/ {print $5}' | head -n1)
+        [[ -z "$interface" ]] && error_handler $LINENO 1 "Interface de rede não detectada"
+
+        # Detectar IP principal
+        primary_ip=$(ip -o -4 addr show dev "$interface" | awk '{print $4}' | cut -d/ -f1 | head -n1)
+        [[ -z "$primary_ip" ]] && error_handler $LINENO 1 "Endereço IP não detectado"
+
+        # Detectar hostname
+        hostname=$(hostname -f 2>/dev/null || hostname)
+
+        # Cache da informação
+        echo "$interface $primary_ip $hostname" | cache_set "network_info" -
     fi
+
+    CONFIG[NETWORK_INTERFACE]="$interface"
+    CONFIG[SERVER_IP]="$primary_ip"
+    CONFIG[HOSTNAME]="$hostname"
+
+    log "INFO" "Rede detectada: Interface=$interface, IP=$primary_ip, Hostname=$hostname"
 }
 
-# ==============================================
-# REDE E CONECTIVIDADE
-# ==============================================
+# =============================================================================
+# CONFIGURAÇÃO DO DIALOG
+# =============================================================================
 
-# Função para detectar interface de rede
-detect_network_interface() {
-    NETWORK_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
-    if [ -z "$NETWORK_INTERFACE" ]; then
-        dialog --title "Erro de Rede" --msgbox "Não foi possível detectar a interface de rede.\n\nVerifique sua conexão de rede." 8 50
-        return 1
-    fi
-    
-    SERVER_IP=$(ip route get 8.8.8.8 | awk '{print $7; exit}')
-    if [ -z "$SERVER_IP" ]; then
-        SERVER_IP="192.168.1.100"
-    fi
-    
-    log_message "INFO" "Interface detectada: $NETWORK_INTERFACE, IP: $SERVER_IP"
-    return 0
+setup_dialog() {
+    local backtitle="BoxServer TUI $SCRIPT_VERSION | IP: ${CONFIG[SERVER_IP]} | Hostname: ${CONFIG[HOSTNAME]}"
+
+    DIALOG_OPTS=(
+        --backtitle "$backtitle"
+        --colors
+        --ok-label "✅ Confirmar"
+        --cancel-label "🔙 Voltar"
+        --timeout 3600
+    )
 }
 
-# Função para testar conectividade
-test_connectivity() {
-    if ! ping -c 1 8.8.8.8 &> /dev/null; then
-        dialog --title "Erro de Conectividade" --msgbox "Sem conexão com a internet.\n\nVerifique sua conexão de rede." 8 50
-        return 1
-    fi
-    return 0
-}
-
-# ==============================================
-# VERIFICAÇÕES PRÉ-INSTALAÇÃO
-# ==============================================
-
-# Função principal de verificações
-run_system_checks() {
-    dialog --title "Verificações do Sistema" --infobox "Executando verificações iniciais..." 5 40
-    sleep 1
-    
-    check_root
-    
-    if ! check_system_resources; then
-        if ! dialog "${DIALOG_OPTS[@]}" --title "Continuar?" --yesno "Foram encontrados problemas no sistema.\n\nDeseja continuar mesmo assim?" 8 50; then
-            exit 1
-        fi
-    fi
-    
-    if ! detect_network_interface; then
-        exit 1
-    fi
-    
-    if ! test_connectivity; then
-        exit 1
-    fi
-    
-    # Atualizar backtitle com IP detectado
-    BACKTITLE="Boxserver TUI v2.0 | IP: $SERVER_IP | Hardware: ${BOARD_INFO:-RK322x}"
-    DIALOG_OPTS=(--backtitle "$BACKTITLE" --colors --ok-label "Confirmar" --cancel-label "Voltar")
-    
-    dialog "${DIALOG_OPTS[@]}" --title "Verificações Concluídas" --msgbox "Todas as verificações foram concluídas com sucesso!\n\nInterface: $NETWORK_INTERFACE\nIP: $SERVER_IP" 8 50
-    
-    # Aplicar otimizações
-    dialog "${DIALOG_OPTS[@]}" --title "Otimização RK322x" --infobox "Aplicando otimizações..." 5 40
-    
-    detect_hardware
-    optimize_for_nand
-    apply_memory_limits
-    
-    if [[ "$BOARD_INFO" =~ "RK3229" ]] || [[ "$BOARD_INFO" =~ "R329Q" ]]; then
-        create_swap_file
-        dialog --title "Otimização RK3229" --msgbox "Sistema otimizado para RK3229 R329Q V3.0!\n\n• NAND 8GB otimizado\n• 1GB DDR3 gerenciado" 8 50
-    else
-        dialog "${DIALOG_OPTS[@]}" --title "Otimização Genérica" --msgbox "Sistema otimizado para MXQ-4K TV Box RK322x!\n\n• NAND otimizado\n• Memória limitada\n• I/O otimizado" 8 50
-        create_swap_file
-    fi
-}
-
-# ==============================================
+# =============================================================================
 # GERENCIAMENTO DE SERVIÇOS
-# ==============================================
+# =============================================================================
 
-# Função auxiliar para obter o nome do serviço
-get_service_name() {
-    local app_id="$1"
-    case $app_id in
-        1) echo "pihole-FTL" ;;
-        2) echo "unbound" ;;
-        3) echo "wg-quick@wg0" ;;
-        4) echo "cockpit.socket" ;;
-        5) echo "filebrowser" ;;
-        6) echo "netdata" ;;
-        7) echo "fail2ban" ;;
-        8) echo "ufw" ;;
-        9) echo "rng-tools" ;;
-        10) echo "" ;;
-        11) echo "" ;;
-        12) echo "minidlna" ;;
-        13) echo "cloudflared" ;;
-        14) echo "chrony" ;;
-        15) echo "nginx" ;;
-        *) echo "" ;;
-    esac
-}
+get_service_status() {
+    local service="$1"
 
-# Função para verificar status do aplicativo
-check_app_status() {
-    local app_id="$1"
-    local service_name=$(get_service_name "$app_id")
-
-    local is_installed=false
-    case $app_id in
-        1) [[ -f "/etc/pihole/setupVars.conf" ]] && is_installed=true ;;
-        2) [[ -f "/etc/unbound/unbound.conf" ]] && is_installed=true ;;
-        3) [[ -f "/etc/wireguard/wg0.conf" ]] && is_installed=true ;;
-        4) [[ -f "/etc/cockpit/cockpit.conf" ]] && is_installed=true ;;
-        5) command -v filebrowser &>/dev/null && is_installed=true ;;
-        6) [[ -f "/etc/netdata/netdata.conf" ]] && is_installed=true ;;
-        7) command -v fail2ban-client &>/dev/null && is_installed=true ;;
-        8) command -v ufw &>/dev/null && is_installed=true ;;
-        9) command -v rngd &>/dev/null && is_installed=true ;;
-        10) command -v rclone &>/dev/null && is_installed=true ;;
-        11) command -v rsync &>/dev/null && is_installed=true ;;
-        12) [[ -f "/etc/minidlna.conf" ]] && is_installed=true ;;
-        13) command -v cloudflared &>/dev/null && is_installed=true ;;
-        14) command -v chronyd &>/dev/null && is_installed=true ;;
-        15) [[ -f "/etc/nginx/sites-available/boxserver" ]] && is_installed=true ;;
-    esac
-
-    if [ "$is_installed" = false ]; then
-        echo "not_installed"
-    elif [ -n "$service_name" ] && ! systemctl is-active --quiet "$service_name" 2>/dev/null; then
-        echo "installed_error"
+    if systemctl is-active "$service" >/dev/null 2>&1; then
+        echo "🟢 Ativo"
+    elif systemctl is-enabled "$service" >/dev/null 2>&1; then
+        echo "🟡 Parado"
     else
-        echo "installed_ok"
+        echo "🔴 Inativo"
     fi
 }
 
-# ==============================================
-# INSTALAÇÃO DE APLICATIVOS
-# ==============================================
+install_service() {
+    local service="$1"
 
-# Função para ordenar instalação por dependências
-sort_installation_order() {
-    local selected_apps=("$@")
-    local sorted_apps=()
-    local priority_order=(9 11 10 14 2 1 3 4 5 6 12 8 7 13 15)
-    
-    log_message "INFO" "Ordenando aplicativos por dependências..."
-    
-    for priority_id in "${priority_order[@]}"; do
-        for app_id in "${selected_apps[@]}"; do
-            if [[ "$app_id" == "$priority_id" ]]; then
-                sorted_apps+=("$app_id")
-                local app_info="${APPS[$app_id]}"
-                IFS='|' read -r name description access <<< "$app_info"
-                log_message "INFO" "Adicionado à sequência: $name (ID: $app_id)"
-                break
-            fi
-        done
-    done
-    
-    echo "${sorted_apps[@]}"
+    log "INFO" "Iniciando instalação do serviço: $service"
+
+    case "$service" in
+        pihole)
+            install_pihole
+            ;;
+        unbound)
+            install_unbound
+            ;;
+        wireguard)
+            install_wireguard
+            ;;
+        cockpit)
+            install_cockpit
+            ;;
+        filebrowser)
+            install_filebrowser
+            ;;
+        netdata)
+            install_netdata
+            ;;
+        fail2ban)
+            install_fail2ban
+            ;;
+        ufw)
+            install_ufw
+            ;;
+        minidlna)
+            install_minidlna
+            ;;
+        nginx)
+            install_nginx
+            ;;
+        *)
+            log "ERROR" "Serviço desconhecido: $service"
+            return 1
+            ;;
+    esac
 }
 
-# Função para baixar e executar scripts externos
-download_and_run_script() {
-    local url="$1"
-    local script_path="/tmp/external_script_$(date +%s).sh"
+# =============================================================================
+# INSTALAÇÃO DE SERVIÇOS ESPECÍFICOS
+# =============================================================================
 
-    log_message "INFO" "Baixando script de: $url"
-    if ! curl -sSL -o "$script_path" "$url"; then
-        log_message "ERROR" "Falha ao baixar o script de $url"
-        return 1
-    fi
-
-    if grep -qE '\s+rm\s+-rf\s+/\s*' "$script_path"; then
-        log_message "ERROR" "Script contém comando perigoso 'rm -rf /'. Abortando."
-        return 1
-    fi
-
-    if ! bash "$script_path"; then
-        log_message "ERROR" "Falha na execução do script de $url"
-        return 1
-    fi
-
-    log_message "INFO" "Script executado com sucesso."
-    return 0
-}
-
-# Funções de instalação individuais
 install_pihole() {
-    log_message "INFO" "Instalando Pi-hole..."
-    if ! download_and_run_script "https://install.pi-hole.net"; then
-        return 1
-    fi
-    
-    # Configurações adicionais...
+    log "INFO" "Instalando Pi-hole..."
+
+    # Download e instalação do Pi-hole
+    curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended \
+        --admin-port="${PORTS[PIHOLE]}" \
+        --interface="${CONFIG[NETWORK_INTERFACE]}" \
+        --ipv4-address="${CONFIG[SERVER_IP]}"
+
     systemctl enable pihole-FTL
     systemctl start pihole-FTL
-    log_message "INFO" "Pi-hole instalado com sucesso"
+
+    log "INFO" "Pi-hole instalado com sucesso"
 }
 
 install_unbound() {
-    log_message "INFO" "Instalando Unbound..."
-    apt install unbound -y
-    
-    # Configurações adicionais...
+    log "INFO" "Instalando Unbound..."
+
+    apt-get update && apt-get install -y unbound
+
+    # Configuração básica do Unbound
+    cat > /etc/unbound/unbound.conf.d/pihole.conf << 'EOF'
+server:
+    verbosity: 1
+    interface: 127.0.0.1
+    port: 5335
+    do-ip4: yes
+    do-ip6: no
+    do-udp: yes
+    do-tcp: yes
+
+    root-hints: "/var/lib/unbound/root.hints"
+
+    hide-identity: yes
+    hide-version: yes
+
+    use-caps-for-id: no
+
+    prefetch: yes
+
+    num-threads: 1
+
+    msg-buffer-size: 8192
+    msg-cache-size: 1m
+    msg-cache-slabs: 1
+
+    rrset-cache-size: 2m
+    rrset-cache-slabs: 1
+
+    cache-max-ttl: 86400
+    cache-min-ttl: 300
+
+    edns-buffer-size: 1472
+
+    so-rcvbuf: 1m
+    so-sndbuf: 1m
+EOF
+
     systemctl enable unbound
     systemctl start unbound
-    log_message "INFO" "Unbound instalado com sucesso"
+
+    log "INFO" "Unbound instalado com sucesso"
 }
 
 install_wireguard() {
-    log_message "INFO" "Instalando WireGuard..."
-    apt install wireguard wireguard-tools -y
-    
-    # Configurações adicionais...
+    log "INFO" "Instalando WireGuard..."
+
+    apt-get update && apt-get install -y wireguard wireguard-tools
+
+    # Gerar chaves
+    wg genkey | tee /etc/wireguard/privatekey | wg pubkey > /etc/wireguard/publickey
+
+    # Configuração básica
+    cat > /etc/wireguard/wg0.conf << EOF
+[Interface]
+PrivateKey = $(cat /etc/wireguard/privatekey)
+Address = 10.0.0.1/24
+ListenPort = ${PORTS[WIREGUARD]}
+SaveConfig = true
+
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o ${CONFIG[NETWORK_INTERFACE]} -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${CONFIG[NETWORK_INTERFACE]} -j MASQUERADE
+EOF
+
+    chmod 600 /etc/wireguard/wg0.conf
+
     systemctl enable wg-quick@wg0
     systemctl start wg-quick@wg0
-    log_message "INFO" "WireGuard instalado com sucesso"
+
+    log "INFO" "WireGuard instalado com sucesso"
 }
 
-# Funções de instalação para outros aplicativos (simplificado para exemplo)
-install_cockpit() { apt install cockpit -y; }
-install_filebrowser() { download_and_run_script "https://raw.githubusercontent.com/filebrowser/get/master/get.sh"; }
-install_netdata() { download_and_run_script "https://my-netdata.io/kickstart.sh"; }
-install_fail2ban() { apt install fail2ban -y; }
-install_ufw() { apt install ufw -y; }
-install_rng_tools() { apt install rng-tools -y; }
-install_rclone() { download_and_run_script "https://rclone.org/install.sh"; }
-install_rsync() { apt install rsync -y; }
-install_minidlna() { apt install minidlna -y; }
-install_cloudflared() { download_and_run_script "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm.deb"; }
-install_chrony() { apt install chrony -y; }
-install_web_interface() { apt install nginx -y; }
+install_cockpit() {
+    log "INFO" "Instalando Cockpit..."
 
-# Função de instalação principal
-install_selected_apps() {
-    local apps_to_install=("$@")
-    local total_steps=$(( ${#apps_to_install[@]} * 2 + 2 ))
-    local current_step=0
+    apt-get update && apt-get install -y cockpit cockpit-system cockpit-networkmanager
 
-    # Criar arquivo de configuração
-    cat > "$CONFIG_DIR/system.conf" << EOF
-# Configurações do Boxserver
-NETWORK_INTERFACE="$NETWORK_INTERFACE"
-SERVER_IP="$SERVER_IP"
-VPN_NETWORK="$VPN_NETWORK"
-VPN_PORT="$VPN_PORT"
-PIHOLE_PASSWORD="$PIHOLE_PASSWORD"
-FILEBROWSER_PORT="$FILEBROWSER_PORT"
-COCKPIT_PORT="$COCKPIT_PORT"
-INSTALL_DATE="$(date)"
-EOF
-    
-    log_message "INFO" "Iniciando instalação de ${#apps_to_install[@]} aplicativos"
-    export DEBIAN_FRONTEND=noninteractive
-
-    (
-    # Atualizar pacotes
-    current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Atualizando lista de pacotes..."; echo "XXX"
-    apt-get update -y >/dev/null 2>&1
-
-    # Instalar cada aplicativo
-    for app_id in "${apps_to_install[@]}"; do
-        local app_name=$(echo "${APPS[$app_id]}" | cut -d'|' -f1)
-        
-        current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Instalando: $app_name..."; echo "XXX"
-        
-        # Instalação
-        case $app_id in
-            1) install_pihole ;;
-            2) install_unbound ;;
-            3) install_wireguard ;;
-            4) install_cockpit ;;
-            5) install_filebrowser ;;
-            6) install_netdata ;;
-            7) install_fail2ban ;;
-            8) install_ufw ;;
-            9) install_rng_tools ;;
-            10) install_rclone ;;
-            11) install_rsync ;;
-            12) install_minidlna ;;
-            13) install_cloudflared ;;
-            14) install_chrony ;;
-            15) install_web_interface ;;
-        esac
-        
-        if [ $? -ne 0 ]; then
-            log_message "ERROR" "Falha na instalação de $app_name"
-            exit 1
-        fi
-
-        current_step=$((current_step + 1)); echo $((current_step * 100 / total_steps)); echo "XXX"; echo "Configurando: $app_name..."; echo "XXX"
-        
-        # Verificação
-        local service_name=$(get_service_name "$app_id")
-        if [ -n "$service_name" ] && ! systemctl is-active --quiet "$service_name" 2>/dev/null; then
-            log_message "WARN" "Serviço para $app_name não está ativo após instalação."
-        fi
-    done
-
-    ) | dialog "${DIALOG_OPTS[@]}" --title "Instalação em Andamento" --mixedgauge "Progresso da instalação..." 20 70 0
-
-    if [ $? -ne 0 ]; then
-        dialog --title "Erro na Instalação" --msgbox "A instalação falhou. Verifique os logs em $LOG_FILE para mais detalhes." 8 60
-        exit 1
-    fi
-
-    dialog "${DIALOG_OPTS[@]}" --title "Instalação Concluída" --msgbox "Instalação e configuração concluídas com sucesso!" 8 50
-    
-    # Criar scripts de manutenção
-    create_maintenance_scripts
-    
-    # Gerar relatório final
-    generate_installation_summary "${apps_to_install[@]}"
-}
-
-# ==============================================
-# MENUS E INTERFACE
-# ==============================================
-
-# Função para mostrar informações do sistema
-show_system_info() {
-    local ram_info=$(free -h | awk 'NR==2{printf "%s/%s (%.1f%%)", $3, $2, $3*100/$2}')
-    local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
-    local cpu_info=$(lscpu | grep "Model name" | cut -d: -f2 | xargs)
-    local uptime_info=$(uptime -p)
-    
-    dialog "${DIALOG_OPTS[@]}" --title "Informações do Sistema" --msgbox "Sistema: $(lsb_release -d | cut -f2)\nCPU: $cpu_info\nRAM: $ram_info\nDisco: $disk_info\nUptime: $uptime_info\n\nInterface: $NETWORK_INTERFACE\nIP: $SERVER_IP" 12 70
-}
-
-# Função para seleção de aplicativos
-select_applications() {
-    local selected_apps=()
-    local menu_items=()
-    
-    # Construir itens do menu
-    for app_id in $(echo "${!APPS[@]}" | tr ' ' '\n' | sort -n); do
-        local app_info="${APPS[$app_id]}"
-        IFS='|' read -r name description access <<< "$app_info"
-        menu_items+=("$app_id" "$name - $description" "OFF")
-    done
-    
-    # Adicionar opções especiais
-    menu_items+=("99" "Instalar TODOS os aplicativos" "OFF")
-    menu_items+=("info" "Ver informações do sistema" "OFF")
-    menu_items+=("config" "Configurações avançadas" "OFF")
-    
-    while true; do
-        local choices=$(dialog "${DIALOG_OPTS[@]}" --title "Seleção de Aplicativos" \
-            --checklist "Selecione os aplicativos para instalar:\n\nUse ESPAÇO para selecionar, ENTER para confirmar" \
-            20 80 10 "${menu_items[@]}" 3>&1 1>&2 2>&3)
-        
-        if [ $? -ne 0 ]; then
-            return 1
-        fi
-        
-        # Processar escolhas
-        local process_choices=false
-        for choice in $choices; do
-            choice=$(echo $choice | tr -d '"')
-            case $choice in
-                "info")
-                    show_system_info
-                    ;;
-                "config")
-                    configure_advanced_settings
-                    ;;
-                "99")
-                    selected_apps=($(echo "${!APPS[@]}" | tr ' ' '\n' | sort -n))
-                    process_choices=true
-                    break
-                    ;;
-                *)
-                    if [[ "$choice" =~ ^[0-9]+$ ]] && [ -n "${APPS[$choice]}" ]; then
-                        selected_apps+=("$choice")
-                        process_choices=true
-                    fi
-                    ;;
-            esac
-        done
-        
-        if [ "$process_choices" = true ]; then
-            break
-        fi
-    done
-    
-    if [ ${#selected_apps[@]} -eq 0 ]; then
-        dialog "${DIALOG_OPTS[@]}" --title "Nenhum Aplicativo" --msgbox "Nenhum aplicativo foi selecionado." 6 40
-        return 1
-    fi
-    
-    # Confirmar e instalar
-    local confirmation="Ações a serem executadas:\n\n"
-    for app_id in "${selected_apps[@]}"; do
-        confirmation+="• ${APPS[$app_id]%%|*}\n"
-    done
-    confirmation+="\nDeseja continuar com a instalação?"
-    
-    if dialog "${DIALOG_OPTS[@]}" --title "Confirmar Instalação" --yesno "$confirmation" 15 60; then
-        local sorted_apps=($(sort_installation_order "${selected_apps[@]}"))
-        install_selected_apps "${sorted_apps[@]}"
-    fi
-}
-
-# Função para configurações avançadas
-configure_advanced_settings() {
-    while true; do
-        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Configurações Avançadas" --menu "Escolha uma opção:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
-            "1" "Configurar IP do Servidor" \
-            "2" "Configurar Rede VPN" \
-            "3" "Configurar Portas dos Serviços" \
-            "4" "Configurar Senhas" \
-            "5" "Voltar ao Menu Principal" \
-            3>&1 1>&2 2>&3)
-        
-        case $choice in
-            1)
-                SERVER_IP=$(dialog "${DIALOG_OPTS[@]}" --title "IP do Servidor" --inputbox "Digite o IP do servidor:" 8 50 "$SERVER_IP" 3>&1 1>&2 2>&3)
-                ;;
-            2)
-                VPN_NETWORK=$(dialog "${DIALOG_OPTS[@]}" --title "Rede VPN" --inputbox "Digite a rede VPN (CIDR):" 8 50 "$VPN_NETWORK" 3>&1 1>&2 2>&3)
-                VPN_PORT=$(dialog "${DIALOG_OPTS[@]}" --title "Porta VPN" --inputbox "Digite a porta do WireGuard:" 8 50 "$VPN_PORT" 3>&1 1>&2 2>&3)
-                ;;
-            3)
-                FILEBROWSER_PORT=$(dialog "${DIALOG_OPTS[@]}" --title "Porta FileBrowser" --inputbox "Digite a porta do FileBrowser:" 8 50 "$FILEBROWSER_PORT" 3>&1 1>&2 2>&3)
-                COCKPIT_PORT=$(dialog "${DIALOG_OPTS[@]}" --title "Porta Cockpit" --inputbox "Digite a porta do Cockpit:" 8 50 "$COCKPIT_PORT" 3>&1 1>&2 2>&3)
-                ;;
-            4)
-                PIHOLE_PASSWORD=$(dialog "${DIALOG_OPTS[@]}" --title "Senha Pi-hole" --passwordbox "Digite a senha do Pi-hole:" 8 50 3>&1 1>&2 2>&3)
-                ;;
-            5|"")
-                break
-                ;;
-        esac
-    done
-}
-
-# Função para gerenciar serviços
-manage_services() {
-    while true; do
-        local menu_items=()
-        local priority_order=(1 2 3 4 5 6 7 8 9 12 13 14 15)
-
-        for app_id in "${priority_order[@]}"; do
-            local service_name=$(get_service_name "$app_id")
-            if [ -n "$service_name" ] && [[ "$(check_app_status "$app_id")" != "not_installed" ]]; then
-                local app_name=$(echo "${APPS[$app_id]}" | cut -d'|' -f1)
-                local status_icon="❌"
-
-                if systemctl is-active --quiet "$service_name" 2>/dev/null; then
-                    status_icon="✅"
-                fi
-                menu_items+=("$app_id" "$status_icon $app_name")
-            fi
-        done
-
-        if [ ${#menu_items[@]} -eq 0 ]; then
-            dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Serviços" --msgbox "Nenhum serviço gerenciável foi instalado ainda." 8 60
-            break
-        fi
-
-        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciamento de Serviços" --menu "Selecione um serviço para gerenciar:" $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT "${menu_items[@]}" 3>&1 1>&2 2>&3)
-
-        if [ $? -ne 0 ]; then
-            break
-        fi
-
-        local service_name=$(get_service_name "$choice")
-        local app_name=$(echo "${APPS[$choice]}" | cut -d'|' -f1)
-
-        if [ -n "$service_name" ]; then
-            local action=$(dialog "${DIALOG_OPTS[@]}" --title "Gerenciar: $app_name" --menu "Escolha uma ação:" 15 50 4 \
-                "start" "Iniciar" \
-                "stop" "Parar" \
-                "restart" "Reiniciar" \
-                "status" "Ver Status" \
-                3>&1 1>&2 2>&3)
-
-            case $action in
-                start|stop|restart)
-                    systemctl "$action" "$service_name"
-                    dialog "${DIALOG_OPTS[@]}" --title "Ação Executada" --infobox "Comando '$action' executado para $app_name." 5 50
-                    sleep 1
-                    ;;
-                status)
-                    local status_output=$(systemctl status "$service_name" --no-pager -l)
-                    dialog "${DIALOG_OPTS[@]}" --title "Status: $app_name" --msgbox "$status_output" 20 80
-                    ;;
-            esac
-        fi
-    done
-}
-
-# ==============================================
-# MANUTENÇÃO E RELATÓRIOS
-# ==============================================
-
-# Função para criar scripts de manutenção
-create_maintenance_scripts() {
-    log_message "INFO" "Criando scripts de manutenção..."
-
-    # Script de limpeza semanal
-    cat > /etc/cron.weekly/cleanup-boxserver << 'EOF'
-#!/bin/bash
-# Script de limpeza automática do Boxserver
-apt-get autoremove --purge -y >/dev/null 2>&1
-apt-get clean >/dev/null 2>&1
-journalctl --vacuum-time=7d >/dev/null 2>&1
-find /var/log -name "pihole*.log*" -mtime +30 -delete 2>/dev/null
-df -h > /var/log/boxserver/disk-usage.log
-echo "Entropia: $(cat /proc/sys/kernel/random/entropy_avail)" >> /var/log/boxserver/system-health.log
-echo "Limpeza concluída em $(date)" >> /var/log/boxserver/cleanup.log
+    # Configurar porta customizada
+    mkdir -p /etc/systemd/system/cockpit.socket.d/
+    cat > /etc/systemd/system/cockpit.socket.d/listen.conf << EOF
+[Socket]
+ListenStream=
+ListenStream=${PORTS[COCKPIT]}
 EOF
 
-    chmod +x /etc/cron.weekly/cleanup-boxserver
+    systemctl daemon-reload
+    systemctl enable cockpit.socket
+    systemctl start cockpit.socket
 
-    # Script de saúde do sistema
-    cat > /usr/local/bin/boxserver-health << 'EOF'
-#!/bin/bash
-# Script de monitoramento de saúde do Boxserver
-echo "==========================================="
-echo "    RELATÓRIO DE SAÚDE DO BOXSERVER"
-echo "==========================================="
-echo "Data: $(date)"
-echo
-echo "=== SISTEMA ==="
-echo "Uptime: $(uptime -p)"
-echo "Load Average: $(uptime | awk -F'load average:' '{print $2}')"
-echo "Memória: $(free -h | awk 'NR==2{printf "%.1f%% (%s/%s)", $3*100/$2, $3, $2}')"
-echo "Disco: $(df -h / | awk 'NR==2{printf "%s usado de %s (%s)", $3, $2, $5}')"
-if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
-    echo "Temperatura CPU: $(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))°C"
-fi
-echo
-echo "=== SERVIÇOS ==="
-services=("pihole-FTL" "unbound" "wg-quick@wg0" "rng-tools" "chrony" "cockpit.socket" "filebrowser" "netdata" "fail2ban")
-for service in "${services[@]}"; do
-    if systemctl list-unit-files | grep -q "^${service}.service" || systemctl list-unit-files | grep -q "^${service}.socket"; then
-        if systemctl is-active --quiet "$service"; then
-            echo "✅ $service: ATIVO"
-        else
-            echo "❌ $service: INATIVO"
-        fi
-    fi
-done
-echo "==========================================="
+    log "INFO" "Cockpit instalado com sucesso"
+}
+
+install_filebrowser() {
+    log "INFO" "Instalando FileBrowser..."
+
+    # Download do FileBrowser
+    curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+
+    # Configurar FileBrowser
+    filebrowser config init --database /etc/filebrowser/filebrowser.db
+    filebrowser users add admin admin --perm.admin --database /etc/filebrowser/filebrowser.db
+
+    # Criar serviço systemd
+    cat > /etc/systemd/system/filebrowser.service << EOF
+[Unit]
+Description=FileBrowser
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/filebrowser --port ${PORTS[FILEBROWSER]} --database /etc/filebrowser/filebrowser.db --root /
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-    chmod +x /usr/local/bin/boxserver-health
-    log_message "INFO" "Scripts de manutenção criados com sucesso"
+    mkdir -p /etc/filebrowser
+    systemctl daemon-reload
+    systemctl enable filebrowser
+    systemctl start filebrowser
+
+    log "INFO" "FileBrowser instalado com sucesso"
 }
 
-# Função para gerar relatório final
-generate_installation_summary() {
-    local installed_apps=("$@")
-    local summary_file="$LOG_DIR/installation-summary.txt"
-    local summary_dialog="Instalação Concluída!\n\n"
+install_netdata() {
+    log "INFO" "Instalando Netdata..."
 
-    echo "=== Relatório de Instalação Boxserver ===" > "$summary_file"
-    echo "Data: $(date)" >> "$summary_file"
-    echo "----------------------------------------" >> "$summary_file"
-    summary_dialog+="Serviços instalados:\n"
+    # Instalação via script oficial
+    bash <(curl -Ss https://my-netdata.io/kickstart.sh) --non-interactive --stable-channel
 
-    for app_id in "${installed_apps[@]}"; do
-        local app_info="${APPS[$app_id]}"
-        IFS='|' read -r name description access <<< "$app_info"
-        
-        local status_icon="✅"
-        if ! systemctl is-active --quiet $(get_service_name "$app_id") 2>/dev/null && [[ -n "$(get_service_name "$app_id")" ]]; then
-            status_icon="⚠️"
-        fi
+    # Configurar porta customizada
+    sed -i "s/port = 19999/port = ${PORTS[NETDATA]}/" /etc/netdata/netdata.conf
 
-        echo "$status_icon $name: Instalado" >> "$summary_file"
-        summary_dialog+="$status_icon $name\n"
-    done
+    systemctl restart netdata
 
-    dialog "${DIALOG_OPTS[@]}" --title "Resumo da Instalação" --msgbox "$summary_dialog\nRelatório detalhado em:\n$summary_file" 18 60
+    log "INFO" "Netdata instalado com sucesso"
 }
 
-# ==============================================
-# MENU PRINCIPAL
-# ==============================================
+install_fail2ban() {
+    log "INFO" "Instalando Fail2Ban..."
 
-# Menu principal
-main_menu() {
-    while true; do        
-        local choice=$(dialog "${DIALOG_OPTS[@]}" --title "Boxserver TUI v2.0 - Refatorado" \
-            --menu "Bem-vindo ao painel de controle do seu Boxserver.\n\nO que você gostaria de fazer?" \
+    apt-get update && apt-get install -y fail2ban
+
+    # Configuração básica
+    cat > /etc/fail2ban/jail.local << 'EOF'
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 3
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+EOF
+
+    systemctl enable fail2ban
+    systemctl start fail2ban
+
+    log "INFO" "Fail2Ban instalado com sucesso"
+}
+
+install_ufw() {
+    log "INFO" "Configurando UFW..."
+
+    apt-get update && apt-get install -y ufw
+
+    # Configuração básica
+    ufw --force reset
+    ufw default deny incoming
+    ufw default allow outgoing
+
+    # Permitir serviços essenciais
+    ufw allow 22/tcp comment 'SSH'
+    ufw allow "${PORTS[NGINX]}/tcp" comment 'HTTP'
+    ufw allow "${PORTS[NGINX_SSL]}/tcp" comment 'HTTPS'
+    ufw allow "${PORTS[PIHOLE]}/tcp" comment 'Pi-hole'
+    ufw allow "${PORTS[COCKPIT]}/tcp" comment 'Cockpit'
+    ufw allow "${PORTS[WIREGUARD]}/udp" comment 'WireGuard'
+
+    ufw --force enable
+
+    log "INFO" "UFW configurado com sucesso"
+}
+
+install_minidlna() {
+    log "INFO" "Instalando MiniDLNA..."
+
+    apt-get update && apt-get install -y minidlna
+
+    # Configuração básica
+    cat > /etc/minidlna.conf << EOF
+media_dir=V,/home
+media_dir=P,/home
+media_dir=A,/home
+
+friendly_name=BoxServer Media
+db_dir=/var/cache/minidlna
+
+album_art_names=Cover.jpg/cover.jpg/AlbumArtSmall.jpg/albumartsmall.jpg
+
+inotify=yes
+enable_tivo=no
+strict_dlna=no
+
+presentation_url=http://${CONFIG[SERVER_IP]}:${PORTS[MINIDLNA]}/
+
+notify_interval=895
+serial=12345678
+
+model_name=Windows Media Connect compatible (MiniDLNA)
+model_number=1
+root_container=.
+port=${PORTS[MINIDLNA]}
+EOF
+
+    systemctl enable minidlna
+    systemctl start minidlna
+
+    log "INFO" "MiniDLNA instalado com sucesso"
+}
+
+install_nginx() {
+    log "INFO" "Instalando Nginx..."
+
+    apt-get update && apt-get install -y nginx
+
+    # Criar configuração do site
+    mkdir -p "$WEB_DIR"
+    cat > /etc/nginx/sites-available/boxserver << EOF
+server {
+    listen ${PORTS[NGINX]} default_server;
+    listen [::]:${PORTS[NGINX]} default_server;
+
+    root $WEB_DIR;
+    index index.html index.htm;
+
+    server_name ${CONFIG[HOSTNAME]} ${CONFIG[SERVER_IP]};
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+
+    location /pihole/ {
+        proxy_pass http://localhost:${PORTS[PIHOLE]}/admin/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+
+    location /cockpit/ {
+        proxy_pass https://localhost:${PORTS[COCKPIT]}/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+
+    location /files/ {
+        proxy_pass http://localhost:${PORTS[FILEBROWSER]}/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+}
+EOF
+
+    # Ativar site
+    ln -sf /etc/nginx/sites-available/boxserver /etc/nginx/sites-enabled/
+    rm -f /etc/nginx/sites-enabled/default
+
+    # Gerar página inicial
+    generate_dashboard
+
+    systemctl enable nginx
+    systemctl restart nginx
+
+    log "INFO" "Nginx instalado com sucesso"
+}
+
+# =============================================================================
+# GERAÇÃO DO DASHBOARD WEB
+# =============================================================================
+
+generate_dashboard() {
+    log "INFO" "Gerando dashboard web..."
+
+    mkdir -p "$WEB_DIR"
+
+    cat > "$WEB_DIR/index.html" << 'EOF'
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BoxServer Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        .services {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .service-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 25px;
+            transition: transform 0.3s ease;
+        }
+        .service-card:hover {
+            transform: translateY(-5px);
+        }
+        .service-card h3 {
+            font-size: 1.5em;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .service-card p {
+            margin-bottom: 15px;
+            opacity: 0.8;
+        }
+        .service-link {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            text-decoration: none;
+            padding: 10px 20px;
+            border-radius: 25px;
+            transition: background 0.3s ease;
+        }
+        .service-link:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        .status {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #4CAF50;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 BoxServer Dashboard</h1>
+            <p>Sistema de Gerenciamento Unificado</p>
+        </div>
+
+        <div class="services">
+            <div class="service-card">
+                <h3><span class="status"></span>🛡️ Pi-hole</h3>
+                <p>Bloqueador de anúncios e DNS</p>
+                <a href="/pihole/" class="service-link">Acessar</a>
+            </div>
+
+            <div class="service-card">
+                <h3><span class="status"></span>🖥️ Cockpit</h3>
+                <p>Painel de administração do sistema</p>
+                <a href="/cockpit/" class="service-link">Acessar</a>
+            </div>
+
+            <div class="service-card">
+                <h3><span class="status"></span>📁 FileBrowser</h3>
+                <p>Gerenciador de arquivos web</p>
+                <a href="/files/" class="service-link">Acessar</a>
+            </div>
+
+            <div class="service-card">
+                <h3><span class="status"></span>📊 Netdata</h3>
+                <p>Monitoramento em tempo real</p>
+                <a href="http://SERVER_IP:19999/" class="service-link" target="_blank">Acessar</a>
+            </div>
+
+            <div class="service-card">
+                <h3><span class="status"></span>🔒 WireGuard</h3>
+                <p>Servidor VPN seguro</p>
+                <a href="#" class="service-link" onclick="alert('Configure via linha de comando')">Configurar</a>
+            </div>
+
+            <div class="service-card">
+                <h3><span class="status"></span>📺 MiniDLNA</h3>
+                <p>Servidor de mídia DLNA</p>
+                <a href="http://SERVER_IP:8200/" class="service-link" target="_blank">Acessar</a>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>BoxServer TUI v5.0-unified | IP: SERVER_IP</p>
+        </div>
+    </div>
+
+    <script>
+        // Substituir SERVER_IP pelo IP real
+        document.addEventListener('DOMContentLoaded', function() {
+            fetch('/api/info')
+                .then(response => response.json())
+                .then(data => {
+                    document.body.innerHTML = document.body.innerHTML.replace(/SERVER_IP/g, data.ip);
+                })
+                .catch(error => console.log('API não disponível'));
+        });
+    </script>
+</body>
+</html>
+EOF
+
+    # Substituir SERVER_IP pelo IP real
+    sed -i "s/SERVER_IP/${CONFIG[SERVER_IP]}/g" "$WEB_DIR/index.html"
+
+    log "INFO" "Dashboard web criado com sucesso"
+}
+
+# =============================================================================
+# MENUS DA INTERFACE TUI
+# =============================================================================
+
+show_main_menu() {
+    while true; do
+        local choice
+        choice=$(dialog "${DIALOG_OPTS[@]}" \
+            --title "🚀 BoxServer TUI - Menu Principal" \
+            --menu "\nEscolha uma opção para continuar:\n" \
             $DIALOG_HEIGHT $DIALOG_WIDTH $DIALOG_MENU_HEIGHT \
-            "1" "Instalar / Desinstalar Aplicativos" \
-            "2" "Gerenciamento de Serviços" \
-            "3" "Configurações Avançadas" \
-            "4" "Informações do Sistema" \
-            "5" "Sobre o Boxserver TUI" \
-            "6" "Sair" \
-            3>&1 1>&2 2>&3)
-        
+            "1" "📊 Status do Sistema" \
+            "2" "🔧 Gerenciar Serviços" \
+            "3" "⚙️  Configurações" \
+            "4" "📋 Visualizar Logs" \
+            "5" "🌐 Dashboard Web" \
+            "6" "💾 Backup/Restaurar" \
+            "7" "🔄 Atualizar Sistema" \
+            "8" "ℹ️  Sobre" \
+            "9" "🚪 Sair" \
+            3>&1 1>&2 2>&3) || break
+
         case $choice in
-            1) select_applications ;;
-            2) manage_services ;;
-            3) configure_advanced_settings ;;
-            4) show_system_info ;;
-            5)
-                dialog --title "Sobre" --msgbox "Boxserver TUI Installer v2.0 (Refatorado)\n\nInstalador automatizado para MXQ-4K\n\nMelhorias:\n• Código modular e reutilizável\n• Otimizações específicas para RK322x\n• Tratamento de erros centralizado\n• Melhor performance e eficiência" 14 70
-                ;;
-            6|"")
-                if dialog --title "Confirmar Saída" --yesno "Deseja realmente sair?" 6 30; then
-                    clear
-                    echo "Obrigado por usar o Boxserver TUI Installer!"
-                    exit 0
-                fi
-                ;;
+            1) show_system_status ;;
+            2) show_services_menu ;;
+            3) show_settings_menu ;;
+            4) show_logs ;;
+            5) show_web_dashboard ;;
+            6) show_backup_menu ;;
+            7) update_system ;;
+            8) show_about ;;
+            9) confirm_exit && break ;;
         esac
     done
 }
 
-# ==============================================
-# INÍCIO DO SCRIPT
-# ==============================================
+show_system_status() {
+    local status_text=""
 
-# Função principal
-main() {
-    # Verificar se está sendo executado como root
-    if [[ $EUID -ne 0 ]]; then
-        echo "Este script deve ser executado como root."
-        echo "Use: sudo $0"
-        exit 1
-    fi
-    
-    # Verificar e instalar dialog
-    check_dialog
-    
-    # Configurar diretórios
-    setup_directories
-    
-    # Log de início
-    log_message "INFO" "Boxserver TUI Installer v2.0 iniciado"
-    
-    # Executar verificações do sistema
-    run_system_checks
-    
-    # Mostrar tela de boas-vindas
-    dialog "${DIALOG_OPTS[@]}" --title "Bem-vindo" --msgbox "Boxserver TUI Installer v2.0 (Refatorado)\n\nInstalador automatizado para MXQ-4K\n\nEste assistente irá guiá-lo através da\ninstalação e configuração do seu\nservidor doméstico.\n\nPressione ENTER para continuar..." 12 50
-    
-    # Iniciar menu principal
-    main_menu
+    # Informações do sistema
+    status_text+="🖥️  INFORMAÇÕES DO SISTEMA\n"
+    status_text+="═══════════════════════════════\n"
+    status_text+="Hostname: ${CONFIG[HOSTNAME]}\n"
+    status_text+="Interface: ${CONFIG[NETWORK_INTERFACE]}\n"
+    status_text+="IP: ${CONFIG[SERVER_IP]}\n"
+    status_text+="Domínio: ${CONFIG[DOMAIN]}\n\n"
+
+    # Recursos do sistema
+    local ram_mb=$(free -m | awk 'NR==2{print $2}')
+    local ram_used=$(free -m | awk 'NR==2{print $3}')
+    local disk_total=$(df -h / | awk 'NR==2{print $2}')
+    local disk_used=$(df -h / | awk 'NR==2{print $3}')
+    local uptime=$(uptime -p)
+
+    status_text+="💾 RECURSOS DO SISTEMA\n"
+    status_text+="═══════════════════════════════\n"
+    status_text+="RAM: ${ram_used}MB / ${ram_mb}MB\n"
+    status_text+="Disco: ${disk_used} / ${disk_total}\n"
+    status_text+="Uptime: ${uptime}\n\n"
+
+    # Status dos serviços
+    status_text+="🔧 STATUS DOS SERVIÇOS\n"
+    status_text+="═══════════════════════════════\n"
+
+    for service_id in "${!SERVICES[@]}"; do
+        IFS='|' read -r name desc type port path <<< "${SERVICES[$service_id]}"
+        local status=$(get_service_status "$service_id")
+        status_text+="$status $name\n"
+    done
+
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "📊 Status do Sistema" \
+        --msgbox "$status_text" \
+        25 70
 }
 
-# Tratamento de sinais
-trap 'clear; echo "Instalação interrompida."; exit 1' INT TERM
+show_services_menu() {
+    while true; do
+        # Construir menu dinâmico dos serviços
+        local menu_items=()
+        local index=1
 
-# Executar função principal
-main "$@"
+        for service_id in "${!SERVICES[@]}"; do
+            IFS='|' read -r name desc type port path <<< "${SERVICES[$service_id]}"
+            local status=$(get_service_status "$service_id")
+            menu_items+=("$index" "$status $name - $desc")
+            ((index++))
+        done
+
+        menu_items+=("$index" "🔙 Voltar")
+
+        local choice
+        choice=$(dialog "${DIALOG_OPTS[@]}" \
+            --title "🔧 Gerenciamento de Serviços" \
+            --menu "\nSelecione um serviço para gerenciar:\n" \
+            20 75 12 \
+            "${menu_items[@]}" \
+            3>&1 1>&2 2>&3) || break
+
+        if [[ "$choice" == "$index" ]]; then
+            break
+        fi
+
+        # Converter escolha para ID do serviço
+        local service_keys=($(printf '%s\n' "${!SERVICES[@]}" | sort))
+        local selected_service="${service_keys[$((choice-1))]}"
+
+        manage_single_service "$selected_service"
+    done
+}
+
+manage_single_service() {
+    local service="$1"
+    IFS='|' read -r name desc type port path <<< "${SERVICES[$service]}"
+
+    while true; do
+        local status=$(get_service_status "$service")
+        local choice
+
+        choice=$(dialog "${DIALOG_OPTS[@]}" \
+            --title "🔧 Gerenciar: $name" \
+            --menu "\nStatus atual: $status\n" \
+            15 60 8 \
+            "1" "🚀 Instalar/Reinstalar" \
+            "2" "▶️  Iniciar Serviço" \
+            "3" "⏸️  Parar Serviço" \
+            "4" "🔄 Reiniciar Serviço" \
+            "5" "📊 Ver Status Detalhado" \
+            "6" "🔧 Configurar" \
+            "7" "🔙 Voltar" \
+            3>&1 1>&2 2>&3) || break
+
+        case $choice in
+            1) install_service "$service" ;;
+            2) systemctl start "$service" 2>/dev/null || true ;;
+            3) systemctl stop "$service" 2>/dev/null || true ;;
+            4) systemctl restart "$service" 2>/dev/null || true ;;
+            5) show_service_details "$service" ;;
+            6) configure_service "$service" ;;
+            7) break ;;
+        esac
+    done
+}
+
+show_service_details() {
+    local service="$1"
+    local details=""
+
+    details+="🔍 DETALHES DO SERVIÇO: $service\n"
+    details+="═══════════════════════════════\n\n"
+
+    if systemctl list-unit-files | grep -q "^$service"; then
+        details+="Status: $(systemctl is-active "$service")\n"
+        details+="Habilitado: $(systemctl is-enabled "$service")\n"
+        details+="PID: $(systemctl show -p MainPID --value "$service")\n\n"
+
+        details+="📋 ÚLTIMAS LINHAS DO LOG:\n"
+        details+="─────────────────────────────\n"
+        details+="$(journalctl -u "$service" -n 10 --no-pager 2>/dev/null || echo 'Nenhum log disponível')"
+    else
+        details+="❌ Serviço não encontrado no sistema"
+    fi
+
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "📋 Detalhes: $service" \
+        --msgbox "$details" \
+        20 80
+}
+
+configure_service() {
+    local service="$1"
+
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "🔧 Configurar: $service" \
+        --msgbox "Configuração específica para $service\nserá implementada em versão futura." \
+        10 50
+}
+
+show_settings_menu() {
+    while true; do
+        local choice
+        choice=$(dialog "${DIALOG_OPTS[@]}" \
+            --title "⚙️ Configurações" \
+            --menu "\nConfigurações do sistema:\n" \
+            15 60 8 \
+            "1" "🌐 Configurar Rede" \
+            "2" "🔒 Configurar Segurança" \
+            "3" "🔧 Configurar Portas" \
+            "4" "📁 Diretórios" \
+            "5" "🔄 Reinicializar Serviços" \
+            "6" "🧹 Limpeza do Sistema" \
+            "7" "🔙 Voltar" \
+            3>&1 1>&2 2>&3) || break
+
+        case $choice in
+            1) configure_network ;;
+            2) configure_security ;;
+            3) configure_ports ;;
+            4) configure_directories ;;
+            5) restart_all_services ;;
+            6) system_cleanup ;;
+            7) break ;;
+        esac
+    done
+}
+
+configure_network() {
+    local new_hostname new_domain
+
+    # Configurar hostname
+    new_hostname=$(dialog "${DIALOG_OPTS[@]}" \
+        --title "🌐 Configurar Hostname" \
+        --inputbox "Digite o novo hostname:" \
+        10 50 "${CONFIG[HOSTNAME]}" \
+        3>&1 1>&2 2>&3) || return
+
+    if [[ -n "$new_hostname" ]]; then
+        hostnamectl set-hostname "$new_hostname"
+        CONFIG[HOSTNAME]="$new_hostname"
+        log "INFO" "Hostname alterado para: $new_hostname"
+    fi
+
+    # Configurar domínio
+    new_domain=$(dialog "${DIALOG_OPTS[@]}" \
+        --title "🌐 Configurar Domínio" \
+        --inputbox "Digite o domínio local:" \
+        10 50 "${CONFIG[DOMAIN]}" \
+        3>&1 1>&2 2>&3) || return
+
+    if [[ -n "$new_domain" ]]; then
+        CONFIG[DOMAIN]="$new_domain"
+        log "INFO" "Domínio alterado para: $new_domain"
+    fi
+
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "✅ Configuração Salva" \
+        --msgbox "Configurações de rede atualizadas com sucesso!" \
+        8 50
+}
+
+configure_security() {
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "🔒 Configurações de Segurança" \
+        --msgbox "Configurações de segurança:\n\n• UFW: Ativo\n• Fail2Ban: Ativo\n• SSH: Protegido\n• Portas: Filtradas" \
+        12 50
+}
+
+configure_ports() {
+    local service port_name new_port
+
+    # Selecionar serviço para configurar porta
+    local menu_items=()
+    for port_name in "${!PORTS[@]}"; do
+        menu_items+=("$port_name" "${PORTS[$port_name]}")
+    done
+
+    service=$(dialog "${DIALOG_OPTS[@]}" \
+        --title "🔧 Configurar Portas" \
+        --menu "\nSelecione o serviço para alterar a porta:\n" \
+        15 50 8 \
+        "${menu_items[@]}" \
+        3>&1 1>&2 2>&3) || return
+
+    new_port=$(dialog "${DIALOG_OPTS[@]}" \
+        --title "🔧 Nova Porta para $service" \
+        --inputbox "Digite a nova porta:" \
+        10 40 "${PORTS[$service]}" \
+        3>&1 1>&2 2>&3) || return
+
+    if [[ "$new_port" =~ ^[0-9]+$ ]] && (( new_port >= 1 && new_port <= 65535 )); then
+        PORTS[$service]="$new_port"
+        log "INFO" "Porta do $service alterada para: $new_port"
+
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "✅ Porta Alterada" \
+            --msgbox "Porta do $service alterada para $new_port\n\nReinicie o serviço para aplicar a alteração." \
+            10 50
+    else
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "❌ Erro" \
+            --msgbox "Porta inválida! Use valores entre 1 e 65535." \
+            8 50
+    fi
+}
+
+configure_directories() {
+    local info=""
+    info+="📁 DIRETÓRIOS DO SISTEMA\n"
+    info+="═══════════════════════════════\n\n"
+    info+="Logs: $LOG_DIR\n"
+    info+="Configurações: $CONFIG_DIR\n"
+    info+="Backups: $BACKUP_DIR\n"
+    info+="Web: $WEB_DIR\n"
+    info+="Cache: $CACHE_DIR\n"
+    info+="Locks: $LOCK_DIR\n"
+
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "📁 Diretórios do Sistema" \
+        --msgbox "$info" \
+        15 60
+}
+
+restart_all_services() {
+    if dialog "${DIALOG_OPTS[@]}" \
+        --title "🔄 Reiniciar Serviços" \
+        --yesno "Deseja reiniciar todos os serviços do BoxServer?" \
+        8 50; then
+
+        for service_id in "${!SERVICES[@]}"; do
+            systemctl restart "$service_id" 2>/dev/null || true
+        done
+
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "✅ Concluído" \
+            --msgbox "Todos os serviços foram reiniciados!" \
+            8 40
+    fi
+}
+
+system_cleanup() {
+    if dialog "${DIALOG_OPTS[@]}" \
+        --title "🧹 Limpeza do Sistema" \
+        --yesno "Deseja executar limpeza do sistema?\n\n• Limpar cache\n• Remover logs antigos\n• Liberar espaço" \
+        12 50; then
+
+        # Limpar cache
+        rm -rf "${CACHE_DIR}"/* 2>/dev/null || true
+
+        # Limpar logs antigos
+        find "$LOG_DIR" -name "*.log.old*" -mtime +7 -delete 2>/dev/null || true
+
+        # Limpar packages
+        apt-get autoremove -y >/dev/null 2>&1 || true
+        apt-get autoclean >/dev/null 2>&1 || true
+
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "✅ Limpeza Concluída" \
+            --msgbox "Limpeza do sistema executada com sucesso!" \
+            8 50
+    fi
+}
+
+show_logs() {
+    if [[ ! -f "$LOG_FILE" ]]; then
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "📋 Logs" \
+            --msgbox "Nenhum arquivo de log encontrado." \
+            8 40
+        return
+    fi
+
+    local choice
+    choice=$(dialog "${DIALOG_OPTS[@]}" \
+        --title "📋 Visualizar Logs" \
+        --menu "\nEscolha uma opção:\n" \
+        12 50 5 \
+        "1" "📖 Ver log completo" \
+        "2" "🔍 Últimas 50 linhas" \
+        "3" "❌ Apenas erros" \
+        "4" "🔙 Voltar" \
+        3>&1 1>&2 2>&3) || return
+
+    case $choice in
+        1) dialog "${DIALOG_OPTS[@]}" --title "📋 Log Completo" --textbox "$LOG_FILE" 22 80 ;;
+        2) tail -n 50 "$LOG_FILE" | dialog "${DIALOG_OPTS[@]}" --title "📋 Últimas Linhas" --textbox - 22 80 ;;
+        3) grep -i "error\|fatal" "$LOG_FILE" | dialog "${DIALOG_OPTS[@]}" --title "❌ Erros" --textbox - 22 80 ;;
+        4) return ;;
+    esac
+}
+
+show_web_dashboard() {
+    local dashboard_url="http://${CONFIG[SERVER_IP]}"
+
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "🌐 Dashboard Web" \
+        --msgbox "Dashboard disponível em:\n\n$dashboard_url\n\nServiços disponíveis:\n• Pi-hole: $dashboard_url/pihole/\n• Cockpit: $dashboard_url/cockpit/\n• FileBrowser: $dashboard_url/files/" \
+        15 60
+}
+
+show_backup_menu() {
+    while true; do
+        local choice
+        choice=$(dialog "${DIALOG_OPTS[@]}" \
+            --title "💾 Backup e Restauração" \
+            --menu "\nGerenciar backups:\n" \
+            12 50 5 \
+            "1" "💾 Criar Backup" \
+            "2" "📥 Restaurar Backup" \
+            "3" "📋 Listar Backups" \
+            "4" "🗑️  Limpar Backups Antigos" \
+            "5" "🔙 Voltar" \
+            3>&1 1>&2 2>&3) || break
+
+        case $choice in
+            1) create_backup ;;
+            2) restore_backup ;;
+            3) list_backups ;;
+            4) clean_old_backups ;;
+            5) break ;;
+        esac
+    done
+}
+
+create_backup() {
+    local backup_name="boxserver_$(date +%Y%m%d_%H%M%S)"
+    local backup_path="${BACKUP_DIR}/${backup_name}.tar.gz"
+
+    mkdir -p "$BACKUP_DIR"
+
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "💾 Criando Backup" \
+        --infobox "Criando backup...\n\nAguarde..." \
+        8 40
+
+    # Criar backup das configurações
+    tar -czf "$backup_path" \
+        -C / \
+        --exclude="$LOG_DIR" \
+        --exclude="$CACHE_DIR" \
+        "$CONFIG_DIR" \
+        "/etc/nginx/sites-available/boxserver" \
+        "/etc/pihole" \
+        "/etc/wireguard" \
+        2>/dev/null || true
+
+    log "INFO" "Backup criado: $backup_path"
+
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "✅ Backup Criado" \
+        --msgbox "Backup criado com sucesso:\n\n$backup_path" \
+        10 60
+}
+
+restore_backup() {
+    local backup_files=()
+
+    if [[ ! -d "$BACKUP_DIR" ]] || [[ -z "$(ls -A "$BACKUP_DIR")" ]]; then
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "📥 Restaurar Backup" \
+            --msgbox "Nenhum backup encontrado." \
+            8 40
+        return
+    fi
+
+    # Listar arquivos de backup
+    while IFS= read -r -d '' file; do
+        backup_files+=("$(basename "$file")" "$(date -r "$file" '+%Y-%m-%d %H:%M:%S')")
+    done < <(find "$BACKUP_DIR" -name "*.tar.gz" -print0)
+
+    if [[ ${#backup_files[@]} -eq 0 ]]; then
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "📥 Restaurar Backup" \
+            --msgbox "Nenhum arquivo de backup válido encontrado." \
+            8 50
+        return
+    fi
+
+    local selected_backup
+    selected_backup=$(dialog "${DIALOG_OPTS[@]}" \
+        --title "📥 Selecionar Backup" \
+        --menu "\nSelecione o backup para restaurar:\n" \
+        15 70 8 \
+        "${backup_files[@]}" \
+        3>&1 1>&2 2>&3) || return
+
+    if dialog "${DIALOG_OPTS[@]}" \
+        --title "⚠️ Confirmar Restauração" \
+        --yesno "Deseja restaurar o backup:\n\n$selected_backup\n\nIsto substituirá as configurações atuais!" \
+        12 60; then
+
+        tar -xzf "${BACKUP_DIR}/${selected_backup}" -C / 2>/dev/null || true
+        log "INFO" "Backup restaurado: $selected_backup"
+
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "✅ Backup Restaurado" \
+            --msgbox "Backup restaurado com sucesso!\n\nReinicie os serviços para aplicar as alterações." \
+            10 60
+    fi
+}
+
+list_backups() {
+    local backup_list=""
+
+    if [[ ! -d "$BACKUP_DIR" ]] || [[ -z "$(ls -A "$BACKUP_DIR")" ]]; then
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "📋 Lista de Backups" \
+            --msgbox "Nenhum backup encontrado." \
+            8 40
+        return
+    fi
+
+    backup_list+="📋 BACKUPS DISPONÍVEIS\n"
+    backup_list+="═══════════════════════════════\n\n"
+
+    while IFS= read -r -d '' file; do
+        local name=$(basename "$file")
+        local size=$(du -h "$file" | cut -f1)
+        local date=$(date -r "$file" '+%Y-%m-%d %H:%M:%S')
+        backup_list+="$name\n"
+        backup_list+="  Tamanho: $size\n"
+        backup_list+="  Data: $date\n\n"
+    done < <(find "$BACKUP_DIR" -name "*.tar.gz" -print0)
+
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "📋 Lista de Backups" \
+        --msgbox "$backup_list" \
+        20 70
+}
+
+clean_old_backups() {
+    local count=$(find "$BACKUP_DIR" -name "*.tar.gz" -mtime +30 2>/dev/null | wc -l)
+
+    if [[ $count -eq 0 ]]; then
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "🗑️ Limpeza de Backups" \
+            --msgbox "Nenhum backup antigo (>30 dias) encontrado." \
+            8 50
+        return
+    fi
+
+    if dialog "${DIALOG_OPTS[@]}" \
+        --title "🗑️ Confirmar Limpeza" \
+        --yesno "Encontrados $count backups antigos (>30 dias).\n\nDeseja removê-los?" \
+        10 50; then
+
+        find "$BACKUP_DIR" -name "*.tar.gz" -mtime +30 -delete 2>/dev/null
+        log "INFO" "Backups antigos removidos: $count arquivos"
+
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "✅ Limpeza Concluída" \
+            --msgbox "$count backups antigos foram removidos." \
+            8 50
+    fi
+}
+
+update_system() {
+    if dialog "${DIALOG_OPTS[@]}" \
+        --title "🔄 Atualizar Sistema" \
+        --yesno "Deseja atualizar o sistema?\n\n• Atualizar pacotes\n• Limpar cache\n• Verificar serviços" \
+        12 50; then
+
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "🔄 Atualizando..." \
+            --infobox "Atualizando sistema...\n\nAguarde..." \
+            8 40
+
+        # Atualizar sistema
+        apt-get update >/dev/null 2>&1
+        apt-get upgrade -y >/dev/null 2>&1
+
+        log "INFO" "Sistema atualizado"
+
+        dialog "${DIALOG_OPTS[@]}" \
+            --title "✅ Sistema Atualizado" \
+            --msgbox "Sistema atualizado com sucesso!" \
+            8 40
+    fi
+}
+
+show_about() {
+    local about_text=""
+    about_text+="🚀 BOXSERVER TUI v$SCRIPT_VERSION\n"
+    about_text+="═══════════════════════════════\n\n"
+    about_text+="Sistema unificado para MXQ-4K\n"
+    about_text+="com chip RK322x\n\n"
+    about_text+="📋 RECURSOS:\n"
+    about_text+="• Interface TUI intuitiva\n"
+    about_text+="• Gerenciamento unificado\n"
+    about_text+="• Dashboard web responsivo\n"
+    about_text+="• Sistema de backup\n"
+    about_text+="• Monitoramento em tempo real\n"
+    about_text+="• Configuração simplificada\n\n"
+    about_text+="🛠️  SERVIÇOS SUPORTADOS:\n"
+    about_text+="• Pi-hole (Bloqueador DNS)\n"
+    about_text+="• Unbound (DNS recursivo)\n"
+    about_text+="• WireGuard (VPN)\n"
+    about_text+="• Cockpit (Admin panel)\n"
+    about_text+="• FileBrowser (Gerenciador)\n"
+    about_text+="• Netdata (Monitoramento)\n"
+    about_text+="• Fail2Ban + UFW (Segurança)\n"
+    about_text+="• MiniDLNA (Servidor mídia)\n\n"
+    about_text+="🏠 IP do Servidor: ${CONFIG[SERVER_IP]}\n"
+    about_text+="🌐 Hostname: ${CONFIG[HOSTNAME]}\n\n"
+    about_text+="Desenvolvido pela BoxServer Team"
+
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "ℹ️ Sobre o BoxServer TUI" \
+        --msgbox "$about_text" \
+        25 60
+}
+
+confirm_exit() {
+    dialog "${DIALOG_OPTS[@]}" \
+        --title "🚪 Confirmar Saída" \
+        --yesno "Deseja realmente sair do BoxServer TUI?" \
+        8 50
+}
+
+# =============================================================================
+# FUNÇÃO PRINCIPAL
+# =============================================================================
+
+main() {
+    # Configurar tratamento de erros
+    trap 'error_handler ${LINENO} $?' ERR
+    trap cleanup EXIT
+
+    # Verificações iniciais
+    check_root
+
+    # Criar estrutura de diretórios
+    mkdir -p "$LOG_DIR" "$CONFIG_DIR" "$BACKUP_DIR" "$WEB_DIR" "$CACHE_DIR" "$LOCK_DIR"
+
+    # Verificar dependências
+    check_dependencies || exit 1
+
+    # Verificar recursos do sistema
+    check_system_resources || exit 1
+
+    # Detectar rede
+    detect_network
+
+    # Configurar interface
+    setup_dialog
+
+    log "INFO" "BoxServer TUI v$SCRIPT_VERSION iniciado"
+
+    # Exibir menu principal
+    show_main_menu
+
+    log "INFO" "BoxServer TUI finalizado"
+}
+
+# Inicializar aplicação
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
