@@ -352,6 +352,46 @@ detect_service_state() {
     echo "installed=$installed configured=$configured running=$running"
 }
 
+detect_installed_components() {
+    COMPONENTS_STATUS=()
+
+    # Verificar Pi-hole
+    local pihole_state
+    pihole_state=$(detect_service_state "pihole")
+    if [[ "$pihole_state" =~ installed=true ]] && [[ "$pihole_state" =~ configured=true ]] && [[ "$pihole_state" =~ running=true ]]; then
+        COMPONENTS_STATUS+=("Pi-hole: INSTALADO e FUNCIONANDO")
+    else
+        COMPONENTS_STATUS+=("Pi-hole: NÃO INSTALADO ou INCOMPLETO")
+    fi
+
+    # Verificar Unbound
+    local unbound_state
+    unbound_state=$(detect_service_state "unbound")
+    if [[ "$unbound_state" =~ installed=true ]] && [[ "$unbound_state" =~ configured=true ]] && [[ "$unbound_state" =~ running=true ]]; then
+        COMPONENTS_STATUS+=("Unbound: INSTALADO e FUNCIONANDO")
+    else
+        COMPONENTS_STATUS+=("Unbound: NÃO INSTALADO ou INCOMPLETO")
+    fi
+
+    # Verificar WireGuard
+    local wireguard_state
+    wireguard_state=$(detect_service_state "wireguard")
+    if [[ "$wireguard_state" =~ installed=true ]] && [[ "$wireguard_state" =~ configured=true ]] && [[ "$wireguard_state" =~ running=true ]]; then
+        COMPONENTS_STATUS+=("WireGuard: INSTALADO e FUNCIONANDO")
+    else
+        COMPONENTS_STATUS+=("WireGuard: NÃO INSTALADO ou INCOMPLETO")
+    fi
+
+    # Verificar Cloudflared
+    local cloudflared_state
+    cloudflared_state=$(detect_service_state "cloudflared")
+    if [[ "$cloudflared_state" =~ installed=true ]] && [[ "$cloudflared_state" =~ configured=true ]] && [[ "$cloudflared_state" =~ running=true ]]; then
+        COMPONENTS_STATUS+=("Cloudflared: INSTALADO e FUNCIONANDO")
+    else
+        COMPONENTS_STATUS+=("Cloudflared: NÃO INSTALADO ou INCOMPLETO")
+    fi
+}
+
 # =============================================================================
 # FUNÇÕES DE INSTALAÇÃO
 # =============================================================================
@@ -1444,18 +1484,44 @@ full_installation() {
 # =============================================================================
 
 show_main_menu() {
-    local choice
-    choice=$(show_menu "$SCRIPT_NAME v$SCRIPT_VERSION" \
-        "1" "Instalação completa" \
-        "2" "Configuração inicial" \
-        "3" "Instalar componente específico" \
-        "4" "Gerenciar WireGuard" \
-        "5" "Diagnóstico do sistema" \
-        "6" "Ver logs" \
-        "7" "Backup/Restaurar configuração" \
-        "8" "Desinstalar serviços" \
-        "0" "Sair")
+    detect_installed_components
 
+    local menu_options=(
+        "1" "Instalação completa"
+        "2" "Configuração inicial"
+    )
+
+    # Adicionar opções de configuração para componentes instalados
+    for status in "${COMPONENTS_STATUS[@]}"; do
+        if [[ "$status" =~ "INSTALADO e FUNCIONANDO" ]]; then
+            case "$status" in
+                "Pi-hole: INSTALADO e FUNCIONANDO")
+                    menu_options+=("3" "Configurar Pi-hole")
+                    ;;
+                "Unbound: INSTALADO e FUNCIONANDO")
+                    menu_options+=("4" "Configurar Unbound DNS")
+                    ;;
+                "WireGuard: INSTALADO e FUNCIONANDO")
+                    menu_options+=("5" "Configurar WireGuard VPN")
+                    ;;
+                "Cloudflared: INSTALADO e FUNCIONANDO")
+                    menu_options+=("6" "Configurar Cloudflare Tunnel")
+                    ;;
+            esac
+        fi
+    done
+
+    # Adicionar opções padrão
+    menu_options+=(
+        "7" "Diagnóstico do sistema"
+        "8" "Ver logs"
+        "9" "Backup/Restaurar configuração"
+        "10" "Desinstalar serviços"
+        "0" "Sair"
+    )
+
+    local choice
+    choice=$(show_menu "$SCRIPT_NAME v$SCRIPT_VERSION" "${menu_options[@]}")
     echo "$choice"
 }
 
