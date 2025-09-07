@@ -41,21 +41,32 @@ add_peer() {
   local peer_name="$1"
   local peer_ip="$2"
 
+  # Gerar IP automaticamente se não fornecido
+  if [ -z "$peer_ip" ]; then
+    peer_ip=$(generate_next_ip)
+    msg "IP gerado automaticamente: $peer_ip"
+  fi
+
+  # Validar formato do IP
+  if ! [[ "$peer_ip" =~ ^10\.200\.200\.[0-9]{1,3}$ ]]; then
+    error "IP deve estar no formato 10.200.200.X"
+  fi
+
   msg "Adicionando peer: $peer_name com IP: $peer_ip"
 
   # Gerar chaves do peer
   umask 077
-  mkdir -p "$KEYS_DIR"
+  sudo mkdir -p "$KEYS_DIR"
   cd "$KEYS_DIR"
 
-  wg genkey | tee "${peer_name}_privatekey" | wg pubkey > "${peer_name}_publickey"
+  sudo wg genkey | sudo tee "${peer_name}_privatekey" | sudo wg pubkey | sudo tee "${peer_name}_publickey" > /dev/null
 
-  local peer_private=$(cat "${peer_name}_privatekey")
-  local peer_public=$(cat "${peer_name}_publickey")
-  local server_public=$(cat "${KEYS_DIR}/publickey")
+  local peer_private=$(sudo cat "${peer_name}_privatekey")
+  local peer_public=$(sudo cat "${peer_name}_publickey")
+  local server_public=$(sudo cat "${KEYS_DIR}/publickey")
 
   # Adicionar peer à configuração do servidor
-  cat <<EOF | tee -a "$CONF_FILE"
+  cat <<EOF | sudo tee -a "$CONF_FILE"
 
 # Peer: $peer_name
 [Peer]
@@ -64,7 +75,7 @@ AllowedIPs = $peer_ip/32
 EOF
 
   # Criar arquivo de configuração do peer
-  cat <<EOF > "${peer_name}.conf"
+  cat <<EOF | sudo tee "${peer_name}.conf" > /dev/null
 [Interface]
 PrivateKey = $peer_private
 Address = $peer_ip/24
@@ -78,11 +89,16 @@ PersistentKeepalive = 25
 EOF
 
   # Reiniciar WireGuard para aplicar mudanças
-  sudo wg syncconf wg0 <(wg-quick strip wg0)
+  sudo wg syncconf wg0 <(sudo wg-quick strip wg0)
 
   msg "Peer $peer_name adicionado com sucesso!"
   echo "📋 Arquivo de configuração: ${KEYS_DIR}/${peer_name}.conf"
   echo "📱 Use este arquivo no cliente WireGuard"
+
+  # Mostrar conteúdo do arquivo
+  echo ""
+  echo "📄 Conteúdo do arquivo de configuração:"
+  sudo cat "${peer_name}.conf"
 }
 
 remove_peer() {
@@ -94,12 +110,12 @@ remove_peer() {
   sudo sed -i "/# Peer: $peer_name/,+3d" "$CONF_FILE"
 
   # Remover arquivos de chaves
-  rm -f "${KEYS_DIR}/${peer_name}_privatekey" \
-        "${KEYS_DIR}/${peer_name}_publickey" \
-        "${KEYS_DIR}/${peer_name}.conf"
+  sudo rm -f "${KEYS_DIR}/${peer_name}_privatekey" \
+             "${KEYS_DIR}/${peer_name}_publickey" \
+             "${KEYS_DIR}/${peer_name}.conf"
 
   # Reiniciar WireGuard
-  sudo wg syncconf wg0 <(wg-quick strip wg0)
+  sudo wg syncconf wg0 <(sudo wg-quick strip wg0)
 
   msg "Peer $peer_name removido com sucesso!"
 }
@@ -108,8 +124,8 @@ list_peers() {
   msg "Peers configurados:"
   echo ""
 
-  if grep -q "\[Peer\]" "$CONF_FILE"; then
-    grep -A 3 "# Peer:" "$CONF_FILE" | awk '
+  if sudo grep -q "\[Peer\]" "$CONF_FILE"; then
+    sudo grep -A 3 "# Peer:" "$CONF_FILE" | awk '
       /# Peer:/ {peer=$3; print "👤 " peer}
       /PublicKey:/ {print "   🔑 Chave: " $3}
       /AllowedIPs:/ {print "   📡 IP: " $3; print ""}
@@ -118,7 +134,7 @@ list_peers() {
     echo "📭 Nenhum peer configurado"
   fi
 
-  echo "📊 Total de peers: $(grep -c "\[Peer\]" "$CONF_FILE")"
+  echo "📊 Total de peers: $(sudo grep -c "\[Peer\]" "$CONF_FILE")"
 }
 
 generate_qr() {
@@ -134,9 +150,26 @@ generate_qr() {
   fi
 
   msg "Gerando QR Code para: $peer_name"
-  qrencode -t UTF8 < "$config_file"
+  sudo cat "$config_file" | qrencode -t UTF8
   echo ""
   echo "📱 Escaneie este QR code com o app WireGuard"
+}
+
+generate_next_ip() {
+  # Encontrar o próximo IP disponível na rede 10.200.200.0/24
+  local used_ips=$(sudo grep "AllowedIPs" "$CONF_FILE" 2>/dev/null | awk '{print $3}' | cut -d/ -f1 | sort -u)
+  local base_ip="10.200.200"
+
+  # Começar do IP 2 (1 é o servidor)
+  for i in {2..254}; do
+    local candidate_ip="$base_ip.$i"
+    if ! echo "$used_ips" | grep -q "^$candidate_ip$"; then
+      echo "$candidate_ip"
+      return 0
+    fi
+  done
+
+  error "Não há IPs disponíveis na rede 10.200.200.0/24"
 }
 
 show_server_status() {
@@ -177,7 +210,7 @@ show_menu() {
     case $choice in
       1)
         read -p "Nome do peer (ex: celular-flavio): " peer_name
-        read -p "IP do peer (ex: 10.200.200.2): " peer_ip
+        read -p "IP do peer (deixe em branco para gerar automaticamente): " peer_ip
         add_peer "$peer_name" "$peer_ip"
         ;;
       2)
@@ -216,7 +249,7 @@ usage() {
   echo "Uso: $0 [comando]"
   echo ""
   echo "Comandos:"
-  echo "  add <nome> <ip>     - Adicionar novo peer"
+  echo "  add <nome> [ip]     - Adicionar novo peer (IP opcional)"
   echo "  remove <nome>       - Remover peer"
   echo "  list                - Listar peers"
   echo "  qr <nome>           - Gerar QR code"
@@ -225,6 +258,7 @@ usage() {
   echo ""
   echo "Exemplos:"
   echo "  $0 add notebook 10.200.200.2"
+  echo "  $0 add celular    # IP gerado automaticamente"
   echo "  $0 remove celular"
   echo "  $0 qr tablet"
 }
