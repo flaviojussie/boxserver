@@ -124,37 +124,171 @@ check_ports() {
 # ==============================================
 load_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
-        # Parse seguro do arquivo de configuração
-        while IFS='=' read -r key value; do
-            # Ignorar comentários e linhas vazias
-            [[ -z "$key" || "$key" =~ ^# ]] && continue
-            # Remover aspas e espaços em excesso
-            value="${value%\"}"
-            value="${value#\"}"
-            value="${value%\'}"
-            value="${value#\'}"
-            value="${value#"${value%%[![:space:]]*}"}"
-            value="${value%"${value##*[![:space:]]}"}"
-
-            export "$key"="$value"
-        done < "$CONFIG_FILE"
         log_info "Carregando configuração de $CONFIG_FILE"
+
+        # Parse seguro do arquivo de configuração
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            # Remover espaços em branco no início e fim da linha
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+
+            # Ignorar comentários e linhas vazias
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+
+            # Verificar se a linha contém um '='
+            if [[ "$line" =~ ^[[:space:]]*([^=[:space:]]+)[[:space:]]*=[[:space:]]*(.*)[[:space:]]*$ ]]; then
+                local key="${BASH_REMATCH[1]}"
+                local value="${BASH_REMATCH[2]}"
+
+                # Validar nome da variável (deve conter apenas letras, números e underscore)
+                if [[ ! "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+                    log_warn "Nome de variável inválido ignorado: '$key'"
+                    continue
+                fi
+
+                # Remover aspas duplas e simples do valor
+                if [[ "$value" =~ ^\"(.*)\"$ ]]; then
+                    value="${BASH_REMATCH[1]}"
+                elif [[ "$value" =~ ^\'(.*)\'$ ]]; then
+                    value="${BASH_REMATCH[1]}"
+                fi
+
+                # Exportar a variável de forma segura
+                if [[ -n "$key" ]]; then
+                    export "$key"="$value"
+                    log_info "Variável carregada: $key='$value'"
+                fi
+            else
+                log_warn "Linha mal formada ignorada: '$line'"
+            fi
+        done < "$CONFIG_FILE"
+
+        log_info "Configuração carregada com sucesso"
     else
         log_info "Arquivo de configuração não encontrado, usando valores padrão"
     fi
 }
 
 save_config() {
+    # Criar backup do arquivo atual se existir
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local backup_file="${CONFIG_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "$CONFIG_FILE" "$backup_file"
+        log_info "Backup da configuração atual salvo em: $backup_file"
+    fi
+
     mkdir -p "$(dirname "$CONFIG_FILE")"
+
     cat > "$CONFIG_FILE" << EOF
 # BoxServer Configuration
+# Atualizado em: $(date)
+
+# Interface de rede
 NET_IF="${NET_IF:-$(detect_interface)}"
+
+# Domínio
 DOMAIN="${DOMAIN:-pihole.local}"
+
+# Arquitetura
 ARCH="${ARCH:-$(detect_arch)}"
+
+# Serviços selecionados
 CHOICES="${CHOICES:-}"
+
+# Modo de instalação
 INSTALL_MODE="${INSTALL_MODE:-interactive}"
+
+# Opções avançadas
+FORCE_INSTALL="${FORCE_INSTALL:-false}"
+SKIP_BACKUP="${SKIP_BACKUP:-false}"
+VERBOSE_MODE="${VERBOSE_MODE:-false}"
+DRY_RUN="${DRY_RUN:-false}"
+NO_COLOR="${NO_COLOR:-false}"
+QUIET_MODE="${QUIET_MODE:-false}"
+SKIP_PORT_CHECK="${SKIP_PORT_CHECK:-false}"
 EOF
+
     log_info "Configuração salva em $CONFIG_FILE"
+}
+
+# Função auxiliar para validar arquivo de configuração
+validate_config_file() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        return 1
+    fi
+
+    local errors=0
+    local line_num=0
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        ((line_num++))
+
+        # Remover espaços em branco
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+
+        # Ignorar comentários e linhas vazias
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+
+        # Verificar formato da linha
+        if [[ ! "$line" =~ ^[[:space:]]*([^=[:space:]]+)[[:space:]]*=[[:space:]]*(.*)[[:space:]]*$ ]]; then
+            log_error "Linha $line_num: Formato inválido - '$line'"
+            ((errors++))
+            continue
+        fi
+
+        local key="${BASH_REMATCH[1]}"
+
+        # Validar nome da variável
+        if [[ ! "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+            log_error "Linha $line_num: Nome de variável inválido - '$key'"
+            ((errors++))
+        fi
+    done < "$CONFIG_FILE"
+
+    if [[ $errors -eq 0 ]]; then
+        log_info "Arquivo de configuração válido"
+        return 0
+    else
+        log_error "$errors erros encontrados no arquivo de configuração"
+        return 1
+    fi
+}
+
+# Função para criar arquivo de configuração padrão
+create_default_config() {
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+
+    cat > "$CONFIG_FILE" << 'EOF'
+# BoxServer Configuration File
+# Gerado automaticamente em $(date)
+
+# Interface de réseau (detectada automaticamente se não especificada)
+NET_IF=""
+
+# Domínio para acessar o Pi-hole
+DOMAIN="pihole.local"
+
+# Arquitetura do sistema (detectada automaticamente se não especificada)
+ARCH=""
+
+# Serviços selecionados para instalação (separados por espaço)
+CHOICES=""
+
+# Modo de instalação (interactive|non-interactive)
+INSTALL_MODE="interactive"
+
+# Opções avançadas (true|false)
+FORCE_INSTALL="false"
+SKIP_BACKUP="false"
+VERBOSE_MODE="false"
+DRY_RUN="false"
+NO_COLOR="false"
+QUIET_MODE="false"
+SKIP_PORT_CHECK="false"
+EOF
+
+    log_info "Arquivo de configuração padrão criado: $CONFIG_FILE"
 }
 
 backup_configs() {
