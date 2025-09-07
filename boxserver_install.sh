@@ -59,7 +59,7 @@ ask_static_ip() {
     # Se não encontrar gateway, usar padrão baseado no IP
     if [ -z "$GATEWAY" ]; then
         GATEWAY=$(echo "$STATIC_IP" | sed 's/\.[0-9]*$/.1/')
-        msg "Gateway não detectado. Usando gateway padrão: $GATEWAY"
+        msg "⚠️  Gateway não detectado. Usando gateway padrão: $GATEWAY"
     fi
 
     DNS="1.1.1.1"
@@ -84,12 +84,12 @@ EOF
         msg "Aplicando configuração de rede..."
         timeout 30s sudo netplan apply >/dev/null 2>&1
         if [ $? -eq 0 ]; then
-            msg "IP fixo configurado com sucesso: $STATIC_IP"
+            msg "✅ IP fixo configurado com sucesso: $STATIC_IP"
         else
-            msg "Netplan está demorando. A configuração de IP será aplicada após reiniciar o sistema."
+            msg "⚠️  Netplan está demorando. A configuração de IP será aplicada após reiniciar o sistema."
         fi
     else
-        msg "Este sistema não usa Netplan. Configure manualmente o IP fixo $STATIC_IP"
+        msg "⚠️  Este sistema não usa Netplan. Configure manualmente o IP fixo $STATIC_IP"
     fi
 }
 
@@ -142,12 +142,12 @@ EOF
     sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
     sudo unbound-anchor -a /var/lib/unbound/root.key || true
     sudo systemctl enable --now unbound
-
+    
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet unbound; then
-        msg "Unbound instalado e em execução"
+        msg "✅ Unbound instalado e em execução"
     else
-        msg "Unbound instalado, mas pode não estar em execução"
+        msg "⚠️  Unbound instalado, mas pode não estar em execução"
     fi
 }
 
@@ -162,20 +162,32 @@ install_pihole() {
     else
         echo "PIHOLE_DNS_1=127.0.0.1#5335" | sudo tee -a /etc/pihole/setupVars.conf
     fi
-    sudo pihole restartdns
+    
+    # Reiniciar o DNS do Pi-hole
+    if command -v pihole &> /dev/null; then
+        sudo pihole restartdns
+    else
+        # Se o comando pihole não estiver disponível, reiniciar o serviço diretamente
+        sudo systemctl restart pihole-ftl
+    fi
 
     msg "Alterando Pi-hole para rodar em 8081/8443..."
     if [ -f /etc/lighttpd/lighttpd.conf ]; then
         sudo sed -i 's/server.port\s*=\s*80/server.port = 8081/' /etc/lighttpd/lighttpd.conf
     fi
-    sudo bash -c 'echo "\$SERVER[\"socket\"] == \":8443\" { ssl.engine = \"enable\" }" > /etc/lighttpd/external.conf'
+    
+    # Criar o arquivo external.conf corretamente
+    cat <<EOF | sudo tee /etc/lighttpd/external.conf
+\$SERVER["socket"] == ":8443" { ssl.engine = "enable" }
+EOF
+    
     sudo systemctl restart lighttpd
-
+    
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet lighttpd; then
-        msg "Pi-hole instalado e em execução nas portas 8081/8443"
+        msg "✅ Pi-hole instalado e em execução nas portas 8081/8443"
     else
-        msg "Pi-hole instalado, mas pode não estar em execução corretamente"
+        msg "⚠️  Pi-hole instalado, mas pode não estar em execução corretamente"
     fi
 }
 
@@ -201,12 +213,12 @@ EOF
     echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf
     sudo sysctl -p
     sudo systemctl enable --now wg-quick@wg0
-
+    
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet wg-quick@wg0; then
-        msg "WireGuard instalado e em execução"
+        msg "✅ WireGuard instalado e em execução"
     else
-        msg "WireGuard instalado, mas pode não estar em execução"
+        msg "⚠️  WireGuard instalado, mas pode não estar em execução"
     fi
 }
 
@@ -214,7 +226,7 @@ install_cloudflare() {
     msg "Instalando Cloudflare Tunnel..."
     ARCH=$(detect_arch)
     URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}"
-
+    
     # Verificar se o download foi bem-sucedido
     if sudo wget -O /usr/local/bin/cloudflared "$URL"; then
         sudo chmod +x /usr/local/bin/cloudflared
@@ -228,7 +240,7 @@ ingress:
     service: http://localhost:8081
   - service: http_status:404
 EOF
-
+        
         # Criar serviço systemd para cloudflared
         cat <<EOF | sudo tee /etc/systemd/system/cloudflared.service
 [Unit]
@@ -247,12 +259,12 @@ EOF
 
         sudo systemctl daemon-reload
         sudo systemctl enable --now cloudflared
-
+        
         # Verificar se o serviço está rodando
         if sudo systemctl is-active --quiet cloudflared; then
-            msg "Cloudflare Tunnel instalado e em execução"
+            msg "✅ Cloudflare Tunnel instalado e em execução"
         else
-            msg "Cloudflare Tunnel instalado, execute 'cloudflared tunnel login' para autenticar"
+            msg "⚠️  Cloudflare Tunnel instalado, execute 'cloudflared tunnel login' para autenticar"
         fi
     else
         msg "❌ Falha ao baixar Cloudflare Tunnel"
@@ -275,12 +287,12 @@ RNGDEVICE="$RNGDEVICE"
 RNGDOPTIONS="--fill-watermark=2048 --feed-interval=60 --timeout=10"
 EOF
     sudo systemctl enable --now rng-tools
-
+    
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet rng-tools; then
-        msg "RNG-tools instalado e em execução"
+        msg "✅ RNG-tools instalado e em execução"
     else
-        msg "RNG-tools instalado, mas pode não estar em execução"
+        msg "⚠️  RNG-tools instalado, mas pode não estar em execução"
     fi
 }
 
@@ -300,12 +312,12 @@ install_samba() {
    guest ok = yes
 EOF
     sudo systemctl enable --now smbd
-
+    
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet smbd; then
-        msg "Samba instalado e em execução"
+        msg "✅ Samba instalado e em execução"
     else
-        msg "Samba instalado, mas pode não estar em execução"
+        msg "⚠️  Samba instalado, mas pode não estar em execução"
     fi
 }
 
@@ -324,12 +336,12 @@ inotify=yes
 port=8200
 EOF
     sudo systemctl enable --now minidlna
-
+    
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet minidlna; then
-        msg "MiniDLNA instalado e em execução"
+        msg "✅ MiniDLNA instalado e em execução"
     else
-        msg "MiniDLNA instalado, mas pode não estar em execução"
+        msg "⚠️  MiniDLNA instalado, mas pode não estar em execução"
     fi
 }
 
@@ -368,12 +380,12 @@ EOF
 
         sudo systemctl daemon-reexec
         sudo systemctl enable --now filebrowser
-
+        
         # Verificar se o serviço está rodando
         if sudo systemctl is-active --quiet filebrowser; then
-            msg "Filebrowser instalado e em execução"
+            msg "✅ Filebrowser instalado e em execução"
         else
-            msg "Filebrowser instalado, mas pode não estar em execução"
+            msg "⚠️  Filebrowser instalado, mas pode não estar em execução"
         fi
     else
         msg "❌ Falha ao baixar Filebrowser"
@@ -510,7 +522,7 @@ EOF
     # Parar serviços que possam estar usando a porta 80
     sudo systemctl stop apache2 || true  # Apache se estiver instalado
     # Não é necessário parar lighttpd pois o Pi-hole já foi configurado para portas diferentes
-
+    
     # Configurar nginx para servir o dashboard
     cat <<EOF | sudo tee /etc/nginx/sites-available/boxserver-dashboard
 server {
@@ -528,12 +540,12 @@ EOF
     sudo ln -sf /etc/nginx/sites-available/boxserver-dashboard /etc/nginx/sites-enabled/
     sudo rm -f /etc/nginx/sites-enabled/default
     sudo systemctl restart nginx
-
+    
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet nginx; then
-        msg "Dashboard instalado e acessível em http://$STATIC_IP/"
+        msg "✅ Dashboard instalado e acessível em http://$STATIC_IP/"
     else
-        msg "Dashboard instalado, mas o Nginx pode não estar em execução"
+        msg "⚠️  Dashboard instalado, mas o Nginx pode não estar em execução"
     fi
 }
 
@@ -620,7 +632,7 @@ main() {
     # Instalar serviços principais primeiro
     [[ $CHOICES == *"UNBOUND"* ]] && install_unbound
     [[ $CHOICES == *"PIHOLE"* ]] && install_pihole
-
+    
     # Instalar serviços adicionais
     [[ $CHOICES == *"WIREGUARD"* ]] && install_wireguard
     [[ $CHOICES == *"CLOUDFLARE"* ]] && install_cloudflare
@@ -634,14 +646,14 @@ main() {
     check_ports
     show_summary
 
-    FINAL_MSG="Instalação concluída com sucesso!\n\n"
+    FINAL_MSG="✅ Instalação concluída com sucesso!\n\n"
     FINAL_MSG+="IP Configurado: $STATIC_IP\n"
     FINAL_MSG+="Gateway: $GATEWAY\n"
     FINAL_MSG+="Interface: $NET_IF\n\n"
     FINAL_MSG+="Acesse o Dashboard em: http://$STATIC_IP/\n\n"
     FINAL_MSG+="Log completo em: $LOGFILE\n"
     FINAL_MSG+="Relatório em: /root/boxserver_summary.txt\n\n"
-    FINAL_MSG+="ATENÇÃO: Se o IP fixo não estiver funcionando, reinicie o sistema ou execute:\n"
+    FINAL_MSG+="⚠️  ATENÇÃO: Se o IP fixo não estiver funcionando, reinicie o sistema ou execute:\n"
     FINAL_MSG+="sudo netplan apply"
 
     msg "$FINAL_MSG"
