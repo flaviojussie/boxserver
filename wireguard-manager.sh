@@ -24,7 +24,34 @@ error() {
 
 check_wg_installed() {
   if ! command -v wg &> /dev/null; then
-    error "WireGuard não está instalado. Execute primeiro o install_boxserver.sh"
+    echo "❌ WireGuard não está instalado."
+    echo "💡 Execute primeiro: sudo bash install_boxserver.sh"
+    echo "📋 Ou execute o diagnóstico: sudo $_BoxServer/scripts/wireguard-check.sh"
+    exit 1
+  fi
+
+  # Verificar se o diretório de chaves existe
+  if [ ! -d "$KEYS_DIR" ]; then
+    echo "❌ Diretório de chaves do WireGuard não encontrado."
+    echo "💡 Execute primeiro: sudo bash install_boxserver.sh"
+    echo "📋 Ou execute o diagnóstico: sudo $_BoxServer/scripts/wireguard-check.sh"
+    exit 1
+  fi
+
+  # Verificar se as chaves do servidor existem
+  if [ ! -f "${KEYS_DIR}/publickey" ] || [ ! -f "${KEYS_DIR}/privatekey" ]; then
+    echo "❌ Chaves do servidor WireGuard não encontradas."
+    echo "💡 Execute primeiro: sudo bash install_boxserver.sh"
+    echo "📋 Ou execute o diagnóstico: sudo $_BoxServer/scripts/wireguard-check.sh"
+    exit 1
+  fi
+
+  # Verificar se o arquivo de configuração existe
+  if [ ! -f "$CONF_FILE" ]; then
+    echo "❌ Arquivo de configuração do WireGuard não encontrado."
+    echo "💡 Execute primeiro: sudo bash install_boxserver.sh"
+    echo "📋 Ou execute o diagnóstico: sudo $_BoxServer/scripts/wireguard-check.sh"
+    exit 1
   fi
 }
 
@@ -64,6 +91,8 @@ add_peer() {
   local peer_private=$(sudo cat "${peer_name}_privatekey")
   local peer_public=$(sudo cat "${peer_name}_publickey")
   local server_public=$(sudo cat "${KEYS_DIR}/publickey")
+
+
 
   # Adicionar peer à configuração do servidor
   cat <<EOF | sudo tee -a "$CONF_FILE"
@@ -157,7 +186,10 @@ generate_qr() {
 
 generate_next_ip() {
   # Encontrar o próximo IP disponível na rede 10.200.200.0/24
-  local used_ips=$(sudo grep "AllowedIPs" "$CONF_FILE" 2>/dev/null | awk '{print $3}' | cut -d/ -f1 | sort -u)
+  local used_ips=""
+  if [ -f "$CONF_FILE" ]; then
+    used_ips=$(sudo grep "AllowedIPs" "$CONF_FILE" 2>/dev/null | awk '{print $3}' | cut -d/ -f1 | sort -u)
+  fi
   local base_ip="10.200.200"
 
   # Começar do IP 2 (1 é o servidor)
