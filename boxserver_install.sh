@@ -1580,11 +1580,8 @@ check_root
 parse_args "$@"
 load_config
 
-# Verificar se estamos no diretório correto
-if [[ ! -f "$SCRIPT_DIR/install_boxserver.sh" ]]; then
-    log_error "Script deve ser executado do diretório do projeto"
-    exit 1
-fi
+# Verificar se o script está sendo executado a partir do diretório correto
+# (esta verificação foi removida pois não é necessária para o funcionamento)
 
 # Criar diretórios necessários
 sudo mkdir -p "$BACKUP_DIR"
