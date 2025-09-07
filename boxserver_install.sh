@@ -1,279 +1,312 @@
 #!/bin/bash
 set -euo pipefail
 
-# =========================
-# Configurações
-# =========================
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="/var/log/boxserver_install.log"
-PIHOLE_SETUPVARS="/etc/pihole/setupVars.conf"
-WG_DIR="/etc/wireguard"
-KEYS_DIR="$WG_DIR/keys"
-CONF_FILE="$WG_DIR/wg0.conf"
-SERVER_IP="10.200.200.1"
-NETWORK="10.200.200.0/24"
+LOGFILE="/var/log/boxserver_install.log"
+exec > >(tee -a "$LOGFILE") 2>&1
 
 # =========================
 # Funções auxiliares
 # =========================
 msg() {
-    echo "🤖 $1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+  whiptail --title "BoxServer Instalador" --msgbox "$1" 10 70
 }
 
-error() {
-    echo "❌ ERRO: $1" >&2
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERRO: $1" >> "$LOG_FILE"
-    exit 1
+detect_interface() {
+  ip route | awk '/^default/ {print $5; exit}'
 }
 
-success() {
-    echo "✅ $1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCESSO: $1" >> "$LOG_FILE"
+detect_arch() {
+  case "$(uname -m)" in
+    x86_64) echo "amd64";;
+    aarch64|arm64) echo "arm64";;
+    armv7l|armhf) echo "arm";;
+    *) echo "unsupported";;
+  esac
 }
 
-check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        error "Este script precisa ser executado como root. Use: sudo bash $0"
-    fi
+check_ports() {
+  msg "Verificando portas em uso (8080, 8081, 8200, 8443, 51820, 5335)..."
+  sudo ss -tulpn | grep -E '(:8080|:8081|:8200|:8443|:51820|:5335)' || true
 }
 
-install_dependencies() {
-    msg "Instalando dependências do sistema..."
-    apt update >> "$LOG_FILE" 2>&1
-    apt install -y curl git wget net-tools dnsutils resolvconf qrencode >> "$LOG_FILE" 2>&1
-    success "Dependências instaladas"
+# =========================
+# Etapas de instalação
+# =========================
+pre_reqs() {
+  msg "Atualizando sistema e instalando pacotes básicos..."
+  sudo apt update
+  sudo apt install -y curl wget gnupg lsb-release ca-certificates whiptail
 }
 
-install_pihole() {
-    msg "Instalando Pi-hole..."
+ask_questions() {
+  NET_IF=$(detect_interface)
+  NET_IF=$(whiptail --inputbox "Interface de rede detectada: $NET_IF\nConfirme ou edite:" 10 60 "$NET_IF" 3>&1 1>&2 2>&3)
 
-    # Verificar se Pi-hole já está instalado
-    if command -v pihole &> /dev/null; then
-        msg "Pi-hole já está instalado. Atualizando..."
-        pihole -up >> "$LOG_FILE" 2>&1
-        success "Pi-hole atualizado"
-        return 0
-    fi
+  DOMAIN=$(whiptail --inputbox "Digite o domínio para acessar o Pi-hole (ex: pihole.local):" 10 60 "pihole.local" 3>&1 1>&2 2>&3)
 
-    # Instalar Pi-hole
-    curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended >> "$LOG_FILE" 2>&1
-
-    # Verificar se a instalação foi bem-sucedida
-    if [ ! -f "$PIHOLE_SETUPVARS" ]; then
-        error "Pi-hole instalado mas setupVars.conf não encontrado. Execute manualmente: pihole -r"
-    fi
-
-    success "Pi-hole instalado com sucesso"
-
-    # Configurar Pi-hole como DNS para WireGuard
-    if [ -f "$PIHOLE_SETUPVARS" ]; then
-        msg "Configurando Pi-hole no setupVars.conf..."
-        sed -i "s|^PIHOLE_DNS_.*=.*|# Removido configurações antigas|" "$PIHOLE_SETUPVARS"
-        echo "PIHOLE_DNS_1=9.9.9.9" >> "$PIHOLE_SETUPVARS"
-        echo "PIHOLE_DNS_2=1.1.1.1" >> "$PIHOLE_SETUPVARS"
-        echo "DNSMASQ_LISTENING=all" >> "$PIHOLE_SETUPVARS"
-    fi
-
-    success "Pi-hole configurado"
+  ARCH=$(detect_arch)
+  msg "Arquitetura detectada: $ARCH"
 }
 
+choose_services() {
+  CHOICES=$(whiptail --title "Seleção de Componentes" --checklist \
+  "Escolha os serviços que deseja instalar:" 20 70 10 \
+  "UNBOUND" "DNS recursivo (automático)" ON \
+  "PIHOLE" "Bloqueio de anúncios (manual, portas 8081/8443)" ON \
+  "WIREGUARD" "VPN segura (server auto, peers manuais)" OFF \
+  "CLOUDFLARE" "Acesso remoto (login manual)" OFF \
+  "RNG" "Gerador de entropia (automático)" ON \
+  "SAMBA" "Compartilhamento de arquivos" OFF \
+  "MINIDLNA" "Servidor DLNA" OFF \
+  "FILEBROWSER" "Gerenciador de arquivos Web" OFF \
+  3>&1 1>&2 2>&3)
+
+  echo "Selecionados: $CHOICES"
+}
+
+# --- Unbound ---
+install_unbound() {
+  msg "Instalando Unbound..."
+  sudo apt install -y unbound
+
+  cat <<EOF | sudo tee /etc/unbound/unbound.conf.d/pi-hole.conf
+server:
+    verbosity: 1
+    interface: 127.0.0.1
+    port: 5335
+    do-ip4: yes
+    do-udp: yes
+    do-tcp: yes
+    do-ip6: no
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    use-caps-for-id: no
+    edns-buffer-size: 1232
+    prefetch: yes
+    num-threads: 1
+    so-rcvbuf: 512k
+    so-sndbuf: 512k
+    private-address: 192.168.0.0/16
+    private-address: 10.0.0.0/8
+    auto-trust-anchor-file: "/var/lib/unbound/root.key"
+    root-hints: "/var/lib/unbound/root.hints"
+EOF
+
+  sudo mkdir -p /var/lib/unbound
+  sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
+  sudo unbound-anchor -a /var/lib/unbound/root.key || {
+    sudo wget -O /tmp/root.key https://data.iana.org/root-anchors/icannbundle.pem
+    sudo mv /tmp/root.key /var/lib/unbound/root.key
+  }
+
+  sudo chown -R unbound:unbound /var/lib/unbound
+  sudo chmod 644 /var/lib/unbound/root.*
+
+  sudo unbound-checkconf
+  sudo systemctl restart unbound
+  sudo systemctl enable unbound
+}
+
+ # --- Pi-hole ---
+ install_pihole() {
+   msg "Instalando Pi-hole (interativo oficial)..."
+   curl -sSL https://install.pi-hole.net | bash
+
+   # Aguarda até que o arquivo setupVars.conf seja criado
+   msg "Aguardando conclusão da instalação do Pi-hole..."
+   while [ ! -f /etc/pihole/setupVars.conf ]; do
+     sleep 2
+      done
+
+   msg "Ajustando Pi-hole para usar Unbound (127.0.0.1#5335)..."
+   sudo sed -i 's/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
+   pihole restartdns
+
+   msg "Alterando Pi-hole para rodar em 8081/8443..."
+   sudo sed -i 's/server.port\s*=\s*80/server.port = 8081/' /etc/lighttpd/lighttpd.conf
+   sudo bash -c 'echo "\$SERVER[\"socket\"] == \":8443\" { ssl.engine = \"enable\" }" > /etc/lighttpd/external.conf'
+   sudo systemctl restart lighttpd
+}
+
+
+# --- WireGuard ---
 install_wireguard() {
-    msg "Instalando WireGuard..."
+  msg "Instalando WireGuard..."
+  sudo apt install -y wireguard wireguard-tools
 
-    # Verificar se WireGuard já está instalado
-    if command -v wg &> /dev/null; then
-        msg "WireGuard já está instalado"
-        return 0
-    fi
+  sudo mkdir -p /etc/wireguard/keys
+  sudo chmod 700 /etc/wireguard/keys
+  umask 077
+  wg genkey | sudo tee /etc/wireguard/keys/privatekey | wg pubkey | sudo tee /etc/wireguard/keys/publickey
+  PRIVATE_KEY=$(sudo cat /etc/wireguard/keys/privatekey)
 
-    # Instalar WireGuard
-    apt install -y wireguard wireguard-tools >> "$LOG_FILE" 2>&1
-
-    # Habilitar IP forwarding
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    sysctl -p >> "$LOG_FILE" 2>&1
-
-    success "WireGuard instalado"
-}
-
-setup_wireguard_server() {
-    msg "Configurando servidor WireGuard..."
-
-    # Criar diretório de chaves
-    mkdir -p "$KEYS_DIR"
-    chmod 700 "$KEYS_DIR"
-
-    # Gerar chaves do servidor
-    umask 077
-    wg genkey | tee "${KEYS_DIR}/privatekey" | wg pubkey > "${KEYS_DIR}/publickey"
-
-    # Criar configuração do servidor
-    cat > "$CONF_FILE" <<EOF
+  cat <<EOF | sudo tee /etc/wireguard/wg0.conf
 [Interface]
-Address = $SERVER_IP/24
+PrivateKey = $PRIVATE_KEY
+Address = 10.200.200.1/24
 ListenPort = 51820
-PrivateKey = $(cat "${KEYS_DIR}/privatekey")
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
-DNS = $SERVER_IP
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $NET_IF -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $NET_IF -j MASQUERADE
 EOF
 
-    chmod 600 "$CONF_FILE"
+  sudo chmod 600 /etc/wireguard/wg0.conf
 
-    # Habilitar e iniciar serviço
-    systemctl enable wg-quick@wg0 >> "$LOG_FILE" 2>&1
-    systemctl start wg-quick@wg0 >> "$LOG_FILE" 2>&1
+  sudo sysctl -w net.ipv4.ip_forward=1
+  echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf
 
-    success "Servidor WireGuard configurado"
+  sudo systemctl enable wg-quick@wg0
+  sudo systemctl start wg-quick@wg0
+
+  msg "WireGuard instalado. Adicione os peers manualmente em /etc/wireguard/wg0.conf"
 }
 
-configure_firewall() {
-    msg "Configurando firewall..."
+# --- Cloudflare ---
+install_cloudflare() {
+  msg "Instalando Cloudflare Tunnel..."
+  ARCH=$(detect_arch)
+  URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}"
+  sudo wget -O /usr/local/bin/cloudflared "$URL"
+  sudo chmod +x /usr/local/bin/cloudflared
 
-    # Instalar UFW se não estiver instalado
-    if ! command -v ufw &> /dev/null; then
-        apt install -y ufw >> "$LOG_FILE" 2>&1
-    fi
-
-    # Configurar UFW
-    ufw allow 22/tcp comment 'SSH' >> "$LOG_FILE" 2>&1
-    ufw allow 51820/udp comment 'WireGuard' >> "$LOG_FILE" 2>&1
-    ufw allow 53/tcp comment 'DNS TCP' >> "$LOG_FILE" 2>&1
-    ufw allow 53/udp comment 'DNS UDP' >> "$LOG_FILE" 2>&1
-    ufw allow 80/tcp comment 'HTTP' >> "$LOG_FILE" 2>&1
-    ufw allow 443/tcp comment 'HTTPS' >> "$LOG_FILE" 2>&1
-
-    echo "y" | ufw enable >> "$LOG_FILE" 2>&1
-
-    success "Firewall configurado"
-}
-
-setup_dns_resolution() {
-    msg "Configurando resolução DNS..."
-
-    # Configurar resolv.conf para usar Pi-hole
-    cat > /etc/resolv.conf <<EOF
-nameserver 127.0.0.1
-nameserver 9.9.9.9
-nameserver 1.1.1.1
+  cat <<EOF | sudo tee /etc/cloudflared/config.yml
+tunnel: boxserver
+credentials-file: /etc/cloudflared/boxserver.json
+ingress:
+  - hostname: $DOMAIN
+    service: http://localhost:8081
+  - service: http_status:404
 EOF
 
-    # Prevenir sobrescrita do resolv.conf
-    chattr +i /etc/resolv.conf 2>/dev/null || true
-
-    success "DNS configurado"
+  msg "Cloudflare instalado. Agora execute manualmente:
+    cloudflared tunnel login
+    cloudflared tunnel create boxserver
+  "
 }
 
-create_admin_user() {
-    msg "Criando usuário administrador..."
+# --- RNG-tools ---
+install_rng() {
+  msg "Instalando RNG-tools..."
+  sudo apt install -y rng-tools
 
-    # Verificar se o usuário já existe
-    if id "boxadmin" &>/dev/null; then
-        msg "Usuário boxadmin já existe"
-        return 0
-    fi
+  if [ -e /dev/hwrng ]; then
+    RNGDEVICE="/dev/hwrng"
+  else
+    RNGDEVICE="/dev/urandom"
+  fi
 
-    # Criar usuário
-    useradd -m -s /bin/bash boxadmin
-    echo "boxadmin:BoxServer123!" | chpasswd
-    usermod -aG sudo boxadmin
-
-    success "Usuário boxadmin criado (senha: BoxServer123!)"
-}
-
-install_monitoring_tools() {
-    msg "Instalando ferramentas de monitoramento..."
-
-    apt install -y htop iftop iotop nethogs >> "$LOG_FILE" 2>&1
-
-    success "Ferramentas de monitoramento instaladas"
-}
-
-create_backup_script() {
-    msg "Criando script de backup..."
-
-    cat > "${SCRIPT_DIR}/backup_boxserver.sh" <<'EOF'
-#!/bin/bash
-set -euo pipefail
-
-BACKUP_DIR="/backup/boxserver"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-
-mkdir -p "$BACKUP_DIR"
-
-# Backup do Pi-hole
-tar -czf "${BACKUP_DIR}/pihole_${TIMESTAMP}.tar.gz" /etc/pihole /var/log/pihole* 2>/dev/null || true
-
-# Backup do WireGuard
-tar -czf "${BACKUP_DIR}/wireguard_${TIMESTAMP}.tar.gz" /etc/wireguard 2>/dev/null || true
-
-# Backup das configurações do sistema
-tar -czf "${BACKUP_DIR}/system_${TIMESTAMP}.tar.gz" /etc/resolv.conf /etc/sysctl.conf 2>/dev/null || true
-
-echo "Backup completo criado em: ${BACKUP_DIR}"
+  cat <<EOF | sudo tee /etc/default/rng-tools
+RNGDEVICE="$RNGDEVICE"
+RNGDOPTIONS="--fill-watermark=2048 --feed-interval=60 --timeout=10"
 EOF
 
-    chmod +x "${SCRIPT_DIR}/backup_boxserver.sh"
-
-    success "Script de backup criado"
+  sudo systemctl enable rng-tools
+  sudo systemctl restart rng-tools
 }
 
-show_installation_summary() {
-    echo ""
-    echo "🎉 INSTALAÇÃO DO BOXSERVER CONCLUÍDA!"
-    echo "======================================"
-    echo ""
-    echo "📊 RESUMO DA INSTALAÇÃO:"
-    echo "   ✅ Pi-hole instalado como bloqueador de anúncios e DNS"
-    echo "   ✅ WireGuard configurado como VPN server"
-    echo "   ✅ Firewall (UFW) configurado e ativado"
-    echo "   ✅ Usuário administrador 'boxadmin' criado"
-    echo "   ✅ Ferramentas de monitoramento instaladas"
-    echo "   ✅ Script de backup criado"
-    echo ""
-    echo "🔧 INFORMAÇÕES IMPORTANTES:"
-    echo "   📍 IP do Servidor: $SERVER_IP"
-    echo "   📍 Porta WireGuard: 51820/udp"
-    echo "   📍 Interface WireGuard: wg0"
-    echo "   📍 Diretório de chaves: $KEYS_DIR"
-    echo ""
-    echo "🚀 PRÓXIMOS PASSOS:"
-    echo "   1. Acesse o painel do Pi-hole: http://$(hostname -I | awk '{print $1}')/admin"
-    echo "   2. Use o script wireguard-manager.sh para gerenciar peers VPN"
-    echo "   3. Configure seus dispositivos com os arquivos .conf gerados"
-    echo ""
-    echo "📋 Log completo da instalação: $LOG_FILE"
-    echo ""
+# --- Samba ---
+install_samba() {
+  msg "Instalando Samba..."
+  sudo apt install -y samba
+  sudo mkdir -p /srv/samba/share
+  sudo chmod 777 /srv/samba/share
+
+  cat <<EOF | sudo tee -a /etc/samba/smb.conf
+
+[BoxShare]
+   path = /srv/samba/share
+   browseable = yes
+   read only = no
+   guest ok = yes
+EOF
+
+  sudo systemctl restart smbd
+  sudo systemctl enable smbd
+  msg "Samba instalado. Configure usuários com: sudo smbpasswd -a <usuario>"
+}
+
+# --- MiniDLNA ---
+install_minidlna() {
+  msg "Instalando MiniDLNA..."
+  sudo apt install -y minidlna
+  sudo mkdir -p /srv/media/{video,audio,photos}
+
+  cat <<EOF | sudo tee /etc/minidlna.conf
+media_dir=V,/srv/media/video
+media_dir=A,/srv/media/audio
+media_dir=P,/srv/media/photos
+db_dir=/var/cache/minidlna
+log_dir=/var/log
+friendly_name=BoxServer DLNA
+inotify=yes
+port=8200
+EOF
+
+  sudo systemctl restart minidlna
+  sudo systemctl enable minidlna
+}
+
+# --- Filebrowser ---
+install_filebrowser() {
+  msg "Instalando Filebrowser..."
+  FB_VERSION=$(curl -s https://api.github.com/repos/filebrowser/filebrowser/releases/latest | grep tag_name | cut -d '"' -f4)
+  ARCH=$(detect_arch)
+  case "$ARCH" in
+    amd64) FB_ARCH="linux-amd64";;
+    arm64) FB_ARCH="linux-arm64";;
+    arm) FB_ARCH="linux-armv6";;
+    *) msg "Arquitetura não suportada pelo Filebrowser"; return;;
+  esac
+
+  wget -O filebrowser.tar.gz https://github.com/filebrowser/filebrowser/releases/download/${FB_VERSION}/filebrowser-${FB_ARCH}.tar.gz
+  tar -xzf filebrowser.tar.gz
+  sudo mv filebrowser /usr/local/bin/
+  rm -f filebrowser.tar.gz
+
+  sudo mkdir -p /srv/filebrowser
+  sudo useradd -r -s /bin/false filebrowser || true
+
+  cat <<EOF | sudo tee /etc/systemd/system/filebrowser.service
+[Unit]
+Description=Filebrowser
+After=network.target
+
+[Service]
+User=filebrowser
+ExecStart=/usr/local/bin/filebrowser -r /srv/filebrowser --port 8080
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  sudo systemctl daemon-reexec
+  sudo systemctl enable filebrowser
+  sudo systemctl start filebrowser
+
+  msg "Filebrowser instalado! Acesse http://<IP>:8080 (usuário: admin, senha: admin)"
 }
 
 # =========================
 # Fluxo principal
 # =========================
 main() {
-    check_root
+  whiptail --title "BoxServer Instalador" --msgbox "Bem-vindo ao Instalador Interativo do BoxServer!" 10 70
 
-    msg "Iniciando instalação do BoxServer..."
-    echo "Log da instalação: $LOG_FILE"
-    echo ""
+  pre_reqs
+  ask_questions
+  choose_services
 
-    # Criar arquivo de log
-    > "$LOG_FILE"
+  [[ $CHOICES == *"UNBOUND"* ]] && install_unbound
+  [[ $CHOICES == *"PIHOLE"* ]] && install_pihole
+  [[ $CHOICES == *"WIREGUARD"* ]] && install_wireguard
+  [[ $CHOICES == *"CLOUDFLARE"* ]] && install_cloudflare
+  [[ $CHOICES == *"RNG"* ]] && install_rng
+  [[ $CHOICES == *"SAMBA"* ]] && install_samba
+  [[ $CHOICES == *"MINIDLNA"* ]] && install_minidlna
+  [[ $CHOICES == *"FILEBROWSER"* ]] && install_filebrowser
 
-    install_dependencies
-    install_pihole
-    install_wireguard
-    setup_wireguard_server
-    configure_firewall
-    setup_dns_resolution
-    create_admin_user
-    install_monitoring_tools
-    create_backup_script
-
-    show_installation_summary
+  check_ports
+  msg "Instalação concluída! Revise o log em $LOGFILE"
 }
 
-# Executar apenas se chamado diretamente
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
+main "$@"
