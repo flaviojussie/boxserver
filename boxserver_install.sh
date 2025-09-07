@@ -2,24 +2,24 @@
 set -euo pipefail
 
 # ==============================================
-# BoxServer - Instalador Profissional
-# Versão: 2.3
+# BoxServer - Instalador Profissional Refatorado
+# Versão: 2.4
 # ==============================================
 
 # Diretório base do projeto
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/boxserver.conf"
-BACKUP_DIR="/opt/boxserver/backups"
-LOGFILE="/var/log/boxserver_install.log"
-REPORT_FILE="/var/log/boxserver_report.txt"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly CONFIG_FILE="$SCRIPT_DIR/boxserver.conf"
+readonly BACKUP_DIR="/opt/boxserver/backups"
+readonly LOGFILE="/var/log/boxserver_install.log"
+readonly REPORT_FILE="/var/log/boxserver_report.txt"
 
 # Cores para output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
+readonly NC='\033[0m' # No Color
 
 # Variáveis de ambiente (documentação)
 # FORCE_INSTALL: Ignora verificações de segurança
@@ -30,6 +30,21 @@ NC='\033[0m' # No Color
 # QUIET_MODE: Modo silencioso
 # SKIP_PORT_CHECK: Ignora verificação de portas
 
+# Constantes para serviços
+readonly SERVICES=(
+  "UNBOUND:unbound:Unbound:/etc/unbound/unbound.conf.d/pi-hole.conf"
+  "PIHOLE:lighttpd:Pi-hole:/etc/pihole/setupVars.conf"
+  "WIREGUARD:wg-quick@wg0:WireGuard:/etc/wireguard/wg0.conf"
+  "CLOUDFLARE::Cloudflare:/etc/cloudflared/config.yml"
+  "RNG:rng-tools:RNG-tools:/etc/default/rng-tools"
+  "SAMBA::Samba:/etc/samba/smb.conf"
+  "MINIDLNA:minidlna:MiniDLNA:/etc/minidlna.conf"
+  "FILEBROWSER:filebrowser:Filebrowser:/etc/systemd/system/filebrowser.service"
+)
+
+# Array para armazenar serviços selecionados
+declare -a SELECTED_SERVICES=()
+
 # ==============================================
 # Funções de Logging
 # ==============================================
@@ -38,15 +53,21 @@ log() {
 }
 
 log_error() {
-    echo -e "${RED}[ERRO]$(date '+%Y-%m-%d %H:%M:%S')${NC} $1" | tee -a "$LOGFILE"
+    echo -e "${RED}[ERRO] $(date '+%Y-%m-%d %H:%M:%S')${NC} $1" | tee -a "$LOGFILE" >&2
 }
 
 log_warn() {
-    echo -e "${YELLOW}[AVISO]$(date '+%Y-%m-%d %H:%M:%S')${NC} $1" | tee -a "$LOGFILE"
+    echo -e "${YELLOW}[AVISO] $(date '+%Y-%m-%d %H:%M:%S')${NC} $1" | tee -a "$LOGFILE"
 }
 
 log_info() {
-    echo -e "${BLUE}[INFO]$(date '+%Y-%m-%d %H:%M:%S')${NC} $1" | tee -a "$LOGFILE"
+    echo -e "${BLUE}[INFO] $(date '+%Y-%m-%d %H:%M:%S')${NC} $1" | tee -a "$LOGFILE"
+}
+
+log_debug() {
+    if [[ "${VERBOSE_MODE:-false}" == "true" ]]; then
+        echo -e "${CYAN}[DEBUG] $(date '+%Y-%m-%d %H:%M:%S')${NC} $1" | tee -a "$LOGFILE"
+    fi
 }
 
 # ==============================================
@@ -57,7 +78,12 @@ whiptail_msg() {
     local msg="$2"
     local height="${3:-10}"
     local width="${4:-70}"
-    whiptail --title "$title" --msgbox "$msg" $height $width 3>&1 1>&2 2>&3
+    
+    if command -v whiptail &>/dev/null && whiptail --title "$title" --msgbox "$msg" $height $width 3>&1 1>&2 2>&3; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 whiptail_input() {
@@ -66,7 +92,12 @@ whiptail_input() {
     local default="$3"
     local height="${4:-10}"
     local width="${5:-60}"
-    whiptail --title "$title" --inputbox "$text" $height $width "$default" 3>&1 1>&2 2>&3
+    
+    if command -v whiptail &>/dev/null; then
+        whiptail --title "$title" --inputbox "$text" $height $width "$default" 3>&1 1>&2 2>&3
+    else
+        text_input "$title" "$text" "$default"
+    fi
 }
 
 whiptail_checklist() {
@@ -76,42 +107,12 @@ whiptail_checklist() {
     local width="$4"
     local listheight="$5"
     shift 5
-    whiptail --title "$title" --checklist "$text" $height $width $listheight "$@" 3>&1 1>&2 2>&3
-}
-
-# ==============================================
-# Funções de Detecção de Ambiente
-# ==============================================
-check_whiptail_available() {
-    if ! command -v whiptail &>/dev/null; then
-        return 1
+    
+    if command -v whiptail &>/dev/null; then
+        whiptail --title "$title" --checklist "$text" $height $width $listheight "$@" 3>&1 1>&2 2>&3
+    else
+        text_menu "$title" "$text" "$@"
     fi
-
-    # Testar se whiptail funciona realmente
-    if ! whiptail --title "Teste" --msgbox "Testando whiptail" 10 40 3>&1 1>&2 2>&3; then
-        return 1
-    fi
-
-    return 0
-}
-
-check_graphical_environment() {
-    # Verificar se estamos em terminal gráfico
-    if [[ -n "$DISPLAY" ]] || [[ "$TERM" == "xterm"* ]] || [[ "$TERM" == "screen"* ]] || [[ "$TERM" == "tmux"* ]]; then
-        return 0
-    fi
-
-    # Verificar se estamos via SSH
-    if [[ -n "$SSH_TTY" ]] || [[ -n "$SSH_CONNECTION" ]]; then
-        return 1
-    fi
-
-    # Verificar se é console serial
-    if [[ "$TERM" == "linux" ]] || [[ -t 0 ]]; then
-        return 1
-    fi
-
-    return 0
 }
 
 # ==============================================
@@ -192,8 +193,37 @@ text_msg() {
 }
 
 # ==============================================
-# Detecção de Sistema
+# Funções de Detecção de Ambiente
 # ==============================================
+check_whiptail_available() {
+    if command -v whiptail &>/dev/null; then
+        # Testar se whiptail funciona realmente
+        if whiptail --title "Teste" --msgbox "Testando whiptail" 10 40 3>&1 1>&2 2>&3; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+check_graphical_environment() {
+    # Verificar se estamos em terminal gráfico
+    if [[ -n "$DISPLAY" ]] || [[ "$TERM" == "xterm"* ]] || [[ "$TERM" == "screen"* ]] || [[ "$TERM" == "tmux"* ]]; then
+        return 0
+    fi
+
+    # Verificar se estamos via SSH
+    if [[ -n "$SSH_TTY" ]] || [[ -n "$SSH_CONNECTION" ]]; then
+        return 1
+    fi
+
+    # Verificar se é console serial
+    if [[ "$TERM" == "linux" ]] || [[ -t 0 ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
 detect_interface() {
     ip route | awk '/^default/ {print $5; exit}'
 }
@@ -268,7 +298,7 @@ load_config() {
                 # Exportar a variável de forma segura
                 if [[ -n "$key" ]]; then
                     export "$key"="$value"
-                    log_info "Variável carregada: $key='$value'"
+                    log_debug "Variável carregada: $key='$value'"
                 fi
             else
                 log_warn "Linha mal formada ignorada: '$line'"
@@ -570,224 +600,6 @@ get_service_status() {
 }
 
 # ==============================================
-# Instalação de Serviços
-# ==============================================
-install_unbound() {
-    log_info "Instalando Unbound..."
-    sudo apt install -y unbound unbound-anchor
-
-    cat << EOF | sudo tee /etc/unbound/unbound.conf.d/pi-hole.conf
-server:
-    verbosity: 1
-    interface: 127.0.0.1
-    port: 5335
-    do-ip4: yes
-    do-udp: yes
-    do-tcp: yes
-    do-ip6: no
-    harden-glue: yes
-    harden-dnssec-stripped: yes
-    use-caps-for-id: no
-    edns-buffer-size: 1232
-    prefetch: yes
-    num-threads: 1
-    so-rcvbuf: 512k
-    so-sndbuf: 512k
-    private-address: 192.168.0.0/16
-    private-address: 10.0.0.0/8
-    auto-trust-anchor-file: "/var/lib/unbound/root.key"
-    root-hints: "/var/lib/unbound/root.hints"
-EOF
-
-    sudo mkdir -p /var/lib/unbound
-    sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
-    sudo unbound-anchor -a /var/lib/unbound/root.key || {
-        sudo wget -O /tmp/root.key https://data.iana.org/root-anchors/icannbundle.pem
-        sudo mv /tmp/root.key /var/lib/unbound/root.key
-    }
-
-    sudo chown -R unbound:unbound /var/lib/unbound
-    sudo chmod 644 /var/lib/unbound/root.*
-
-    if sudo unbound-checkconf; then
-        sudo systemctl restart unbound
-        sudo systemctl enable unbound
-        log_info "Unbound instalado com sucesso"
-    else
-        log_error "Falha na configuração do Unbound"
-        return 1
-    fi
-}
-
-install_pihole() {
-    log_info "Instalando Pi-hole..."
-    if curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended; then
-        log_info "Pi-hole instalado"
-
-        log_info "Configurando Pi-hole para usar Unbound..."
-        sudo sed -i 's/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
-        pihole restartdns
-
-        log_info "Alterando portas do Pi-hole para 8081/8443..."
-        sudo sed -i 's/server.port\s*=\s*80/server.port = 8081/' /etc/lighttpd/lighttpd.conf
-        sudo bash -c 'echo "$SERVER[\"socket\"] == \":8443\" { ssl.engine = \"enable\" }" > /etc/lighttpd/external.conf'
-        sudo systemctl restart lighttpd
-        log_info "Pi-hole configurado com sucesso"
-    else
-        log_error "Falha na instalação do Pi-hole"
-        return 1
-    fi
-}
-
-install_wireguard() {
-    log_info "Instalando WireGuard..."
-    sudo apt install -y wireguard wireguard-tools
-
-    sudo mkdir -p /etc/wireguard/keys
-    sudo chmod 700 /etc/wireguard/keys
-    umask 077
-    wg genkey | sudo tee /etc/wireguard/keys/privatekey | wg pubkey | sudo tee /etc/wireguard/keys/publickey
-    local PRIVATE_KEY=$(sudo cat /etc/wireguard/keys/privatekey)
-
-    cat << EOF | sudo tee /etc/wireguard/wg0.conf
-[Interface]
-PrivateKey = $PRIVATE_KEY
-Address = 10.200.200.1/24
-ListenPort = 51820
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $NET_IF -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $NET_IF -j MASQUERADE
-EOF
-
-    sudo chmod 600 /etc/wireguard/wg0.conf
-
-    sudo sysctl -w net.ipv4.ip_forward=1
-    echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf
-
-    sudo systemctl enable wg-quick@wg0
-    sudo systemctl start wg-quick@wg0
-    log_info "WireGuard instalado com sucesso"
-}
-
-install_cloudflare() {
-    log_info "Instalando Cloudflare Tunnel..."
-    local ARCH=$(detect_arch)
-    local URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}"
-    sudo wget -O /usr/local/bin/cloudflared "$URL"
-    sudo chmod +x /usr/local/bin/cloudflared
-
-    sudo mkdir -p /etc/cloudflared
-    cat << EOF | sudo tee /etc/cloudflared/config.yml
-tunnel: boxserver
-credentials-file: /etc/cloudflared/boxserver.json
-ingress:
-  - hostname: $DOMAIN
-    service: http://localhost:8081
-  - service: http_status:404
-EOF
-    log_info "Cloudflare instalado. Execute manualmente:"
-    log_info "  cloudflared tunnel login"
-    log_info "  cloudflared tunnel create boxserver"
-}
-
-install_rng() {
-    log_info "Instalando RNG-tools..."
-    sudo apt install -y rng-tools
-
-    local RNGDEVICE="/dev/urandom"
-    [[ -e /dev/hwrng ]] && RNGDEVICE="/dev/hwrng"
-
-    cat << EOF | sudo tee /etc/default/rng-tools
-RNGDEVICE="$RNGDEVICE"
-RNGDOPTIONS="--fill-watermark=2048 --feed-interval=60 --timeout=10"
-EOF
-
-    sudo systemctl enable rng-tools
-    sudo systemctl restart rng-tools
-    log_info "RNG-tools instalado com sucesso"
-}
-
-install_samba() {
-    log_info "Instalando Samba..."
-    sudo apt install -y samba
-    sudo mkdir -p /srv/samba/share
-    sudo chmod 777 /srv/samba/share
-
-    cat << EOF | sudo tee -a /etc/samba/smb.conf
-
-[BoxShare]
-   path = /srv/samba/share
-   browseable = yes
-   read only = no
-   guest ok = yes
-EOF
-
-    sudo systemctl restart smbd
-    sudo systemctl enable smbd
-    log_info "Samba instalado. Configure usuários com: sudo smbpasswd -a <usuario>"
-}
-
-install_minidlna() {
-    log_info "Instalando MiniDLNA..."
-    sudo apt install -y minidlna
-    sudo mkdir -p /srv/media/{video,audio,photos}
-
-    cat << EOF | sudo tee /etc/minidlna.conf
-media_dir=V,/srv/media/video
-media_dir=A,/srv/media/audio
-media_dir=P,/srv/media/photos
-db_dir=/var/cache/minidlna
-log_dir=/var/log
-friendly_name=BoxServer DLNA
-inotify=yes
-port=8200
-EOF
-
-    sudo systemctl restart minidlna
-    sudo systemctl enable minidlna
-    log_info "MiniDLNA instalado com sucesso"
-}
-
-install_filebrowser() {
-    log_info "Instalando Filebrowser..."
-    local FB_VERSION=$(curl -s https://api.github.com/repos/filebrowser/filebrowser/releases/latest | grep tag_name | cut -d '"' -f4)
-    local ARCH=$(detect_arch)
-    case "$ARCH" in
-        amd64) FB_ARCH="linux-amd64";;
-        arm64) FB_ARCH="linux-arm64";;
-        arm) FB_ARCH="linux-armv6";;
-        *) log_error "Arquitetura não suportada pelo Filebrowser"; return 1;;
-    esac
-
-    wget -O filebrowser.tar.gz "https://github.com/filebrowser/filebrowser/releases/download/${FB_VERSION}/filebrowser-${FB_ARCH}.tar.gz"
-    tar -xzf filebrowser.tar.gz
-    sudo mv filebrowser /usr/local/bin/
-    rm -f filebrowser.tar.gz
-
-    sudo mkdir -p /srv/filebrowser
-    sudo useradd -r -s /bin/false filebrowser || true
-
-    cat << EOF | sudo tee /etc/systemd/system/filebrowser.service
-[Unit]
-Description=Filebrowser
-After=network.target
-
-[Service]
-User=filebrowser
-ExecStart=/usr/local/bin/filebrowser -r /srv/filebrowser --port 8080
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reexec
-    sudo systemctl enable filebrowser
-    sudo systemctl start filebrowser
-
-    log_info "Filebrowser instalado! Acesse http://<IP>:8080 (usuário: admin, senha: admin)"
-}
-
-# ==============================================
 # Verificação de Requisitos do Sistema
 # ==============================================
 check_system_requirements() {
@@ -878,78 +690,353 @@ check_system_requirements() {
 }
 
 # ==============================================
-# Funções de Segurança e Validação
+# Instalação de Serviços
 # ==============================================
-validate_config() {
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        log_error "Arquivo de configuração não encontrado: $CONFIG_FILE"
-        return 1
-    fi
-
-    # Validar variáveis obrigatórias
-    local required_vars=("NET_IF" "DOMAIN" "ARCH")
-    for var in "${required_vars[@]}"; do
-        if [[ -z "${!var:-}" ]]; then
-            log_error "Variável obrigatória não definida: $var"
-            return 1
+install_unbound() {
+    log_info "Instalando Unbound..."
+    
+    # Verificar se já está instalado
+    if check_service_installed "UNBOUND" "unbound"; then
+        log_info "Unbound já está instalado"
+        if check_service_running "unbound"; then
+            log_info "Unbound já está em execução"
+            return 0
+        else
+            log_warn "Unbound instalado mas inativo, iniciando..."
+            sudo systemctl start unbound
+            return 0
         fi
-    done
-
-    log_info "Configuração validada com sucesso"
-    return 0
-}
-
-check_security() {
-    log_info "Verificando configurações de segurança..."
-
-    # Verificar se o sistema está atualizado
-    local security_updates=$(apt list --upgradable 2>/dev/null | grep -c security)
-    if [[ $security_updates -gt 0 ]]; then
-        log_warn "⚠ $security_updates atualizações de segurança disponíveis"
-        log_warn "   Execute: sudo apt update && sudo apt upgrade"
-    else
-        log_info "✓ Sistema atualizado"
     fi
+    
+    # Instalar pacotes
+    sudo apt install -y unbound unbound-anchor
 
-    # Verificar firewall
-    if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
-        log_info "✓ Firewall ativo"
-    else
-        log_warn "⚠ Firewall não está ativo"
-    fi
-
-    # Verificar senha root
-    if [[ $(passwd --status root | awk '{print $2}') == "L" ]]; then
-        log_warn "⚠ Conta root está bloqueada (isso é bom para segurança)"
-    fi
-
-    log_info "Verificação de segurança concluída"
-}
-
-create_emergency_rollback() {
-    local timestamp=$(date +%Y%m%d_%H%M%S)
-    local rollback_file="$BACKUP_DIR/rollback_$timestamp.sh"
-
-    cat > "$rollback_file" << EOF
-#!/bin/bash
-# Script de rollback de emergência - Gerado automaticamente
-# Data: $(date)
-# Não modifique este arquivo manualmente
-
-echo "Iniciando rollback de emergência..."
-echo "Este script restaurará o sistema ao estado anterior"
-
-# Restaurar backups se disponíveis
-if [[ -d "$BACKUP_DIR" ]]; then
-    echo "Restaurando backups..."
-    # Adicione comandos de restauração específicos aqui
-fi
-
-echo "Rollback concluído"
+    # Criar configuração
+    cat << EOF | sudo tee /etc/unbound/unbound.conf.d/pi-hole.conf
+server:
+    verbosity: 1
+    interface: 127.0.0.1
+    port: 5335
+    do-ip4: yes
+    do-udp: yes
+    do-tcp: yes
+    do-ip6: no
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    use-caps-for-id: no
+    edns-buffer-size: 1232
+    prefetch: yes
+    num-threads: 1
+    so-rcvbuf: 512k
+    so-sndbuf: 512k
+    private-address: 192.168.0.0/16
+    private-address: 10.0.0.0/8
+    auto-trust-anchor-file: "/var/lib/unbound/root.key"
+    root-hints: "/var/lib/unbound/root.hints"
 EOF
 
-    chmod +x "$rollback_file"
-    log_info "Script de rollback criado: $rollback_file"
+    # Configurar arquivos necessários
+    sudo mkdir -p /var/lib/unbound
+    sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
+    sudo unbound-anchor -a /var/lib/unbound/root.key || {
+        sudo wget -O /tmp/root.key https://data.iana.org/root-anchors/icannbundle.pem
+        sudo mv /tmp/root.key /var/lib/unbound/root.key
+    }
+
+    sudo chown -R unbound:unbound /var/lib/unbound
+    sudo chmod 644 /var/lib/unbound/root.*
+
+    # Verificar configuração e iniciar serviço
+    if sudo unbound-checkconf; then
+        sudo systemctl restart unbound
+        sudo systemctl enable unbound
+        log_info "Unbound instalado com sucesso"
+    else
+        log_error "Falha na configuração do Unbound"
+        return 1
+    fi
+}
+
+install_pihole() {
+    log_info "Instalando Pi-hole..."
+    
+    # Verificar se já está instalado
+    if check_service_installed "PIHOLE" "pi-hole-core"; then
+        log_info "Pi-hole já está instalado"
+        if check_service_running "lighttpd"; then
+            log_info "Pi-hole já está em execução"
+            return 0
+        else
+            log_warn "Pi-hole instalado mas inativo, iniciando..."
+            sudo systemctl start lighttpd
+            return 0
+        fi
+    fi
+    
+    # Instalar Pi-hole
+    if curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended; then
+        log_info "Pi-hole instalado"
+
+        log_info "Configurando Pi-hole para usar Unbound..."
+        sudo sed -i 's/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
+        pihole restartdns
+
+        log_info "Alterando portas do Pi-hole para 8081/8443..."
+        sudo sed -i 's/server.port\s*=\s*80/server.port = 8081/' /etc/lighttpd/lighttpd.conf
+        sudo bash -c 'echo "$SERVER[\"socket\"] == \":8443\" { ssl.engine = \"enable\" }" > /etc/lighttpd/external.conf'
+        sudo systemctl restart lighttpd
+        log_info "Pi-hole configurado com sucesso"
+    else
+        log_error "Falha na instalação do Pi-hole"
+        return 1
+    fi
+}
+
+install_wireguard() {
+    log_info "Instalando WireGuard..."
+    
+    # Verificar se já está instalado
+    if check_service_installed "WIREGUARD" "wireguard"; then
+        log_info "WireGuard já está instalado"
+        if check_service_running "wg-quick@wg0"; then
+            log_info "WireGuard já está em execução"
+            return 0
+        else
+            log_warn "WireGuard instalado mas inativo, iniciando..."
+            sudo systemctl start wg-quick@wg0
+            return 0
+        fi
+    fi
+    
+    # Instalar pacotes
+    sudo apt install -y wireguard wireguard-tools
+
+    # Criar diretórios e chaves
+    sudo mkdir -p /etc/wireguard/keys
+    sudo chmod 700 /etc/wireguard/keys
+    umask 077
+    wg genkey | sudo tee /etc/wireguard/keys/privatekey | wg pubkey | sudo tee /etc/wireguard/keys/publickey
+    local PRIVATE_KEY=$(sudo cat /etc/wireguard/keys/privatekey)
+
+    # Criar configuração
+    cat << EOF | sudo tee /etc/wireguard/wg0.conf
+[Interface]
+PrivateKey = $PRIVATE_KEY
+Address = 10.200.200.1/24
+ListenPort = 51820
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o $NET_IF -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $NET_IF -j MASQUERADE
+EOF
+
+    sudo chmod 600 /etc/wireguard/wg0.conf
+
+    # Configurar forwarding
+    sudo sysctl -w net.ipv4.ip_forward=1
+    echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf
+
+    # Iniciar e habilitar serviço
+    sudo systemctl enable wg-quick@wg0
+    sudo systemctl start wg-quick@wg0
+    log_info "WireGuard instalado com sucesso"
+}
+
+install_cloudflare() {
+    log_info "Instalando Cloudflare Tunnel..."
+    
+    # Verificar se já está instalado
+    if [[ -f "/usr/local/bin/cloudflared" ]]; then
+        log_info "Cloudflare já está instalado"
+        return 0
+    fi
+    
+    # Baixar e instalar
+    local ARCH=$(detect_arch)
+    local URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}"
+    sudo wget -O /usr/local/bin/cloudflared "$URL"
+    sudo chmod +x /usr/local/bin/cloudflared
+
+    # Criar configuração
+    sudo mkdir -p /etc/cloudflared
+    cat << EOF | sudo tee /etc/cloudflared/config.yml
+tunnel: boxserver
+credentials-file: /etc/cloudflared/boxserver.json
+ingress:
+  - hostname: $DOMAIN
+    service: http://localhost:8081
+  - service: http_status:404
+EOF
+    log_info "Cloudflare instalado. Execute manualmente:"
+    log_info "  cloudflared tunnel login"
+    log_info "  cloudflared tunnel create boxserver"
+}
+
+install_rng() {
+    log_info "Instalando RNG-tools..."
+    
+    # Verificar se já está instalado
+    if check_service_installed "RNG" "rng-tools"; then
+        log_info "RNG-tools já está instalado"
+        if check_service_running "rng-tools"; then
+            log_info "RNG-tools já está em execução"
+            return 0
+        else
+            log_warn "RNG-tools instalado mas inativo, iniciando..."
+            sudo systemctl start rng-tools
+            return 0
+        fi
+    fi
+    
+    # Instalar pacotes
+    sudo apt install -y rng-tools
+
+    # Configurar
+    local RNGDEVICE="/dev/urandom"
+    [[ -e /dev/hwrng ]] && RNGDEVICE="/dev/hwrng"
+
+    cat << EOF | sudo tee /etc/default/rng-tools
+RNGDEVICE="$RNGDEVICE"
+RNGDOPTIONS="--fill-watermark=2048 --feed-interval=60 --timeout=10"
+EOF
+
+    # Iniciar e habilitar serviço
+    sudo systemctl enable rng-tools
+    sudo systemctl restart rng-tools
+    log_info "RNG-tools instalado com sucesso"
+}
+
+install_samba() {
+    log_info "Instalando Samba..."
+    
+    # Verificar se já está instalado
+    if check_service_installed "SAMBA" "samba"; then
+        log_info "Samba já está instalado"
+        if systemctl is-active --quiet smbd; then
+            log_info "Samba já está em execução"
+            return 0
+        else
+            log_warn "Samba instalado mas inativo, iniciando..."
+            sudo systemctl start smbd
+            return 0
+        fi
+    fi
+    
+    # Instalar pacotes
+    sudo apt install -y samba
+    sudo mkdir -p /srv/samba/share
+    sudo chmod 755 /srv/samba/share
+
+    # Configurar
+    cat << EOF | sudo tee -a /etc/samba/smb.conf
+
+[BoxShare]
+   path = /srv/samba/share
+   browseable = yes
+   read only = no
+   guest ok = yes
+EOF
+
+    # Iniciar e habilitar serviço
+    sudo systemctl restart smbd
+    sudo systemctl enable smbd
+    log_info "Samba instalado. Configure usuários com: sudo smbpasswd -a <usuario>"
+}
+
+install_minidlna() {
+    log_info "Instalando MiniDLNA..."
+    
+    # Verificar se já está instalado
+    if check_service_installed "MINIDLNA" "minidlna"; then
+        log_info "MiniDLNA já está instalado"
+        if check_service_running "minidlna"; then
+            log_info "MiniDLNA já está em execução"
+            return 0
+        else
+            log_warn "MiniDLNA instalado mas inativo, iniciando..."
+            sudo systemctl start minidlna
+            return 0
+        fi
+    fi
+    
+    # Instalar pacotes
+    sudo apt install -y minidlna
+    sudo mkdir -p /srv/media/{video,audio,photos}
+
+    # Configurar
+    cat << EOF | sudo tee /etc/minidlna.conf
+media_dir=V,/srv/media/video
+media_dir=A,/srv/media/audio
+media_dir=P,/srv/media/photos
+db_dir=/var/cache/minidlna
+log_dir=/var/log
+friendly_name=BoxServer DLNA
+inotify=yes
+port=8200
+EOF
+
+    # Iniciar e habilitar serviço
+    sudo systemctl restart minidlna
+    sudo systemctl enable minidlna
+    log_info "MiniDLNA instalado com sucesso"
+}
+
+install_filebrowser() {
+    log_info "Instalando Filebrowser..."
+    
+    # Verificar se já está instalado
+    if [[ -f "/etc/systemd/system/filebrowser.service" ]]; then
+        log_info "Filebrowser já está instalado"
+        if check_service_running "filebrowser"; then
+            log_info "Filebrowser já está em execução"
+            return 0
+        else
+            log_warn "Filebrowser instalado mas inativo, iniciando..."
+            sudo systemctl start filebrowser
+            return 0
+        fi
+    fi
+    
+    # Baixar e instalar
+    local FB_VERSION=$(curl -s https://api.github.com/repos/filebrowser/filebrowser/releases/latest | grep tag_name | cut -d '"' -f4)
+    local ARCH=$(detect_arch)
+    local FB_ARCH=""
+    
+    case "$ARCH" in
+        amd64) FB_ARCH="linux-amd64";;
+        arm64) FB_ARCH="linux-arm64";;
+        arm) FB_ARCH="linux-armv6";;
+        *) log_error "Arquitetura não suportada pelo Filebrowser"; return 1;;
+    esac
+
+    wget -O filebrowser.tar.gz "https://github.com/filebrowser/filebrowser/releases/download/${FB_VERSION}/filebrowser-${FB_ARCH}.tar.gz"
+    tar -xzf filebrowser.tar.gz
+    sudo mv filebrowser /usr/local/bin/
+    rm -f filebrowser.tar.gz
+
+    # Configurar usuário e diretórios
+    sudo mkdir -p /srv/filebrowser
+    sudo useradd -r -s /bin/false filebrowser || true
+
+    # Criar serviço systemd
+    cat << EOF | sudo tee /etc/systemd/system/filebrowser.service
+[Unit]
+Description=Filebrowser
+After=network.target
+
+[Service]
+User=filebrowser
+ExecStart=/usr/local/bin/filebrowser -r /srv/filebrowser --port 8080
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Iniciar e habilitar serviço
+    sudo systemctl daemon-reexec
+    sudo systemctl enable filebrowser
+    sudo systemctl start filebrowser
+
+    log_info "Filebrowser instalado! Acesse http://<IP>:8080 (usuário: admin, senha: admin)"
 }
 
 # ==============================================
@@ -1074,111 +1161,21 @@ uninstall_filebrowser() {
 }
 
 # ==============================================
-# Instalação Completa
+# Funções de Operação
 # ==============================================
 install_services() {
     local services=("$@")
 
     for service in "${services[@]}"; do
         case "$service" in
-            "UNBOUND")
-                if check_service_installed "UNBOUND" "unbound"; then
-                    log_info "Unbound já está instalado"
-                    if check_service_running "unbound"; then
-                        log_info "Unbound já está em execução"
-                    else
-                        log_warn "Unbound instalado mas inativo, iniciando..."
-                        sudo systemctl start unbound
-                    fi
-                else
-                    install_unbound
-                fi
-                ;;
-            "PIHOLE")
-                if check_service_installed "PIHOLE" "pi-hole-core"; then
-                    log_info "Pi-hole já está instalado"
-                    if check_service_running "lighttpd"; then
-                        log_info "Pi-hole já está em execução"
-                    else
-                        log_warn "Pi-hole instalado mas inativo, iniciando..."
-                        sudo systemctl start lighttpd
-                    fi
-                else
-                    install_pihole
-                fi
-                ;;
-            "WIREGUARD")
-                if check_service_installed "WIREGUARD" "wireguard"; then
-                    log_info "WireGuard já está instalado"
-                    if check_service_running "wg-quick@wg0"; then
-                        log_info "WireGuard já está em execução"
-                    else
-                        log_warn "WireGuard instalado mas inativo, iniciando..."
-                        sudo systemctl start wg-quick@wg0
-                    fi
-                else
-                    install_wireguard
-                fi
-                ;;
-            "CLOUDFLARE")
-                if [[ -f "/usr/local/bin/cloudflared" ]]; then
-                    log_info "Cloudflare já está instalado"
-                else
-                    install_cloudflare
-                fi
-                ;;
-            "RNG")
-                if check_service_installed "RNG" "rng-tools"; then
-                    log_info "RNG-tools já está instalado"
-                    if check_service_running "rng-tools"; then
-                        log_info "RNG-tools já está em execução"
-                    else
-                        log_warn "RNG-tools instalado mas inativo, iniciando..."
-                        sudo systemctl start rng-tools
-                    fi
-                else
-                    install_rng
-                fi
-                ;;
-            "SAMBA")
-                if check_service_installed "SAMBA" "samba"; then
-                    log_info "Samba já está instalado"
-                    if systemctl is-active --quiet smbd; then
-                        log_info "Samba já está em execução"
-                    else
-                        log_warn "Samba instalado mas inativo, iniciando..."
-                        sudo systemctl start smbd
-                    fi
-                else
-                    install_samba
-                fi
-                ;;
-            "MINIDLNA")
-                if check_service_installed "MINIDLNA" "minidlna"; then
-                    log_info "MiniDLNA já está instalado"
-                    if check_service_running "minidlna"; then
-                        log_info "MiniDLNA já está em execução"
-                    else
-                        log_warn "MiniDLNA instalado mas inativo, iniciando..."
-                        sudo systemctl start minidlna
-                    fi
-                else
-                    install_minidlna
-                fi
-                ;;
-            "FILEBROWSER")
-                if [[ -f "/etc/systemd/system/filebrowser.service" ]]; then
-                    log_info "Filebrowser já está instalado"
-                    if check_service_running "filebrowser"; then
-                        log_info "Filebrowser já está em execução"
-                    else
-                        log_warn "Filebrowser instalado mas inativo, iniciando..."
-                        sudo systemctl start filebrowser
-                    fi
-                else
-                    install_filebrowser
-                fi
-                ;;
+            "UNBOUND") install_unbound ;;
+            "PIHOLE") install_pihole ;;
+            "WIREGUARD") install_wireguard ;;
+            "CLOUDFLARE") install_cloudflare ;;
+            "RNG") install_rng ;;
+            "SAMBA") install_samba ;;
+            "MINIDLNA") install_minidlna ;;
+            "FILEBROWSER") install_filebrowser ;;
             *) log_error "Serviço desconhecido: $service" ;;
         esac
     done
@@ -1217,9 +1214,11 @@ interactive_install() {
 
     local NET_IF=$(detect_interface)
     if [[ "$use_whiptail" == "true" ]]; then
-        NET_IF=$(whiptail_input "Interface de Rede" "Interface detectada: $NET_IF\nConfirme ou edite:" "$NET_IF")
+        NET_IF=$(whiptail_input "Interface de Rede" "Interface detectada: $NET_IF
+Confirme ou edite:" "$NET_IF")
     else
-        NET_IF=$(text_input "Interface de Rede" "Interface detectada: $NET_IF\nConfirme ou edite:" "$NET_IF")
+        NET_IF=$(text_input "Interface de Rede" "Interface detectada: $NET_IF
+Confirme ou edite:" "$NET_IF")
     fi
     export NET_IF
 
@@ -1264,6 +1263,10 @@ interactive_install() {
         exit 1
     fi
 
+    # Armazenar serviços selecionados
+    SELECTED_SERVICES=($CHOICES)
+    export CHOICES
+
     save_config
     check_ports
     install_services $CHOICES
@@ -1282,6 +1285,9 @@ non_interactive_install() {
         log_error "Nenhum serviço especificado para instalação não-interativa"
         exit 1
     fi
+
+    # Armazenar serviços selecionados
+    SELECTED_SERVICES=($CHOICES)
 
     save_config
     check_ports
@@ -1343,24 +1349,13 @@ show_status() {
     log_info "Verificando status completo dos serviços..."
     log_info "========================================"
 
-    local services=(
-        "UNBOUND:unbound:Unbound:/etc/unbound/unbound.conf.d/pi-hole.conf"
-        "PIHOLE:lighttpd:Pi-hole:/etc/pihole/setupVars.conf"
-        "WIREGUARD:wg-quick@wg0:WireGuard:/etc/wireguard/wg0.conf"
-        "CLOUDFLARE::Cloudflare:/etc/cloudflared/config.yml"
-        "RNG:rng-tools:RNG-tools:/etc/default/rng-tools"
-        "SAMBA::Samba:/etc/samba/smb.conf"
-        "MINIDLNA:minidlna:MiniDLNA:/etc/minidlna.conf"
-        "FILEBROWSER:filebrowser:Filebrowser:/etc/systemd/system/filebrowser.service"
-    )
-
-    for service_info in "${services[@]}"; do
+    for service_info in "${SERVICES[@]}"; do
         local service_key=$(echo "$service_info" | cut -d: -f1)
         local service_system=$(echo "$service_info" | cut -d: -f2)
         local display_name=$(echo "$service_info" | cut -d: -f3)
         local config_file=$(echo "$service_info" | cut -d: -f4)
 
-        get_service_status "$service_key" "$display_name" "$service_key" "$config_file"
+        get_service_status "$service_key" "$display_name" "$service_system" "$config_file"
     done
 
     log_info "========================================"
@@ -1390,35 +1385,35 @@ repair_service() {
     log_info "Reparando $display_name..."
 
     case "$service_name" in
-        "UNBOUND")
+        "unbound")
             sudo systemctl restart unbound
             sudo systemctl enable unbound
             ;;
-        "PIHOLE")
+        "lighttpd")
             sudo systemctl restart lighttpd
             sudo systemctl enable lighttpd
             pihole restartdns 2>/dev/null || true
             ;;
-        "WIREGUARD")
+        "wg-quick@wg0")
             sudo systemctl restart wg-quick@wg0
             sudo systemctl enable wg-quick@wg0
             ;;
-        "CLOUDFLARE")
+        "")
             log_warn "Cloudflare requer configuração manual"
             ;;
-        "RNG")
+        "rng-tools")
             sudo systemctl restart rng-tools
             sudo systemctl enable rng-tools
             ;;
-        "SAMBA")
+        "smbd")
             sudo systemctl restart smbd
             sudo systemctl enable smbd
             ;;
-        "MINIDLNA")
+        "minidlna")
             sudo systemctl restart minidlna
             sudo systemctl enable minidlna
             ;;
-        "FILEBROWSER")
+        "filebrowser")
             sudo systemctl restart filebrowser
             sudo systemctl enable filebrowser
             ;;
@@ -1487,7 +1482,7 @@ generate_report() {
     {
         echo "BoxServer - Relatório Completo"
         echo "Data: $(date)"
-        echo "Versão: 2.2"
+        echo "Versão: 2.4"
         echo "========================================"
         echo ""
 
@@ -1537,11 +1532,67 @@ generate_report() {
 }
 
 # ==============================================
+# Funções de Segurança e Validação
+# ==============================================
+check_security() {
+    log_info "Verificando configurações de segurança..."
+
+    # Verificar se o sistema está atualizado
+    local security_updates=$(apt list --upgradable 2>/dev/null | grep -c security)
+    if [[ $security_updates -gt 0 ]]; then
+        log_warn "⚠ $security_updates atualizações de segurança disponíveis"
+        log_warn "   Execute: sudo apt update && sudo apt upgrade"
+    else
+        log_info "✓ Sistema atualizado"
+    fi
+
+    # Verificar firewall
+    if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+        log_info "✓ Firewall ativo"
+    else
+        log_warn "⚠ Firewall não está ativo"
+    fi
+
+    # Verificar senha root
+    if [[ $(passwd --status root | awk '{print $2}') == "L" ]]; then
+        log_warn "⚠ Conta root está bloqueada (isso é bom para segurança)"
+    fi
+
+    log_info "Verificação de segurança concluída"
+}
+
+create_emergency_rollback() {
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local rollback_file="$BACKUP_DIR/rollback_$timestamp.sh"
+
+    cat > "$rollback_file" << EOF
+#!/bin/bash
+# Script de rollback de emergência - Gerado automaticamente
+# Data: $(date)
+# Não modifique este arquivo manualmente
+
+echo "Iniciando rollback de emergência..."
+echo "Este script restaurará o sistema ao estado anterior"
+
+# Restaurar backups se disponíveis
+if [[ -d "$BACKUP_DIR" ]]; then
+    echo "Restaurando backups..."
+    # Adicione comandos de restauração específicos aqui
+fi
+
+echo "Rollback concluído"
+EOF
+
+    chmod +x "$rollback_file"
+    log_info "Script de rollback criado: $rollback_file"
+}
+
+# ==============================================
 # Help e Argumentos
 # ==============================================
 show_help() {
     cat << EOF
-BoxServer - Instalador Profissional Versão 2.2
+BoxServer - Instalador Profissional Versão 2.4
 
 Uso: sudo $0 [opção] [--non-interactive]
 
@@ -1682,7 +1733,7 @@ main() {
 
     log_info "Iniciando BoxServer Installer"
     log_info "Modo: $INSTALL_MODE"
-    log_info "Versão: 2.2"
+    log_info "Versão: 2.4"
     log_info "========================================"
 
     # Verificar requisitos do sistema
@@ -1823,36 +1874,24 @@ main() {
             show_status
             echo
             log_info "Reparando todos os serviços instalados..."
-            local all_services=("UNBOUND" "PIHOLE" "WIREGUARD" "CLOUDFLARE" "RNG" "SAMBA" "MINIDLNA" "FILEBROWSER")
-            for service in "${all_services[@]}"; do
-                case "$service" in
-                    "UNBOUND") repair_service "unbound" "Unbound" ;;
-                    "PIHOLE") repair_service "lighttpd" "Pi-hole" ;;
-                    "WIREGUARD") repair_service "wg-quick@wg0" "WireGuard" ;;
-                    "CLOUDFLARE") repair_service "" "Cloudflare" ;;
-                    "RNG") repair_service "rng-tools" "RNG-tools" ;;
-                    "SAMBA") repair_service "smbd" "Samba" ;;
-                    "MINIDLNA") repair_service "minidlna" "MiniDLNA" ;;
-                    "FILEBROWSER") repair_service "filebrowser" "Filebrowser" ;;
-                esac
+            for service_info in "${SERVICES[@]}"; do
+                local service_key=$(echo "$service_info" | cut -d: -f1)
+                local service_system=$(echo "$service_info" | cut -d: -f2)
+                local display_name=$(echo "$service_info" | cut -d: -f3)
+                
+                # Converter para minúsculas para compatibilidade com repair_service
+                local service_system_lower=$(echo "$service_system" | tr '[:upper:]' '[:lower:]')
+                repair_service "$service_system_lower" "$display_name"
             done
             log_info "Reparo concluído"
             ;;
         "validate")
             log_info "Validando instalações existentes..."
-            local all_services=("UNBOUND" "PIHOLE" "WIREGUARD" "CLOUDFLARE" "RNG" "SAMBA" "MINIDLNA" "FILEBROWSER")
             local validation_success=0
-            for service in "${all_services[@]}"; do
-                case "$service" in
-                    "UNBOUND") validate_installation "UNBOUND" "Unbound" || validation_success=1 ;;
-                    "PIHOLE") validate_installation "PIHOLE" "Pi-hole" || validation_success=1 ;;
-                    "WIREGUARD") validate_installation "WIREGUARD" "WireGuard" || validation_success=1 ;;
-                    "CLOUDFLARE") validate_installation "CLOUDFLARE" "Cloudflare" || validation_success=1 ;;
-                    "RNG") validate_installation "RNG" "RNG-tools" || validation_success=1 ;;
-                    "SAMBA") validate_installation "SAMBA" "Samba" || validation_success=1 ;;
-                    "MINIDLNA") validate_installation "MINIDLNA" "MiniDLNA" || validation_success=1 ;;
-                    "FILEBROWSER") validate_installation "FILEBROWSER" "Filebrowser" || validation_success=1 ;;
-                esac
+            for service_info in "${SERVICES[@]}"; do
+                local service_key=$(echo "$service_info" | cut -d: -f1)
+                local display_name=$(echo "$service_info" | cut -d: -f3)
+                validate_installation "$service_key" "$display_name" || validation_success=1
             done
             if [[ $validation_success -eq 0 ]]; then
                 log_info "✓ Todas as instalações validadas com sucesso"
