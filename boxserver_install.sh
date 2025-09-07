@@ -80,6 +80,118 @@ whiptail_checklist() {
 }
 
 # ==============================================
+# Funções de Detecção de Ambiente
+# ==============================================
+check_whiptail_available() {
+    if ! command -v whiptail &>/dev/null; then
+        return 1
+    fi
+
+    # Testar se whiptail funciona realmente
+    if ! whiptail --title "Teste" --msgbox "Testando whiptail" 10 40 3>&1 1>&2 2>&3; then
+        return 1
+    fi
+
+    return 0
+}
+
+check_graphical_environment() {
+    # Verificar se estamos em terminal gráfico
+    if [[ -n "$DISPLAY" ]] || [[ "$TERM" == "xterm"* ]] || [[ "$TERM" == "screen"* ]] || [[ "$TERM" == "tmux"* ]]; then
+        return 0
+    fi
+
+    # Verificar se estamos via SSH
+    if [[ -n "$SSH_TTY" ]] || [[ -n "$SSH_CONNECTION" ]]; then
+        return 1
+    fi
+
+    # Verificar se é console serial
+    if [[ "$TERM" == "linux" ]] || [[ -t 0 ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
+# ==============================================
+# Funções de Fallback Textual
+# ==============================================
+text_input() {
+    local title="$1"
+    local text="$2"
+    local default="$3"
+
+    echo "========================================"
+    echo "$title"
+    echo "========================================"
+    echo "$text"
+    echo -n "[$default]: "
+    read -r input
+
+    if [[ -z "$input" ]]; then
+        echo "$default"
+    else
+        echo "$input"
+    fi
+}
+
+text_menu() {
+    local title="$1"
+    local text="$2"
+    shift 2
+
+    echo "========================================"
+    echo "$title"
+    echo "========================================"
+    echo "$text"
+    echo
+
+    local options=()
+    local i=1
+
+    while [[ $# -gt 0 ]]; do
+        if [[ $1 == "ON" ]] || [[ $1 == "OFF" ]]; then
+            shift
+            continue
+        fi
+
+        echo "$i. $1 - $2"
+        options+=("$1")
+        shift 2
+        ((i++))
+    done
+
+    echo
+    echo -n "Selecione as opções (separadas por vírgula): "
+    read -r choices
+
+    local selected=""
+    IFS=',' read -ra choice_array <<< "$choices"
+    for choice in "${choice_array[@]}"; do
+        choice=$(echo "$choice" | tr -d ' ')
+        if [[ $choice -ge 1 ]] && [[ $choice -le ${#options[@]} ]]; then
+            selected="$selected ${options[$((choice-1))]}"
+        fi
+    done
+
+    echo "$selected" | xargs
+}
+
+text_msg() {
+    local title="$1"
+    local msg="$2"
+
+    echo "========================================"
+    echo "$title"
+    echo "========================================"
+    echo "$msg"
+    echo
+    echo "Pressione Enter para continuar..."
+    read -r
+}
+
+# ==============================================
 # Detecção de Sistema
 # ==============================================
 detect_interface() {
@@ -1096,27 +1208,56 @@ uninstall_services() {
 interactive_install() {
     log_info "Iniciando instalação interativa"
 
+    # Verificar se whiptail está disponível e funciona
+    local use_whiptail=true
+    if ! check_whiptail_available || ! check_graphical_environment; then
+        log_warn "Whiptail não disponível ou ambiente não gráfico, usando modo textual"
+        use_whiptail=false
+    fi
+
     local NET_IF=$(detect_interface)
-    NET_IF=$(whiptail_input "Interface de Rede" "Interface detectada: $NET_IF\nConfirme ou edite:" "$NET_IF")
+    if [[ "$use_whiptail" == "true" ]]; then
+        NET_IF=$(whiptail_input "Interface de Rede" "Interface detectada: $NET_IF\nConfirme ou edite:" "$NET_IF")
+    else
+        NET_IF=$(text_input "Interface de Rede" "Interface detectada: $NET_IF\nConfirme ou edite:" "$NET_IF")
+    fi
     export NET_IF
 
-    local DOMAIN=$(whiptail_input "Domínio" "Digite o domínio para acessar o Pi-hole:" "pihole.local")
+    local DOMAIN="pihole.local"
+    if [[ "$use_whiptail" == "true" ]]; then
+        DOMAIN=$(whiptail_input "Domínio" "Digite o domínio para acessar o Pi-hole:" "$DOMAIN")
+    else
+        DOMAIN=$(text_input "Domínio" "Digite o domínio para acessar o Pi-hole:" "$DOMAIN")
+    fi
     export DOMAIN
 
     local ARCH=$(detect_arch)
     log_info "Arquitetura detectada: $ARCH"
     export ARCH
 
-    local CHOICES=$(whiptail_checklist "Seleção de Componentes" "Escolha os serviços que deseja instalar:" 20 70 10 \
-        "UNBOUND" "DNS recursivo (automático)" ON \
-        "PIHOLE" "Bloqueio de anúncios (manual, portas 8081/8443)" ON \
-        "WIREGUARD" "VPN segura (server auto, peers manuais)" OFF \
-        "CLOUDFLARE" "Acesso remoto (login manual)" OFF \
-        "RNG" "Gerador de entropia (automático)" ON \
-        "SAMBA" "Compartilhamento de arquivos" OFF \
-        "MINIDLNA" "Servidor DLNA" OFF \
-        "FILEBROWSER" "Gerenciador de arquivos Web" OFF \
-        3>&1 1>&2 2>&3)
+    local CHOICES=""
+    if [[ "$use_whiptail" == "true" ]]; then
+        CHOICES=$(whiptail_checklist "Seleção de Componentes" "Escolha os serviços que deseja instalar:" 20 70 10 \
+            "UNBOUND" "DNS recursivo (automático)" ON \
+            "PIHOLE" "Bloqueio de anúncios (manual, portas 8081/8443)" ON \
+            "WIREGUARD" "VPN segura (server auto, peers manuais)" OFF \
+            "CLOUDFLARE" "Acesso remoto (login manual)" OFF \
+            "RNG" "Gerador de entropia (automático)" ON \
+            "SAMBA" "Compartilhamento de arquivos" OFF \
+            "MINIDLNA" "Servidor DLNA" OFF \
+            "FILEBROWSER" "Gerenciador de arquivos Web" OFF \
+            3>&1 1>&2 2>&3)
+    else
+        CHOICES=$(text_menu "Seleção de Componentes" "Escolha os serviços que deseja instalar:" \
+            "UNBOUND" "DNS recursivo (automático)" \
+            "PIHOLE" "Bloqueio de anúncios (manual, portas 8081/8443)" \
+            "WIREGUARD" "VPN segura (server auto, peers manuais)" \
+            "CLOUDFLARE" "Acesso remoto (login manual)" \
+            "RNG" "Gerador de entropia (automático)" \
+            "SAMBA" "Compartilhamento de arquivos" \
+            "MINIDLNA" "Servidor DLNA" \
+            "FILEBROWSER" "Gerenciador de arquivos Web")
+    fi
 
     if [[ -z "$CHOICES" ]]; then
         log_error "Nenhum serviço selecionado"
@@ -1127,7 +1268,11 @@ interactive_install() {
     check_ports
     install_services $CHOICES
 
-    whiptail_msg "Instalação Concluída" "Instalação concluída! Revise o log em $LOGFILE"
+    if [[ "$use_whiptail" == "true" ]]; then
+        whiptail_msg "Instalação Concluída" "Instalação concluída! Revise o log em $LOGFILE"
+    else
+        text_msg "Instalação Concluída" "Instalação concluída! Revise o log em $LOGFILE"
+    fi
 }
 
 non_interactive_install() {
@@ -1611,6 +1756,19 @@ main() {
 
     if [[ "${DRY_RUN:-false}" == "true" ]]; then
         log_info "Executando em modo dry-run - nenhuma alteração será feita"
+    fi
+
+    # Verificar ambiente antes de iniciar instalação interativa
+    if [[ "$INTERACTIVE" == "true" ]] && ! check_whiptail_available; then
+        log_warn "Whiptail não disponível, forçando modo não-interativo"
+        if [[ -f "$CONFIG_FILE" ]]; then
+            log_info "Usando configuração existente de $CONFIG_FILE"
+            load_config
+        else
+            log_error "Modo interativo não disponível e nenhum arquivo de configuração encontrado"
+            log_info "Crie um arquivo boxserver.conf ou use --non-interactive com opções de linha de comando"
+            exit 1
+        fi
     fi
 
     case "$INSTALL_MODE" in
