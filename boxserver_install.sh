@@ -199,7 +199,14 @@ check_service_installed() {
 check_package_available() {
     local package_name="$1"
 
-    if apt-cache policy "$package_name" | grep -q "Candidate:"; then
+    # Primeiro tenta atualizar a cache se necessário
+    if ! apt-cache show "$package_name" &>/dev/null; then
+        # Se não encontrou o pacote, tenta atualizar os repositórios
+        apt-get update &>/dev/null
+    fi
+
+    # Verifica se o pacote existe na cache
+    if apt-cache show "$package_name" &>/dev/null; then
         return 0
     else
         return 1
@@ -577,11 +584,13 @@ check_system_requirements() {
     fi
 
     # Verificar memória mínima (1GB)
-    local memory_gb=$(( $(free -g | awk 'NR==2 {print $2}') ))
-    if [[ $memory_gb -ge 1 ]]; then
-        log_info "✓ Memória suficiente: ${memory_gb}GB total"
+    local memory_kb=$(free | awk 'NR==2 {print $2}')
+    local memory_mb=$((memory_kb / 1024))
+    local memory_gb=$((memory_mb / 1024))
+    if [[ $memory_mb -ge 1024 ]]; then
+        log_info "✓ Memória suficiente: ${memory_gb}GB total (${memory_mb}MB)"
     else
-        log_warn "⚠ Memória baixa: ${memory_gb}GB total (recomendado 1GB+)"
+        log_warn "⚠ Memória baixa: ${memory_mb}MB total (recomendado 1GB+)"
     fi
 
     # Verificar conexão com a internet
@@ -598,7 +607,13 @@ check_system_requirements() {
         if check_package_available "$package"; then
             log_info "✓ Pacote $package disponível"
         else
-            log_error "✗ Pacote $package não disponível nos repositórios"
+            log_warn "⚠ Pacote $package não encontrado nos repositórios atuais"
+            log_info "Tentando atualizar repositórios..."
+            if apt-get update &>/dev/null && check_package_available "$package"; then
+                log_info "✓ Pacote $package disponível após atualização"
+            else
+                log_error "✗ Pacote $package não disponível nos repositórios"
+            fi
         fi
     done
 
@@ -607,9 +622,9 @@ check_system_requirements() {
     local systemd_services=("unbound" "lighttpd" "wg-quick@wg0" "rng-tools" "smbd" "minidlna")
     for service in "${systemd_services[@]}"; do
         if check_systemd_service "$service"; then
-            log_info "✓ Serviço systemd $service disponível"
+            log_info "✓ Serviço systemd $service já instalado"
         else
-            log_warn "⚠ Serviço systemd $service não encontrado"
+            log_info "○ Serviço systemd $service será instalado"
         fi
     done
 
