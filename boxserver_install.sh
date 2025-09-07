@@ -48,7 +48,20 @@ pre_reqs() {
 ask_static_ip() {
     CURRENT_IP=$(hostname -I | awk '{print $1}')
     STATIC_IP=$(whiptail --inputbox "Digite o IP fixo para este servidor:" 10 60 "$STATIC_IP" 3>&1 1>&2 2>&3)
+
+    # Validar formato do IP
+    if ! echo "$STATIC_IP" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+        msg "❌ IP inválido: $STATIC_IP. Usando IP atual: $CURRENT_IP"
+        STATIC_IP="$CURRENT_IP"
+    fi
+
     GATEWAY=$(ip route | awk '/^default/ {print $3; exit}')
+    # Se não encontrar gateway, usar padrão baseado no IP
+    if [ -z "$GATEWAY" ]; then
+        GATEWAY=$(echo "$STATIC_IP" | sed 's/\.[0-9]*$/.1/')
+        msg "⚠️  Gateway não detectado. Usando gateway padrão: $GATEWAY"
+    fi
+
     DNS="1.1.1.1"
     NET_IF=$(detect_interface)
 
@@ -67,7 +80,16 @@ network:
       nameservers:
         addresses: [$DNS]
 EOF
-        sudo netplan apply || true
+        # Aplicar Netplan de forma não-bloqueante com timeout
+        msg "Aplicando configuração de rede..."
+        timeout 30s sudo netplan apply >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            msg "✅ IP fixo configurado com sucesso: $STATIC_IP"
+        else
+            msg "⚠️  Netplan está demorando. A configuração de IP será aplicada após reiniciar o sistema."
+        fi
+    else
+        msg "⚠️  Este sistema não usa Netplan. Configure manualmente o IP fixo $STATIC_IP"
     fi
 }
 
@@ -513,7 +535,17 @@ main() {
     check_ports
     show_summary
 
-    msg "✅ Instalação concluída com sucesso!\n\nAcesse o Dashboard em: http://$STATIC_IP/\n\nLog completo em: $LOGFILE\nRelatório em: /root/boxserver_summary.txt"
+    FINAL_MSG="✅ Instalação concluída com sucesso!\n\n"
+    FINAL_MSG+="IP Configurado: $STATIC_IP\n"
+    FINAL_MSG+="Gateway: $GATEWAY\n"
+    FINAL_MSG+="Interface: $NET_IF\n\n"
+    FINAL_MSG+="Acesse o Dashboard em: http://$STATIC_IP/\n\n"
+    FINAL_MSG+="Log completo em: $LOGFILE\n"
+    FINAL_MSG+="Relatório em: /root/boxserver_summary.txt\n\n"
+    FINAL_MSG+="⚠️  ATENÇÃO: Se o IP fixo não estiver funcionando, reinicie o sistema ou execute:\n"
+    FINAL_MSG+="sudo netplan apply"
+
+    msg "$FINAL_MSG"
 }
 
 main "$@"
