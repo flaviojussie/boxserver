@@ -114,8 +114,16 @@ choose_services() {
 # INSTALAÇÃO DOS SERVIÇOS
 # =========================
 install_unbound() {
-    msg "Instalando Unbound..."
-    sudo apt install -y unbound
+    msg "Instalando/reconfigurando Unbound..."
+    
+    # Verificar se Unbound já está instalado
+    if dpkg -l | grep -q "^ii.*unbound"; then
+        msg "Unbound já está instalado. Reconfigurando..."
+    else
+        msg "Instalando Unbound..."
+        sudo apt install -y unbound
+    fi
+    
     sudo mkdir -p /etc/unbound/unbound.conf.d /var/lib/unbound
 
     cat <<EOF | sudo tee /etc/unbound/unbound.conf.d/pi-hole.conf
@@ -139,39 +147,46 @@ server:
     root-hints: "/var/lib/unbound/root.hints"
 EOF
 
-    sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
-    sudo unbound-anchor -a /var/lib/unbound/root.key || true
+    # Baixar root hints se não existirem
+    if [ ! -f /var/lib/unbound/root.hints ]; then
+        sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
+    fi
+    
+    # Configurar trust anchor se não existir
+    if [ ! -f /var/lib/unbound/root.key ]; then
+        sudo unbound-anchor -a /var/lib/unbound/root.key || true
+    fi
+    
     sudo systemctl enable --now unbound
     
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet unbound; then
-        msg "✅ Unbound instalado e em execução"
+        msg "✅ Unbound instalado/reconfigurado e em execução"
     else
-        msg "⚠️  Unbound instalado, mas pode não estar em execução"
+        msg "⚠️  Unbound instalado/reconfigurado, mas pode não estar em execução"
     fi
 }
 
 install_pihole() {
-    msg "Instalando Pi-hole..."
+    msg "Instalando/reconfigurando Pi-hole..."
     
-    # Instalar lighttpd explicitamente antes do Pi-hole
-    msg "Instalando lighttpd como dependência do Pi-hole..."
-    if ! sudo apt install -y lighttpd; then
-        msg "❌ Falha ao instalar lighttpd"
-        return 1
-    fi
+    # Verificar se o Pi-hole já está instalado
+    if command -v pihole &> /dev/null; then
+        msg "Pi-hole já está instalado. Reconfigurando..."
+    else
+        # Instalar lighttpd explicitamente antes do Pi-hole
+        msg "Instalando lighttpd como dependência do Pi-hole..."
+        if ! sudo apt install -y lighttpd; then
+            msg "❌ Falha ao instalar lighttpd"
+            return 1
+        fi
 
-    # Executar o instalador do Pi-hole em modo não interativo
-    msg "Executando instalador do Pi-hole..."
-    if ! curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended; then
-        msg "❌ Falha na instalação do Pi-hole"
-        return 1
-    fi
-
-    # Verificar se os arquivos de configuração do lighttpd existem
-    if [ ! -f /etc/lighttpd/lighttpd.conf ]; then
-        msg "❌ Arquivo de configuração do lighttpd não encontrado. A instalação do Pi-hole falhou."
-        return 1
+        # Executar o instalador do Pi-hole em modo não interativo
+        msg "Executando instalador do Pi-hole..."
+        if ! curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended; then
+            msg "❌ Falha na instalação do Pi-hole"
+            return 1
+        fi
     fi
 
     # Configurar o Pi-hole
@@ -192,8 +207,40 @@ install_pihole() {
     fi
 
     msg "Alterando Pi-hole para rodar em 8081/8443..."
+    
+    # Verificar se o arquivo de configuração do lighttpd existe
+    if [ ! -f /etc/lighttpd/lighttpd.conf ]; then
+        # Se não existir, instalar lighttpd
+        sudo apt install -y lighttpd
+    fi
+    
     if [ -f /etc/lighttpd/lighttpd.conf ]; then
         sudo sed -i 's/server.port\s*=\s*80/server.port = 8081/' /etc/lighttpd/lighttpd.conf
+    else
+        # Criar arquivo de configuração básico se não existir
+        sudo mkdir -p /etc/lighttpd
+        cat <<EOF | sudo tee /etc/lighttpd/lighttpd.conf
+server.modules = (
+    "mod_access",
+    "mod_alias",
+    "mod_compress",
+    "mod_redirect",
+)
+
+server.document-root        = "/var/www/html"
+server.upload-dirs          = ( "/var/cache/lighttpd/uploads" )
+server.errorlog             = "/var/log/lighttpd/error.log"
+server.pid-file             = "/var/run/lighttpd.pid"
+server.username             = "www-data"
+server.groupname            = "www-data"
+server.port                 = 8081
+
+# SSL configuration
+\$SERVER["socket"] == ":8443" {
+    ssl.engine = "enable"
+    ssl.pemfile = "/etc/lighttpd/server.pem"
+}
+EOF
     fi
     
     # Garantir que o diretório /etc/lighttpd exista
@@ -204,30 +251,43 @@ install_pihole() {
 \$SERVER["socket"] == ":8443" { ssl.engine = "enable" }
 EOF
     
-    # Verificar se o serviço lighttpd existe antes de reiniciar
-    if systemctl list-units --type=service | grep -q 'lighttpd.service'; then
+    # Verificar se o serviço lighttpd existe
+    if systemctl list-units --type=service --all | grep -q 'lighttpd.service'; then
+        # Habilitar e iniciar o serviço lighttpd
+        sudo systemctl enable lighttpd
         sudo systemctl restart lighttpd
-        msg "✅ Pi-hole instalado e em execução nas portas 8081/8443"
+        
+        # Verificar se o serviço está rodando
+        if sudo systemctl is-active --quiet lighttpd; then
+            msg "✅ Pi-hole instalado/reconfigurado e em execução nas portas 8081/8443"
+        else
+            msg "⚠️  Pi-hole instalado/reconfigurado, mas o serviço lighttpd pode não estar em execução corretamente"
+        fi
     else
-        msg "❌ ERRO: O serviço lighttpd não foi encontrado. A instalação do Pi-hole falhou."
-        return 1
-    fi
-    
-    # Verificar se o serviço está rodando
-    if sudo systemctl is-active --quiet lighttpd; then
-        msg "✅ Pi-hole instalado e em execução nas portas 8081/8443"
-    else
-        msg "⚠️  Pi-hole instalado, mas pode não estar em execução corretamente"
+        msg "⚠️  Serviço lighttpd não encontrado. Verifique se ele foi instalado corretamente."
     fi
 }
 
 install_wireguard() {
-    msg "Instalando WireGuard..."
-    sudo apt install -y wireguard wireguard-tools
+    msg "Instalando/reconfigurando WireGuard..."
+    
+    # Verificar se WireGuard já está instalado
+    if dpkg -l | grep -q "^ii.*wireguard"; then
+        msg "WireGuard já está instalado. Reconfigurando..."
+    else
+        msg "Instalando WireGuard..."
+        sudo apt install -y wireguard wireguard-tools
+    fi
+    
     sudo mkdir -p /etc/wireguard/keys
     sudo chmod 700 /etc/wireguard/keys
     umask 077
-    wg genkey | sudo tee /etc/wireguard/keys/privatekey | wg pubkey | sudo tee /etc/wireguard/keys/publickey
+    
+    # Verificar se as chaves já existem
+    if [ ! -f /etc/wireguard/keys/privatekey ] || [ ! -f /etc/wireguard/keys/publickey ]; then
+        wg genkey | sudo tee /etc/wireguard/keys/privatekey | wg pubkey | sudo tee /etc/wireguard/keys/publickey
+    fi
+    
     PRIVATE_KEY=$(sudo cat /etc/wireguard/keys/privatekey)
 
     cat <<EOF | sudo tee /etc/wireguard/wg0.conf
@@ -246,18 +306,18 @@ EOF
     
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet wg-quick@wg0; then
-        msg "✅ WireGuard instalado e em execução"
+        msg "✅ WireGuard instalado/reconfigurado e em execução"
     else
-        msg "⚠️  WireGuard instalado, mas pode não estar em execução"
+        msg "⚠️  WireGuard instalado/reconfigurado, mas pode não estar em execução"
     fi
 }
 
 install_cloudflare() {
-    msg "Instalando Cloudflare Tunnel..."
+    msg "Instalando/reconfigurando Cloudflare Tunnel..."
     ARCH=$(detect_arch)
     URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}"
     
-    # Verificar se o download foi bem-sucedido
+    # Baixar e instalar cloudflared
     if sudo wget -O /usr/local/bin/cloudflared "$URL"; then
         sudo chmod +x /usr/local/bin/cloudflared
         sudo mkdir -p /etc/cloudflared
@@ -292,9 +352,9 @@ EOF
         
         # Verificar se o serviço está rodando
         if sudo systemctl is-active --quiet cloudflared; then
-            msg "✅ Cloudflare Tunnel instalado e em execução"
+            msg "✅ Cloudflare Tunnel instalado/reconfigurado e em execução"
         else
-            msg "⚠️  Cloudflare Tunnel instalado, execute 'cloudflared tunnel login' para autenticar"
+            msg "⚠️  Cloudflare Tunnel instalado/reconfigurado, execute 'cloudflared tunnel login' para autenticar"
         fi
     else
         msg "❌ Falha ao baixar Cloudflare Tunnel"
@@ -302,8 +362,16 @@ EOF
 }
 
 install_rng() {
-    msg "Instalando RNG-tools..."
-    sudo apt install -y rng-tools
+    msg "Instalando/reconfigurando RNG-tools..."
+    
+    # Verificar se RNG-tools já está instalado
+    if dpkg -l | grep -q "^ii.*rng-tools"; then
+        msg "RNG-tools já está instalado. Reconfigurando..."
+    else
+        msg "Instalando RNG-tools..."
+        sudo apt install -y rng-tools
+    fi
+    
     sudo mkdir -p /etc/default
 
     if [ -e /dev/hwrng ]; then
@@ -320,20 +388,34 @@ EOF
     
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet rng-tools; then
-        msg "✅ RNG-tools instalado e em execução"
+        msg "✅ RNG-tools instalado/reconfigurado e em execução"
     else
-        msg "⚠️  RNG-tools instalado, mas pode não estar em execução"
+        msg "⚠️  RNG-tools instalado/reconfigurado, mas pode não estar em execução"
     fi
 }
 
 install_samba() {
-    msg "Instalando Samba..."
-    sudo apt install -y samba
+    msg "Instalando/reconfigurando Samba..."
+    
+    # Verificar se Samba já está instalado
+    if dpkg -l | grep -q "^ii.*samba"; then
+        msg "Samba já está instalado. Reconfigurando..."
+    else
+        msg "Instalando Samba..."
+        sudo apt install -y samba
+    fi
+    
     sudo mkdir -p /srv/samba/share
     sudo chmod 777 /srv/samba/share
-    sudo touch /etc/samba/smb.conf
+    
+    # Verificar se o arquivo smb.conf existe
+    if [ ! -f /etc/samba/smb.conf ]; then
+        sudo touch /etc/samba/smb.conf
+    fi
 
-    cat <<EOF | sudo tee -a /etc/samba/smb.conf
+    # Adicionar configuração do BoxShare se não existir
+    if ! grep -q "BoxShare" /etc/samba/smb.conf; then
+        cat <<EOF | sudo tee -a /etc/samba/smb.conf
 
 [BoxShare]
    path = /srv/samba/share
@@ -341,22 +423,37 @@ install_samba() {
    read only = no
    guest ok = yes
 EOF
+    fi
+    
     sudo systemctl enable --now smbd
     
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet smbd; then
-        msg "✅ Samba instalado e em execução"
+        msg "✅ Samba instalado/reconfigurado e em execução"
     else
-        msg "⚠️  Samba instalado, mas pode não estar em execução"
+        msg "⚠️  Samba instalado/reconfigurado, mas pode não estar em execução"
     fi
 }
 
 install_minidlna() {
-    msg "Instalando MiniDLNA..."
-    sudo apt install -y minidlna
+    msg "Instalando/reconfigurando MiniDLNA..."
+    
+    # Verificar se MiniDLNA já está instalado
+    if dpkg -l | grep -q "^ii.*minidlna"; then
+        msg "MiniDLNA já está instalado. Reconfigurando..."
+    else
+        msg "Instalando MiniDLNA..."
+        sudo apt install -y minidlna
+    fi
+    
     sudo mkdir -p /srv/media/{video,audio,photos}
-    sudo touch /etc/minidlna.conf
+    
+    # Verificar se o arquivo minidlna.conf existe
+    if [ ! -f /etc/minidlna.conf ]; then
+        sudo touch /etc/minidlna.conf
+    fi
 
+    # Criar ou atualizar configuração do MiniDLNA
     cat <<EOF | sudo tee /etc/minidlna.conf
 media_dir=V,/srv/media/video
 media_dir=A,/srv/media/audio
@@ -365,18 +462,19 @@ friendly_name=BoxServer DLNA
 inotify=yes
 port=8200
 EOF
+    
     sudo systemctl enable --now minidlna
     
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet minidlna; then
-        msg "✅ MiniDLNA instalado e em execução"
+        msg "✅ MiniDLNA instalado/reconfigurado e em execução"
     else
-        msg "⚠️  MiniDLNA instalado, mas pode não estar em execução"
+        msg "⚠️  MiniDLNA instalado/reconfigurado, mas pode não estar em execução"
     fi
 }
 
 install_filebrowser() {
-    msg "Instalando Filebrowser..."
+    msg "Instalando/reconfigurando Filebrowser..."
     FB_VERSION=$(curl -s https://api.github.com/repos/filebrowser/filebrowser/releases/latest | grep tag_name | cut -d '"' -f4)
     ARCH=$(detect_arch)
     case "$ARCH" in
@@ -386,7 +484,7 @@ install_filebrowser() {
         *) msg "Arquitetura não suportada pelo Filebrowser"; return;;
     esac
 
-    # Verificar se o download foi bem-sucedido
+    # Baixar e instalar Filebrowser
     if wget -O filebrowser.tar.gz https://github.com/filebrowser/filebrowser/releases/download/${FB_VERSION}/filebrowser-${FB_ARCH}.tar.gz; then
         tar -xzf filebrowser.tar.gz
         sudo mv filebrowser /usr/local/bin/
@@ -413,9 +511,9 @@ EOF
         
         # Verificar se o serviço está rodando
         if sudo systemctl is-active --quiet filebrowser; then
-            msg "✅ Filebrowser instalado e em execução"
+            msg "✅ Filebrowser instalado/reconfigurado e em execução"
         else
-            msg "⚠️  Filebrowser instalado, mas pode não estar em execução"
+            msg "⚠️  Filebrowser instalado/reconfigurado, mas pode não estar em execução"
         fi
     else
         msg "❌ Falha ao baixar Filebrowser"
@@ -426,7 +524,7 @@ EOF
 # DASHBOARD WEB
 # =========================
 install_dashboard() {
-    msg "Instalando Dashboard Web..."
+    msg "Instalando/reconfigurando Dashboard Web..."
     sudo mkdir -p "$DASHBOARD_DIR"
 
     cat <<EOF | sudo tee "$DASHBOARD_DIR/index.html"
@@ -551,7 +649,6 @@ EOF
 
     # Parar serviços que possam estar usando a porta 80
     sudo systemctl stop apache2 || true  # Apache se estiver instalado
-    # Não é necessário parar lighttpd pois o Pi-hole já foi configurado para portas diferentes
     
     # Configurar nginx para servir o dashboard
     cat <<EOF | sudo tee /etc/nginx/sites-available/boxserver-dashboard
@@ -573,9 +670,9 @@ EOF
     
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet nginx; then
-        msg "✅ Dashboard instalado e acessível em http://$STATIC_IP/"
+        msg "✅ Dashboard instalado/reconfigurado e acessível em http://$STATIC_IP/"
     else
-        msg "⚠️  Dashboard instalado, mas o Nginx pode não estar em execução"
+        msg "⚠️  Dashboard instalado/reconfigurado, mas o Nginx pode não estar em execução"
     fi
 }
 
@@ -676,7 +773,7 @@ main() {
     check_ports
     show_summary
 
-    FINAL_MSG="✅ Instalação concluída com sucesso!\n\n"
+    FINAL_MSG="✅ Instalação/reconfiguração concluída com sucesso!\n\n"
     FINAL_MSG+="IP Configurado: $STATIC_IP\n"
     FINAL_MSG+="Gateway: $GATEWAY\n"
     FINAL_MSG+="Interface: $NET_IF\n\n"
