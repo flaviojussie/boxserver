@@ -107,26 +107,36 @@ EOF
   sudo systemctl enable unbound
 }
 
- # --- Pi-hole ---
- install_pihole() {
-   msg "Instalando Pi-hole (interativo oficial)..."
-   curl -sSL https://install.pi-hole.net | bash
-
-   # Aguarda até que o arquivo setupVars.conf seja criado
-   msg "Aguardando conclusão da instalação do Pi-hole..."
-   while [ ! -f /etc/pihole/setupVars.conf ]; do
-     sleep 2
-      done
-
-   msg "Ajustando Pi-hole para usar Unbound (127.0.0.1#5335)..."
-   sudo sed -i 's/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
-   pihole restartdns
-
+# --- Pi-hole ---
+   install_pihole() {
+     msg "Instalando Pi-hole (interativo oficial)..."
+     curl -sSL https://install.pi-hole.net | bash
+   
+     msg "Aguardando a criação do arquivo de configuração do Pi-hole..."
+     while [ ! -f /etc/pihole/setupVars.conf ]; do
+       sleep 2
+     done
+   
+     # Verifica se o arquivo existe e cria se necessário
+     if [ ! -f /etc/pihole/setupVars.conf ]; then
+       sudo touch /etc/pihole/setupVars.conf
+     fi
+   
+     msg "Ajustando Pi-hole para usar Unbound (127.0.0.1#5335)..."
+     # Usa echo e tee para adicionar ou modificar a configuração
+     if grep -q "^PIHOLE_DNS_1=" /etc/pihole/setupVars.conf; then
+       sudo sed -i 's/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
+     else
+       echo "PIHOLE_DNS_1=127.0.0.1#5335" | sudo tee -a /etc/pihole/setupVars.conf > /dev/null
+     fi
+   
+     pihole restartdns
+   
    msg "Alterando Pi-hole para rodar em 8081/8443..."
    sudo sed -i 's/server.port\s*=\s*80/server.port = 8081/' /etc/lighttpd/lighttpd.conf
    sudo bash -c 'echo "\$SERVER[\"socket\"] == \":8443\" { ssl.engine = \"enable\" }" > /etc/lighttpd/external.conf'
    sudo systemctl restart lighttpd
-}
+ }
 
 
 # --- WireGuard ---
