@@ -153,8 +153,28 @@ EOF
 
 install_pihole() {
     msg "Instalando Pi-hole..."
-    curl -sSL https://install.pi-hole.net | bash
+    
+    # Instalar lighttpd explicitamente antes do Pi-hole
+    msg "Instalando lighttpd como dependência do Pi-hole..."
+    if ! sudo apt install -y lighttpd; then
+        msg "❌ Falha ao instalar lighttpd"
+        return 1
+    fi
 
+    # Executar o instalador do Pi-hole em modo não interativo
+    msg "Executando instalador do Pi-hole..."
+    if ! curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended; then
+        msg "❌ Falha na instalação do Pi-hole"
+        return 1
+    fi
+
+    # Verificar se os arquivos de configuração do lighttpd existem
+    if [ ! -f /etc/lighttpd/lighttpd.conf ]; then
+        msg "❌ Arquivo de configuração do lighttpd não encontrado. A instalação do Pi-hole falhou."
+        return 1
+    fi
+
+    # Configurar o Pi-hole
     sudo mkdir -p /etc/pihole
     sudo touch /etc/pihole/setupVars.conf
     if grep -q '^PIHOLE_DNS_1=' /etc/pihole/setupVars.conf; then
@@ -184,7 +204,14 @@ install_pihole() {
 \$SERVER["socket"] == ":8443" { ssl.engine = "enable" }
 EOF
     
-    sudo systemctl restart lighttpd
+    # Verificar se o serviço lighttpd existe antes de reiniciar
+    if systemctl list-units --type=service | grep -q 'lighttpd.service'; then
+        sudo systemctl restart lighttpd
+        msg "✅ Pi-hole instalado e em execução nas portas 8081/8443"
+    else
+        msg "❌ ERRO: O serviço lighttpd não foi encontrado. A instalação do Pi-hole falhou."
+        return 1
+    fi
     
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet lighttpd; then
