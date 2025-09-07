@@ -207,12 +207,12 @@ check_whiptail_available() {
 
 check_graphical_environment() {
     # Verificar se estamos em terminal gráfico
-    if [[ -n "$DISPLAY" ]] || [[ "$TERM" == "xterm"* ]] || [[ "$TERM" == "screen"* ]] || [[ "$TERM" == "tmux"* ]]; then
+    if [[ -n "${DISPLAY:-}" ]] || [[ "$TERM" == "xterm"* ]] || [[ "$TERM" == "screen"* ]] || [[ "$TERM" == "tmux"* ]]; then
         return 0
     fi
 
     # Verificar se estamos via SSH
-    if [[ -n "$SSH_TTY" ]] || [[ -n "$SSH_CONNECTION" ]]; then
+    if [[ -n "${SSH_TTY:-}" ]] || [[ -n "${SSH_CONNECTION:-}" ]]; then
         return 1
     fi
 
@@ -301,7 +301,10 @@ load_config() {
                     log_debug "Variável carregada: $key='$value'"
                 fi
             else
-                log_warn "Linha mal formada ignorada: '$line'"
+                # Apenas registrar advertência para linhas que não estão completamente vazias
+                if [[ -n "$line" ]]; then
+                    log_warn "Linha mal formada ignorada: '$line'"
+                fi
             fi
         done < "$CONFIG_FILE"
 
