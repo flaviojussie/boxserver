@@ -176,6 +176,9 @@ install_pihole() {
         sudo sed -i 's/server.port\s*=\s*80/server.port = 8081/' /etc/lighttpd/lighttpd.conf
     fi
     
+    # Garantir que o diretório /etc/lighttpd exista
+    sudo mkdir -p /etc/lighttpd
+    
     # Criar o arquivo external.conf corretamente
     cat <<EOF | sudo tee /etc/lighttpd/external.conf
 \$SERVER["socket"] == ":8443" { ssl.engine = "enable" }
