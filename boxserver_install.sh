@@ -842,13 +842,48 @@ EOF
   if sudo systemctl is-active --quiet unbound; then
     echo_msg "✅ Unbound em execução, testando resolução DNS..."
 
-    # Teste básico de resolução DNS
-    if nslookup google.com 127.0.0.1#$UNBOUND_PORT >/dev/null 2>&1; then
-      echo_msg "✅ Resolução DNS básica funcionando"
+    # Teste básico de resolução DNS com diagnóstico aprimorado
+    echo_msg "🧪 Testando resolução DNS do Unbound..."
 
+    # Aguardar estabilização do serviço em RK322x
+    sleep 5
+
+    # Teste 1: Verificar se a porta está ouvindo
+    if ! sudo netstat -tulpn | grep -q ":$UNBOUND_PORT "; then
+      echo_msg "❌ Unbound não está ouvindo na porta $UNBOUND_PORT"
+      echo_msg "   Tentando corrigir configuração de interface..."
+
+      # Corrigir possível problema de binding de interface
+      if ! grep -q "interface: 0.0.0.0" /etc/unbound/unbound.conf.d/pi-hole.conf; then
+        backup_file /etc/unbound/unbound.conf.d/pi-hole.conf
+        sudo sed -i 's/interface: 127.0.0.1/interface: 127.0.0.1\n    interface: 0.0.0.0/' /etc/unbound/unbound.conf.d/pi-hole.conf
+        echo_msg "   Adicionando bind para todas as interfaces..."
+        sudo systemctl restart unbound
+        sleep 5
+      fi
+    fi
+
+    # Teste 2: Verificar conectividade básica
+    local dns_test_attempts=0
+    local dns_working=false
+
+    while [ $dns_test_attempts -lt 3 ] && [ "$dns_working" = false ]; do
+      dns_test_attempts=$((dns_test_attempts + 1))
+      echo_msg "   Tentativa $dns_test_attempts/3 de teste DNS..."
+
+      if timeout 10 nslookup google.com 127.0.0.1#$UNBOUND_PORT >/dev/null 2>&1; then
+        dns_working=true
+        echo_msg "✅ Resolução DNS básica funcionando"
+      else
+        echo_msg "   Teste DNS falhou, aguardando $((dns_test_attempts * 3))s..."
+        sleep $((dns_test_attempts * 3))
+      fi
+    done
+
+    if [ "$dns_working" = true ]; then
       # Teste DNSSEC específico para verificar root key
       echo_msg "🔐 Testando DNSSEC com root key..."
-      if dig @127.0.0.1 -p $UNBOUND_PORT +dnssec cloudflare.com | grep -q "ad"; then
+      if timeout 15 dig @127.0.0.1 -p $UNBOUND_PORT +dnssec cloudflare.com 2>/dev/null | grep -q "ad"; then
         echo_msg "✅ DNSSEC funcionando corretamente com root key"
       else
         echo_msg "⚠️ DNSSEC pode ter problemas, mas DNS básico funciona"
@@ -858,8 +893,9 @@ EOF
       echo_msg "✅ Unbound instalado/reconfigurado e funcionando perfeitamente"
       echo_msg "   Pronto para integração com Pi-hole em 127.0.0.1:$UNBOUND_PORT"
     else
-      echo_msg "⚠️ Unbound está rodando mas não responde a consultas DNS"
-      echo_msg "   Verifique a configuração: sudo unbound-checkconf"
+      echo_msg "❌ Unbound está rodando mas não responde a consultas DNS"
+      echo_msg "   Executando diagnóstico detalhado..."
+      diagnose_unbound_issues
     fi
   else
     echo_msg "⚠️ Unbound instalado/reconfigurado mas não está em execução"
@@ -935,6 +971,201 @@ EOF
   echo "   ✅ Root key fallback criada"
 }
 
+# =========================
+# Diagnóstico de problemas do Unbound
+# =========================
+diagnose_unbound_issues() {
+  echo "🔧 Diagnosticando problemas do Unbound no RK322x..."
+
+  # 1. Verificar configuração
+  echo "   Testando configuração..."
+  if ! sudo unbound-checkconf; then
+    echo "   ❌ Configuração inválida, tentando corrigir..."
+    fix_unbound_config_rk322x
+    return
+  fi
+
+  # 2. Verificar portas e interfaces
+  echo "   Verificando portas e interfaces..."
+  local port_check=$(sudo netstat -tulpn | grep ":$UNBOUND_PORT " | wc -l)
+  if [ "$port_check" -eq 0 ]; then
+    echo "   ❌ Unbound não está ouvindo na porta $UNBOUND_PORT"
+    echo "   Tentando correção de binding..."
+    fix_unbound_binding_rk322x
+  else
+    echo "   ✅ Unbound ouvindo na porta $UNBOUND_PORT"
+  fi
+
+  # 3. Verificar logs para problemas específicos
+  echo "   Analisando logs do Unbound..."
+  local error_count=$(sudo journalctl -u unbound --no-pager -n 20 | grep -c -i "error\|fail" || echo "0")
+  if [ "$error_count" -gt 0 ]; then
+    echo "   ⚠️ Erros encontrados nos logs:"
+    sudo journalctl -u unbound --no-pager -n 10 | grep -i "error\|fail" | head -3 | sed 's/^/      /'
+  fi
+
+  # 4. Teste de conectividade upstream
+  echo "   Testando conectividade upstream..."
+  if ! timeout 5 dig @8.8.8.8 google.com >/dev/null 2>&1; then
+    echo "   ⚠️ Problema de conectividade upstream - verificar rede"
+  fi
+
+  # 5. Tentativa de correção automática
+  echo "   Tentando correção automática..."
+  fix_unbound_rk322x
+}
+
+fix_unbound_config_rk322x() {
+  echo "🔧 Corrigindo configuração do Unbound para RK322x..."
+
+  backup_file /etc/unbound/unbound.conf.d/pi-hole.conf
+
+  # Configuração mínima e robusta para RK322x
+  cat <<EOF | sudo tee /etc/unbound/unbound.conf.d/pi-hole.conf
+server:
+    # Configuração mínima para RK322x
+    verbosity: 0
+    interface: 127.0.0.1
+    interface: 0.0.0.0
+    port: $UNBOUND_PORT
+    do-ip4: yes
+    do-udp: yes
+    do-tcp: yes
+    do-ip6: no
+
+    # Configurações básicas de segurança
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+
+    # Cache mínimo para ARM
+    rrset-cache-size: 32m
+    msg-cache-size: 16m
+    so-rcvbuf: 128k
+    so-sndbuf: 128k
+
+    # Threading mínimo
+    num-threads: 1
+
+    # Redes privadas
+    private-address: 192.168.0.0/16
+    private-address: 172.16.0.0/12
+    private-address: 10.0.0.0/8
+
+    # DNSSEC simplificado para RK322x
+    auto-trust-anchor-file: "/var/lib/unbound/root.key"
+    val-clean-additional: yes
+    val-override-date: "-1"
+
+    # Root hints
+    root-hints: "/var/lib/unbound/root.hints"
+
+    # Access control
+    access-control: 127.0.0.0/8 allow
+    access-control: 192.168.0.0/16 allow
+    access-control: 10.0.0.0/8 allow
+    access-control: 172.16.0.0/12 allow
+    access-control: 0.0.0.0/0 refuse
+
+    # Otimizações RK322x
+    outgoing-range: 128
+    num-queries-per-thread: 256
+    jostle-timeout: 500
+    cache-min-ttl: 0
+    cache-max-ttl: 86400
+EOF
+
+  echo "   ✅ Configuração mínima aplicada"
+}
+
+fix_unbound_binding_rk322x() {
+  echo "🔧 Corrigindo binding de interface do Unbound..."
+
+  # Parar Unbound
+  sudo systemctl stop unbound
+  sleep 2
+
+  # Verificar se algum processo está usando a porta
+  local pid_using_port=$(sudo lsof -ti:$UNBOUND_PORT 2>/dev/null || true)
+  if [ -n "$pid_using_port" ]; then
+    echo "   Processo $pid_using_port usando porta $UNBOUND_PORT, terminando..."
+    sudo kill -9 "$pid_using_port" 2>/dev/null || true
+    sleep 1
+  fi
+
+  # Recriar diretórios e permissões
+  sudo mkdir -p /var/lib/unbound /etc/unbound/unbound.conf.d
+  sudo chown -R unbound:unbound /var/lib/unbound
+  sudo chmod 755 /var/lib/unbound
+
+  # Iniciar novamente
+  sudo systemctl start unbound
+  sleep 3
+
+  # Verificar se funcionou
+  if sudo netstat -tulpn | grep -q ":$UNBOUND_PORT "; then
+    echo "   ✅ Binding corrigido, Unbound ouvindo na porta $UNBOUND_PORT"
+  else
+    echo "   ❌ Ainda há problemas com binding"
+  fi
+}
+
+fix_unbound_rk322x() {
+  echo "🔧 Aplicando correções completas do Unbound para RK322x..."
+
+  # 1. Parar serviço
+  sudo systemctl stop unbound
+  sleep 2
+
+  # 2. Aplicar configuração mínima
+  fix_unbound_config_rk322x
+
+  # 3. Verificar e corrigir root key
+  create_fallback_root_key
+
+  # 4. Verificar root hints
+  if [ ! -f /var/lib/unbound/root.hints ] || [ ! -s /var/lib/unbound/root.hints ]; then
+    echo "   Baixando root hints atualizados..."
+    sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root 2>/dev/null || {
+      echo "   Criando root hints básicos..."
+      echo ". 518400 IN NS a.root-servers.net." | sudo tee /var/lib/unbound/root.hints >/dev/null
+    }
+  fi
+
+  # 5. Corrigir permissões
+  sudo chown -R unbound:unbound /var/lib/unbound
+  sudo chmod -R 644 /var/lib/unbound/*
+  sudo chmod 755 /var/lib/unbound
+
+  # 6. Iniciar e testar
+  sudo systemctl start unbound
+  sleep 5
+
+  # 7. Teste final
+  if timeout 10 nslookup google.com 127.0.0.1#$UNBOUND_PORT >/dev/null 2>&1; then
+    echo "   ✅ Unbound corrigido e funcionando!"
+  else
+    echo "   ❌ Problema persiste - pode ser limitação do hardware RK322x"
+    echo "   Configurando modo de compatibilidade..."
+
+    # Modo de compatibilidade extrema
+    cat <<EOF | sudo tee /etc/unbound/unbound.conf.d/pi-hole.conf
+server:
+    verbosity: 0
+    interface: 127.0.0.1
+    port: $UNBOUND_PORT
+    do-ip4: yes
+    do-udp: yes
+    do-tcp: no
+    do-ip6: no
+    access-control: 0.0.0.0/0 allow
+    root-hints: "/var/lib/unbound/root.hints"
+EOF
+    sudo systemctl restart unbound
+    sleep 3
+    echo "   ⚠️ Modo de compatibilidade aplicado (funcionalidade reduzida)"
+  fi
+}
+
 install_pihole() {
   echo_msg "Instalando/reconfigurando Pi-hole otimizado para RK322x..."
   SUMMARY_ENTRIES+=("Pi-hole: Portas $PIHOLE_HTTP_PORT/$PIHOLE_HTTPS_PORT (RK322x)")
@@ -948,57 +1179,71 @@ install_pihole() {
     return 1
   fi
 
-  if sudo netstat -tln | grep -q ":53 "; then
-    echo_msg "❌ Porta 53 (DNS) já está em uso. Pi-hole não pode ser instalado."
-    echo_msg "   Processo usando a porta:"
-    sudo netstat -tlnp | grep ":53 " | sed 's/^/   /'
+  # Verificar se porta 53 está em uso por outros serviços (não systemd-resolved)
+  local port_53_process=$(sudo netstat -tlnp | grep ":53 " | grep -v systemd-resolved | head -1)
 
-    # Verificar se é systemd-resolved
-    if systemctl is-active --quiet systemd-resolved; then
-      echo_msg "⚠️  systemd-resolved detectado. Tentando desabilitá-lo..."
-      sudo systemctl disable --now systemd-resolved
+  if [ -n "$port_53_process" ]; then
+    echo_msg "❌ Porta 53 (DNS) está sendo usada por outro serviço:"
+    echo_msg "   $port_53_process"
+    echo_msg "   Pi-hole precisa da porta 53 para funcionar como servidor DNS principal"
+    return 1
+  fi
 
-      # Remover link simbólico do resolv.conf se existir
-      if [ -L /etc/resolv.conf ]; then
-        sudo rm /etc/resolv.conf
-      fi
+  # Se systemd-resolved estiver ativo, desabilitar para liberar porta 53
+  if systemctl is-active --quiet systemd-resolved; then
+    echo_msg "⚠️  systemd-resolved detectado na porta 53. Desabilitando para Pi-hole..."
+    sudo systemctl disable --now systemd-resolved
 
-      # Criar um resolv.conf temporário
-      echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
-      echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf
-
-      # Verificar novamente se a porta está livre
-      sleep 2
-      if sudo netstat -tln | grep -q ":53 "; then
-        echo_msg "❌ Porta 53 ainda está em uso mesmo após desabilitar systemd-resolved."
-        return 1
-      else
-        echo_msg "✅ systemd-resolved desabilitado, porta 53 agora está livre."
-      fi
-    else
-      return 1
+    # Remover link simbólico do resolv.conf se existir
+    if [ -L /etc/resolv.conf ]; then
+      sudo rm /etc/resolv.conf
     fi
+
+    # Criar um resolv.conf temporário apontando para localhost (futuro Pi-hole)
+    echo "# Configurado para Pi-hole + Unbound" | sudo tee /etc/resolv.conf
+    echo "nameserver 127.0.0.1" | sudo tee -a /etc/resolv.conf
+    echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf
+
+    echo_msg "✅ systemd-resolved desabilitado, porta 53 liberada para Pi-hole"
+    sleep 2
   fi
 
   # Verificar se Unbound está rodando antes de instalar Pi-hole
-  echo_msg "Verificando se Unbound está disponível para integração..."
+  echo_msg "Verificando se Unbound está disponível como DNS upstream..."
   if ! sudo systemctl is-active --quiet unbound; then
-    echo_msg "❌ Unbound não está rodando. Pi-hole precisa do Unbound como DNS upstream."
-    echo_msg "   Tentando iniciar Unbound..."
+    echo_msg "⚠️ Unbound não está rodando. Tentando iniciar..."
     sudo systemctl start unbound || {
       echo_msg "❌ Falha ao iniciar Unbound. Instale Unbound primeiro."
       return 1
     }
-    sleep 3
+    sleep 5
   fi
 
   # Testar se Unbound está respondendo
-  if ! nslookup google.com 127.0.0.1#$UNBOUND_PORT >/dev/null 2>&1; then
-    echo_msg "❌ Unbound não está respondendo em 127.0.0.1:$UNBOUND_PORT"
-    echo_msg "   Pi-hole não pode ser configurado sem um DNS upstream funcional."
+  echo_msg "Testando conectividade com Unbound upstream..."
+  local unbound_test_attempts=0
+  local unbound_working=false
+
+  while [ $unbound_test_attempts -lt 3 ] && [ "$unbound_working" = false ]; do
+    unbound_test_attempts=$((unbound_test_attempts + 1))
+    echo_msg "   Tentativa $unbound_test_attempts/3..."
+
+    if timeout 10 nslookup google.com 127.0.0.1#$UNBOUND_PORT >/dev/null 2>&1; then
+      unbound_working=true
+      echo_msg "✅ Unbound respondendo na porta $UNBOUND_PORT"
+    else
+      echo_msg "   Aguardando Unbound estabilizar..."
+      sleep 3
+    fi
+  done
+
+  if [ "$unbound_working" = false ]; then
+    echo_msg "❌ Unbound não responde após 3 tentativas"
+    echo_msg "   Execute: ./script.sh --fix-unbound"
     return 1
   fi
-  echo_msg "✅ Unbound está funcionando. Prosseguindo com instalação do Pi-hole..."
+
+  echo_msg "✅ Unbound funcionando como DNS upstream. Instalando Pi-hole..."
 
   # Se o Pi-hole não estiver instalado, prepara e executa a instalação não interativa
   if ! command -v pihole &> /dev/null; then
@@ -1006,9 +1251,10 @@ install_pihole() {
 
     sudo mkdir -p /etc/pihole
     # Configuração otimizada para kernel 4.4.194-rk322x
+    # Pi-hole na porta 53, Unbound como upstream na porta $UNBOUND_PORT
     cat <<EOF | sudo tee /etc/pihole/setupVars.conf
 PIHOLE_INTERFACE=$NET_IF
-IPV4_ADDRESS=$STATIC_IP
+IPV4_ADDRESS=$STATIC_IP/24
 PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT
 PIHOLE_DNS_2=
 QUERY_LOGGING=true
@@ -1017,6 +1263,8 @@ INSTALL_WEB_INTERFACE=true
 WEB_PORT=$PIHOLE_HTTP_PORT
 WEBPASSWORD=
 DNSSEC=false
+# Configuração de DNS: Pi-hole (porta 53) -> Unbound (porta $UNBOUND_PORT)
+DNSMASQ_LISTENING=single
 # Otimizações RK322x
 BLOCKING_ENABLED=true
 REV_SERVER=false
@@ -1024,6 +1272,10 @@ REV_SERVER=false
 CACHE_SIZE=1000
 # Log reduzido para economizar I/O
 MAXDBDAYS=2
+# Configuração específica para usar apenas Unbound
+DNS_FQDN_REQUIRED=false
+DNS_BOGUS_PRIV=true
+CONDITIONAL_FORWARDING=false
 EOF
 
     echo_msg "Executando instalador do Pi-hole otimizado para ARM..."
@@ -1043,9 +1295,10 @@ EOF
       return 1
     fi
   else
-    echo_msg "Pi-hole já está instalado. Reconfigurando para otimização RK322x..."
+    echo_msg "Pi-hole já está instalado. Reconfigurando DNS upstream para Unbound..."
     # Para instalações existentes, configura para usar apenas o Unbound local
-    sudo pihole -a -i local -dns 127.0.0.1#$UNBOUND_PORT,
+    echo_msg "   Configurando Pi-hole para usar Unbound (127.0.0.1:$UNBOUND_PORT) como upstream..."
+    sudo pihole -a -i local -dns 127.0.0.1#$UNBOUND_PORT
 
     # Aguardar um momento para aplicar as configurações
     sleep 5
@@ -1136,34 +1389,82 @@ EOF
     lighttpd_ok=true
   fi
 
-  # Teste DNS via Pi-hole
-  if nslookup google.com 127.0.0.1 >/dev/null 2>&1; then
-    echo_msg "✅ Pi-hole DNS está respondendo"
+  # Teste DNS via Pi-hole (porta 53)
+  echo_msg "Testando Pi-hole na porta 53..."
+  if timeout 10 nslookup google.com 127.0.0.1 >/dev/null 2>&1; then
+    echo_msg "✅ Pi-hole DNS respondendo na porta 53"
     dns_ok=true
   else
-    echo_msg "❌ Pi-hole DNS não está respondendo"
+    echo_msg "❌ Pi-hole DNS não está respondendo na porta 53"
     dns_ok=false
   fi
 
-  # Teste DNS via Unbound
-  if nslookup google.com 127.0.0.1#$UNBOUND_PORT >/dev/null 2>&1; then
-    echo_msg "✅ Unbound DNS está respondendo"
+  # Teste DNS via Unbound (porta $UNBOUND_PORT)
+  echo_msg "Testando Unbound upstream na porta $UNBOUND_PORT..."
+  if timeout 10 nslookup google.com 127.0.0.1#$UNBOUND_PORT >/dev/null 2>&1; then
+    echo_msg "✅ Unbound upstream respondendo na porta $UNBOUND_PORT"
     unbound_ok=true
   else
-    echo_msg "❌ Unbound DNS não está respondendo"
+    echo_msg "❌ Unbound upstream não está respondendo na porta $UNBOUND_PORT"
     unbound_ok=false
   fi
 
-  # Resultado final
+  # Resultado final com diagnóstico detalhado
   if [ "$pihole_ftl_ok" = true ] && [ "$lighttpd_ok" = true ] && [ "$dns_ok" = true ] && [ "$unbound_ok" = true ]; then
-    echo_msg "✅ Pi-hole + Unbound otimizados para RK322x funcionando completamente."
-    echo_msg "   Interface web: http://$STATIC_IP:$PIHOLE_HTTP_PORT/admin"
-    echo_msg "   DNS Pipeline: Clientes → Pi-hole (porta 53) → Unbound (porta $UNBOUND_PORT) → Internet"
-    echo_msg "   Otimizações: Cache reduzido, logs limitados, lighttpd otimizado"
+    echo_msg "✅ Pi-hole + Unbound funcionando completamente!"
+    echo_msg "   🌐 DNS Pipeline: Clientes → Pi-hole (53) → Unbound ($UNBOUND_PORT) → Internet"
+    echo_msg "   🖥️  Interface web: http://$STATIC_IP:$PIHOLE_HTTP_PORT/admin"
+    echo_msg "   ⚙️  Configuração: DNS filtering + resolução recursiva local"
+    echo_msg "   📊 Otimizações RK322x: Cache reduzido, logs limitados"
+
+    # Configurar sistema para usar Pi-hole como DNS principal
+    echo_msg "Configurando sistema para usar Pi-hole como DNS..."
+    configure_system_dns_for_pihole
   elif [ "$pihole_ftl_ok" = true ] && [ "$dns_ok" = true ] && [ "$unbound_ok" = true ]; then
-    echo_msg "✅ Pi-hole + Unbound DNS funcionando, interface web pode ter problemas."
+    echo_msg "✅ Pi-hole + Unbound DNS funcionando (interface web com problemas)"
+    echo_msg "   DNS filtering e resolução funcionando corretamente"
+  elif [ "$pihole_ftl_ok" = true ] && [ "$dns_ok" = true ]; then
+    echo_msg "⚠️ Pi-hole funcionando, mas sem Unbound upstream"
+    echo_msg "   Execute: ./script.sh --fix-unbound"
   else
-    echo_msg "❌ Pi-hole com problemas. Execute diagnósticos específicos para RK322x."
+    echo_msg "❌ Pi-hole com problemas graves"
+    echo_msg "   Verifique: sudo systemctl status pihole-ftl"
+    echo_msg "   Logs: sudo journalctl -u pihole-ftl -n 20"
+  fi
+}
+
+# =========================
+# Configurar DNS do sistema para usar Pi-hole
+# =========================
+configure_system_dns_for_pihole() {
+  echo_msg "Configurando resolv.conf para usar Pi-hole..."
+
+  # Backup do resolv.conf atual
+  if [ -f /etc/resolv.conf ]; then
+    sudo cp /etc/resolv.conf /etc/resolv.conf.backup.$(date +%s)
+  fi
+
+  # Criar novo resolv.conf apontando para Pi-hole
+  cat <<EOF | sudo tee /etc/resolv.conf
+# Configuração DNS BoxServer RK322x
+# Pi-hole como DNS principal (porta 53) com Unbound upstream (porta $UNBOUND_PORT)
+nameserver 127.0.0.1
+nameserver $STATIC_IP
+# Fallback para caso de emergência
+nameserver 1.1.1.1
+EOF
+
+  # Proteger resolv.conf contra sobrescrita
+  sudo chattr +i /etc/resolv.conf 2>/dev/null || true
+
+  # Testar nova configuração
+  if timeout 5 nslookup google.com >/dev/null 2>&1; then
+    echo_msg "✅ Sistema configurado para usar Pi-hole como DNS"
+  else
+    echo_msg "⚠️ Possível problema na configuração DNS do sistema"
+    # Remover proteção e restaurar fallback se necessário
+    sudo chattr -i /etc/resolv.conf 2>/dev/null || true
+    echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf
   fi
 }
 
@@ -2088,12 +2389,16 @@ install_dashboard() {
         </div>
 
         <div class="info-box">
-            <h3>🌐 DNS Recursivo (RK322x Otimizado)</h3>
-            <p>Unbound rodando em: <code>127.0.0.1:$UNBOUND_PORT</code></p>
-            <p><strong>Configuração:</strong> Otimizada para ARM com cache reduzido</p>
-            <p><strong>Cache:</strong> $(if [ "${LOW_MEMORY:-false}" = "true" ]; then echo "32MB (modo baixa memória)"; else echo "64MB (padrão)"; fi)</p>
-            <p><strong>Threads:</strong> 1 (otimizado para single-core ARM)</p>
-            <p><strong>Teste:</strong> <code>nslookup google.com 127.0.0.1#$UNBOUND_PORT</code></p>
+            <h3>🌐 DNS Pipeline Completo (RK322x)</h3>
+            <p><strong>📊 Fluxo DNS:</strong> Clientes → Pi-hole (porta 53) → Unbound (porta $UNBOUND_PORT) → Internet</p>
+            <p><strong>🕳️ Pi-hole:</strong> Filtering de ads/malware na porta 53</p>
+            <p><strong>🔄 Unbound:</strong> Resolução recursiva local na porta $UNBOUND_PORT</p>
+            <p><strong>💾 Cache:</strong> $(if [ "${LOW_MEMORY:-false}" = "true" ]; then echo "32MB (modo baixa memória)"; else echo "64MB (padrão)"; fi)</p>
+            <p><strong>🧵 Threads:</strong> 1 (otimizado para single-core ARM)</p>
+            <p><strong>🧪 Testes:</strong></p>
+            <p><code>nslookup google.com 127.0.0.1</code> # Via Pi-hole</p>
+            <p><code>nslookup google.com 127.0.0.1#$UNBOUND_PORT</code> # Via Unbound</p>
+            <p><strong>⚙️ Sistema:</strong> Configurado para usar Pi-hole como DNS principal</p>
         </div>
 
         <div class="info-box">
@@ -2254,6 +2559,10 @@ show_summary() {
     echo "  IP: $STATIC_IP"
     echo "  Interface: $NET_IF"
     echo "  Gateway: $GATEWAY"
+    echo "DNS Pipeline:"
+    echo "  Sistema DNS: Pi-hole (porta 53) -> Unbound (porta $UNBOUND_PORT)"
+    echo "  Filtering: Pi-hole bloqueia ads/malware"
+    echo "  Resolução: Unbound faz consultas recursivas locais"
     echo "Otimizações RK322x aplicadas:"
     if [ "${LOW_MEMORY:-false}" = "true" ]; then
       echo "  - Modo baixa memória ativado"
@@ -2313,19 +2622,28 @@ show_summary() {
     echo ""
     echo "Troubleshooting específico RK322x:"
     echo "  - Se WireGuard falhar: Verifique 'lsmod | grep wireguard'"
-    echo "  - Se DNS lento: Ajuste cache em /etc/unbound/unbound.conf.d/pi-hole.conf"
-    echo "  - Se pouca RAM: Monitore com 'free -h' e ajuste serviços"
+    echo "  - Se DNS lento: Execute './script.sh --fix-unbound'"
+    echo "  - Se Pi-hole não bloqueia: Verifique 'sudo pihole status'"
+    echo "  - Se Unbound não responde: Execute './script.sh --fix-unbound'"
     echo "  - Se DNSSEC com problemas: Execute './script.sh --fix-dnssec'"
+    echo "  - Para testar DNS: 'nslookup google.com' (via Pi-hole)"
+    echo "  - Para testar upstream: 'nslookup google.com 127.0.0.1#$UNBOUND_PORT'"
+    echo "  - Se pouca RAM: Monitore com 'free -h' e ajuste serviços"
     if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then
       echo ""
       echo "=== LIMITAÇÕES DE CRIPTOGRAFIA DETECTADAS ==="
       echo "Seu kernel RK322x tem módulos de criptografia limitados."
       echo "Configurações aplicadas:"
-      echo "  - WireGuard em modo userspace (performance reduzida)"
-      echo "  - Unbound com validação DNSSEC relaxada"
-      echo "  - Cloudflared com configurações conservadoras"
-      echo "  - Filebrowser sem autenticação TLS complexa"
+      echo "  - Pi-hole: Porta 53 com cache reduzido (1000 entradas)"
+      echo "  - Unbound: Porta $UNBOUND_PORT com DNSSEC relaxado"
+      echo "  - WireGuard: Modo userspace (performance reduzida)"
+      echo "  - Cloudflared: Configurações conservadoras"
+      echo "  - DNS Pipeline: Pi-hole -> Unbound -> Internet"
       echo ""
+      echo "Para melhorar desempenho DNS:"
+      echo "  - Monitor: 'dig @127.0.0.1 google.com | grep \"Query time\"'"
+      echo "  - Pi-hole stats: 'pihole -c -e'"
+      echo "  - Unbound stats: 'sudo unbound-control stats'"
       echo "Para melhorar segurança (opcional):"
       echo "  - Considere atualização do kernel se possível"
       echo "  - Use VPN externa adicional se necessário"
@@ -2350,6 +2668,7 @@ usage() {
   echo "  --clean         Remove completamente todas as instalações e dados do BoxServer antes de instalar."
   echo "  --verify-clean  Verifica se o sistema está limpo após purga"
   echo "  --fix-dnssec    Verificar e corrigir problemas de DNSSEC root key"
+  echo "  --fix-unbound   Diagnosticar e corrigir problemas do Unbound DNS"
   echo "  -s, --silent    Modo silencioso (sem interface whiptail)"
   echo "  -u, --update    Atualizar serviços já instalados"
   echo "  -r, --rollback  Reverter alterações"
@@ -2396,6 +2715,12 @@ while [[ $# -gt 0 ]]; do
       echo "🔐 Verificando e corrigindo DNSSEC root key..."
       check_system
       maintain_dnssec_root_key
+      exit 0
+      ;;
+    --fix-unbound)
+      echo "🔧 Diagnosticando e corrigindo Unbound..."
+      check_system
+      diagnose_unbound_issues
       exit 0
       ;;
     -h|--help)
