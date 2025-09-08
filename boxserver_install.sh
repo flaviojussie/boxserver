@@ -236,9 +236,24 @@ purge_existing_installations() {
   echo "Serviços parados e desabilitados."
 
   # Remover pacotes com purge
-  sudo apt-get purge -y pihole-ftl lighttpd unbound wireguard-tools rng-tools samba minidlna nginx
-  sudo apt-get autoremove -y
-  echo "Pacotes removidos."
+  local packages_to_purge=()
+  local all_possible_packages=("pihole-ftl" "lighttpd" "unbound" "wireguard-tools" "rng-tools" "samba" "minidlna" "nginx")
+
+  echo "Verificando pacotes instalados para purga..."
+  for pkg in "${all_possible_packages[@]}"; do
+    if dpkg -s "$pkg" >/dev/null 2>&1; then
+      packages_to_purge+=("$pkg")
+    fi
+  done
+
+  if [ ${#packages_to_purge[@]} -gt 0 ]; then
+    echo "Purgando os seguintes pacotes: ${packages_to_purge[*]}"
+    sudo apt-get purge -y "${packages_to_purge[@]}"
+    sudo apt-get autoremove -y
+    echo "Pacotes removidos."
+  else
+    echo "Nenhum dos pacotes alvo foi encontrado para purga."
+  fi
 
   # Remover binários e serviços manuais
   sudo rm -f /usr/local/bin/cloudflared /usr/local/bin/filebrowser
