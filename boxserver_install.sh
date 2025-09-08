@@ -1,5 +1,5 @@
 #!/bin/bash
-# BoxServer Install V2 - Versão otimizada e refatorada
+# BoxServer Install V2 - Versão otimizada e refatorada com correções
 # Compatível apenas com Armbian 21.08.8 (Debian 11 Bullseye)
 # Inclui: Unbound, Pi-hole, WireGuard, Cloudflared, RNG-tools, Samba, MiniDLNA, Filebrowser, Dashboard
 # Cria IP fixo default 192.168.0.100
@@ -17,6 +17,7 @@ DASHBOARD_DIR="/srv/boxserver-dashboard"
 TIMESTAMP="$(date +%Y%m%d%H%M%S)"
 BACKUP_SUFFIX=".bak.${TIMESTAMP}"
 SILENT_MODE=false
+UNBOUND_FAILED=false
 
 exec > >(tee -a "$LOGFILE") 2>&1
 
@@ -147,18 +148,21 @@ install_unbound() {
   echo "Instalando Unbound..."
   ensure_pkg unbound
 
-  # Pausar temporariamente o resolvconf para evitar conflitos
+  # Parar serviços que podem conflitar
+  sudo systemctl stop systemd-resolved 2>/dev/null || true
+  sudo systemctl disable systemd-resolved 2>/dev/null || true
   sudo systemctl stop resolvconf 2>/dev/null || true
+  sudo systemctl stop unbound 2>/dev/null || true
+  sudo systemctl stop dnsmasq 2>/dev/null || true
 
   backup_file "/etc/unbound/unbound.conf"
 
-  # Configuração básica do Unbound
+  # Configuração minimal e segura do Unbound
   sudo tee /etc/unbound/unbound.conf > /dev/null <<EOF
 server:
     verbosity: 1
-    num-threads: 2
-    interface: 0.0.0.0
-    interface: ::0
+    num-threads: 1
+    interface: 127.0.0.1
     port: $PORT_UNBOUND
     do-ip4: yes
     do-ip6: no
@@ -172,22 +176,16 @@ server:
     hide-identity: yes
     hide-version: yes
     harden-glue: yes
-    harden-dnssec-stripped: yes
     use-caps-for-id: yes
     cache-min-ttl: 3600
     cache-max-ttl: 86400
-    prefetch: yes
-    prefetch-key: yes
     msg-cache-size: 50m
     rrset-cache-size: 100m
-    so-rcvbuf: 1m
-    so-sndbuf: 1m
     minimal-responses: yes
     qname-minimisation: yes
+    prefetch: yes
+    prefetch-key: yes
     root-hints: "/usr/share/dns/root.hints"
-    # Evitar conflito com portas já em uso
-    outgoing-port-permit: 32768-65535
-    outgoing-port-avoid: 0-32767
 
 include: "/etc/unbound/unbound.conf.d/*.conf"
 EOF
@@ -198,17 +196,21 @@ EOF
   # Baixar root hints se necessário
   if [ ! -f "/usr/share/dns/root.hints" ]; then
     echo "Baixando root.hints..."
-    sudo curl -o /usr/share/dns/root.hints https://www.internic.net/domain/named.root
+    sudo curl -o /usr/share/dns/root.hints https://www.internic.net/domain/named.root || true
   fi
 
   # Configurar permissões
-  sudo chown -R unbound:unbound /etc/unbound
-  sudo chmod 755 /etc/unbound
+  sudo chown -R unbound:unbound /etc/unbound 2>/dev/null || true
+  sudo chmod 755 /etc/unbound 2>/dev/null || true
 
-  # Parar serviço antes de reconfigurar
-  sudo systemctl stop unbound 2>/dev/null || true
+  # Limpar qualquer estado anterior
+  sudo rm -f /var/lib/unbound/unbound_control.key 2>/dev/null || true
+  sudo rm -f /var/lib/unbound/unbound_server.key 2>/dev/null || true
 
-  # Testar configuração antes de iniciar
+  # Recarregar systemd
+  sudo systemctl daemon-reload
+
+  # Testar configuração
   if sudo unbound-checkconf /etc/unbound/unbound.conf; then
     echo "✅ Configuração do Unbound válida"
   else
@@ -217,23 +219,17 @@ EOF
     sudo tee /etc/unbound/unbound.conf > /dev/null <<EOF
 server:
     verbosity: 1
-    interface: 0.0.0.0
+    interface: 127.0.0.1
     port: $PORT_UNBOUND
     access-control: 127.0.0.1/32 allow
     access-control: 192.168.0.0/16 allow
     hide-identity: yes
     hide-version: yes
-    use-caps-for-id: yes
     include: "/etc/unbound/unbound.conf.d/*.conf"
 EOF
   fi
 
-  # Desabilitar temporariamente outros serviços DNS
-  sudo systemctl stop systemd-resolved 2>/dev/null || true
-  sudo systemctl disable systemd-resolved 2>/dev/null || true
-
-  # Habilitar e iniciar Unbound
-  sudo systemctl daemon-reload
+  # Tentar iniciar Unbound
   sudo systemctl enable unbound
   sudo systemctl start unbound
 
@@ -241,14 +237,44 @@ EOF
   if systemctl is-active --quiet unbound; then
     echo "✅ Unbound instalado e configurado com sucesso"
   else
-    echo "⚠️ Unbound instalado mas não iniciou - verifique logs com: journalctl -u unbound"
-    # Tentar iniciar com configuração minimal
+    echo "⚠️ Unbound não iniciou - tentando configuração alternativa..."
+
+    # Configuração alternativa - apenas localhost
     sudo systemctl stop unbound
     sleep 2
+
+    sudo tee /etc/unbound/unbound.conf > /dev/null <<EOF
+server:
+    verbosity: 1
+    interface: 127.0.0.1
+    port: $PORT_UNBOUND
+    do-ip4: yes
+    do-ip6: no
+    do-daemonize: yes
+    access-control: 127.0.0.1/32 allow
+    hide-identity: yes
+    hide-version: yes
+    cache-min-ttl: 3600
+    cache-max-ttl: 86400
+    msg-cache-size: 16m
+    rrset-cache-size: 32m
+    include: "/etc/unbound/unbound.conf.d/*.conf"
+EOF
+
     sudo systemctl start unbound
+
+    if systemctl is-active --quiet unbound; then
+      echo "✅ Unbound configurado em modo localhost"
+    else
+      echo "❌ Unbound não conseguiu iniciar - continuando sem Unbound"
+      UNBOUND_FAILED=true
+      # Criar configuração fallback para Pi-hole usar DNS externo
+      echo "Configurando fallback para DNS externo..."
+      return 1
+    fi
   fi
 
-  # Reativar resolvconf se estava rodando
+  # Reativar serviços necessários
   sudo systemctl start resolvconf 2>/dev/null || true
 }
 
@@ -259,11 +285,19 @@ install_pihole() {
 
   backup_file "/etc/pihole/setupVars.conf"
 
+  # Configurar DNS baseado no status do Unbound
+  local pihole_dns
+  if [ "$UNBOUND_FAILED" = true ]; then
+    pihole_dns="$DEFAULT_DNS1;$DEFAULT_DNS2"
+  else
+    pihole_dns="127.0.0.1#53"
+  fi
+
   sudo tee /etc/pihole/setupVars.conf > /dev/null <<EOF
 PIHOLE_INTERFACE=$(detect_interface)
 IPV4_ADDRESS=$DEFAULT_IP/24
 IPV6_ADDRESS=
-PIHOLE_DNS_1=127.0.0.1#53
+PIHOLE_DNS_1=$pihole_dns
 PIHOLE_DNS_2=
 QUERY_LOGGING=true
 INSTALL_WEB_SERVER=true
@@ -466,6 +500,7 @@ install_dashboard() {
         .status { padding: 5px 10px; border-radius: 3px; font-weight: bold; }
         .online { background-color: #4CAF50; color: white; }
         .offline { background-color: #f44336; color: white; }
+        .warning { background-color: #ff9800; color: white; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
     </style>
 </head>
@@ -493,6 +528,26 @@ install_dashboard() {
                 <p>Porta: $PORT_WIREGUARD</p>
                 <p>Status: <span class="status online">Online</span></p>
             </div>
+EOF
+
+  # Adicionar status do Unbound baseado na variável
+  if [ "$UNBOUND_FAILED" = true ]; then
+    sudo tee -a "$DASHBOARD_DIR/index.html" > /dev/null <<EOF
+            <div class="service">
+                <h3>Unbound DNS</h3>
+                <p>Status: <span class="status warning">Falhou - usando DNS externo</span></p>
+            </div>
+EOF
+  else
+    sudo tee -a "$DASHBOARD_DIR/index.html" > /dev/null <<EOF
+            <div class="service">
+                <h3>Unbound DNS</h3>
+                <p>Status: <span class="status online">Online</span></p>
+            </div>
+EOF
+  fi
+
+  sudo tee -a "$DASHBOARD_DIR/index.html" > /dev/null <<EOF
         </div>
     </div>
 </body>
@@ -538,7 +593,12 @@ test_dns_resolution() {
 
 test_services() {
   echo "Testando serviços..."
-  local services=("unbound" "pihole-FTL" "wg-quick@wg0" "cloudflared" "rng-tools" "smbd" "nmbd" "minidlna" "filebrowser" "nginx")
+  local services=("pihole-FTL" "wg-quick@wg0" "cloudflared" "rng-tools" "smbd" "nmbd" "minidlna" "filebrowser" "nginx")
+
+  # Adicionar Unbound à lista se não falhou
+  if [ "$UNBOUND_FAILED" = false ]; then
+    services+=("unbound")
+  fi
 
   for service in "${services[@]}"; do
     if systemctl is-active --quiet "$service"; then
@@ -586,7 +646,11 @@ generate_summary() {
     echo "WireGuard Public Key: $(grep PublicKey /etc/wireguard/wg0.conf | cut -d' ' -f3)"
     echo ""
     echo "=== Status dos Serviços ==="
-    systemctl is-active unbound && echo "Unbound: Ativo" || echo "Unbound: Inativo"
+    if [ "$UNBOUND_FAILED" = true ]; then
+      echo "Unbound: Falhou - usando DNS externo ($DEFAULT_DNS1, $DEFAULT_DNS2)"
+    else
+      systemctl is-active unbound && echo "Unbound: Ativo" || echo "Unbound: Inativo"
+    fi
     systemctl is-active pihole-FTL && echo "Pi-hole: Ativo" || echo "Pi-hole: Inativo"
     systemctl is-active wg-quick@wg0 && echo "WireGuard: Ativo" || echo "WireGuard: Inativo"
     systemctl is-active cloudflared && echo "Cloudflared: Ativo" || echo "Cloudflared: Inativo"
@@ -667,6 +731,10 @@ main() {
   echo_msg "🎉 BoxServer V2 instalado com sucesso!"
   echo_msg "📋 Relatório disponível em: $SUMMARY_FILE"
   echo_msg "🌐 Dashboard disponível em: http://$DEFAULT_IP:$PORT_DASHBOARD"
+
+  if [ "$UNBOUND_FAILED" = true ]; then
+    echo_msg "⚠️ Unbound falhou - usando DNS externo. Verifique logs: journalctl -u unbound"
+  fi
 }
 
 # =========================
