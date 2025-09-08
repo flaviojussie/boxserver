@@ -416,10 +416,7 @@ install_unbound() {
   echo_msg "Instalando/reconfigurando Unbound..."
   SUMMARY_ENTRIES+=("Unbound DNS: Porta $UNBOUND_PORT")
 
-  # Verificar se Unbound já está instalado
-  if dpkg -l | grep -q "^ii.*unbound"; then
-    echo_msg "Unbound já está instalado. Reconfigurando..."
-  else
+  if ! dpkg -s "unbound" >/dev/null 2>&1; then
     echo_msg "Instalando Unbound..."
     sudo apt install -y unbound
   fi
@@ -448,26 +445,24 @@ server:
     root-hints: "/var/lib/unbound/root.hints"
 EOF
 
-  # Baixar root hints se não existirem
   if [ ! -f /var/lib/unbound/root.hints ]; then
     sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
   fi
 
-  # Configurar trust anchor se não existir
   if [ ! -f /var/lib/unbound/root.key ]; then
     sudo unbound-anchor -a /var/lib/unbound/root.key || true
   fi
 
-  # Corrigir permissões para o usuário unbound
   sudo chown -R unbound:unbound /var/lib/unbound
 
-  sudo systemctl enable --now unbound
+  echo "Reiniciando Unbound para aplicar a configuração..."
+  sudo systemctl restart unbound
+  sleep 2 # Aguarda um momento para estabilização
 
-  # Verificar se o serviço está rodando
   if sudo systemctl is-active --quiet unbound; then
     echo_msg "✅ Unbound instalado/reconfigurado e em execução"
   else
-    echo_msg "⚠️  Unbound instalado/reconfigurado, mas pode não estar em execução"
+    echo_msg "⚠️  Unbound instalado/reconfigurado, mas pode não estar em execução. Verifique os logs com 'journalctl -u unbound'"
   fi
 }
 
@@ -477,10 +472,11 @@ install_pihole() {
 
   # Se o Pi-hole não estiver instalado, prepara e executa a instalação não interativa
   if ! command -v pihole &> /dev/null; then
-    echo_msg "Preparando para instalação não interativa do Pi-hole..."
+    echo_msg "Preparando para instalação não interativa do Pi-hole v6..."
 
-    # Criar setupVars.conf ANTES da instalação para garantir modo não interativo
     sudo mkdir -p /etc/pihole
+    # Criar setupVars.conf com todas as informações necessárias para a instalação não interativa
+    # Incluindo a WEB_PORT para o lighttpd, que é o método correto para o Pi-hole v6
     cat <<EOF | sudo tee /etc/pihole/setupVars.conf
 PIHOLE_INTERFACE=$NET_IF
 IPV4_ADDRESS=$STATIC_IP
@@ -488,17 +484,22 @@ PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT
 QUERY_LOGGING=true
 INSTALL_WEB_SERVER=true
 INSTALL_WEB_INTERFACE=true
+WEB_PORT=$PIHOLE_HTTP_PORT
 WEBPASSWORD=
 EOF
 
-    echo_msg "Executando instalador do Pi-hole em modo não interativo..."
-    # Executa o instalador com sudo para ter as permissões necessárias
+    echo_msg "Executando instalador do Pi-hole..."
+    # O instalador irá ler o setupVars.conf, configurar o lighttpd e habilitar/iniciar os serviços.
+    # O script não precisa mais gerenciar o lighttpd diretamente.
     if ! curl -sSL https://install.pi-hole.net | sudo bash /dev/stdin --unattended; then
       echo_msg "❌ Falha na instalação do Pi-hole."
       return 1
     fi
   else
     echo_msg "Pi-hole já está instalado. Reconfigurando..."
+    # Para instalações existentes, usa o comando pihole para ajustar as configurações de DNS.
+    # A mudança de porta em instalações existentes não é tratada para evitar complexidade.
+    sudo pihole -a -i local -dns 127.0.0.1#$UNBOUND_PORT
   fi
 
   # --- Reconfiguração (executa tanto para novas instalações quanto para existentes) ---
