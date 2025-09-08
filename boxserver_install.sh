@@ -532,19 +532,15 @@ install_pihole() {
     export LIGHTTPD_ENABLED="false"
     export WEBPORT="$PIHOLE_HTTP_PORT"
 
-    # Baixar e executar instalador do Pi-hole em modo não-interativo
-    log_info "Executando instalador do Pi-hole em modo não-interativo..."
+    # Baixar e executar instalador do Pi-hole em modo 100% silencioso
+    log_info "Executando instalador do Pi-hole em modo 100% silencioso..."
 
-    # Tentar instalação não-interativa primeiro
-    if ! curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended; then
-        log_info "Instalação não-interativa falhou, tentando método alternativo..."
+    # Criar diretório e arquivo de configuração antes da instalação
+    local pihole_conf="/etc/pihole/setupVars.conf"
+    sudo mkdir -p /etc/pihole
+    backup_file "$pihole_conf"
 
-        # Método alternativo: criar manualmente o arquivo de configuração primeiro
-        local pihole_conf="/etc/pihole/setupVars.conf"
-        sudo mkdir -p /etc/pihole
-        backup_file "$pihole_conf"
-
-        cat << EOF | sudo tee "$pihole_conf" > /dev/null
+    cat << EOF | sudo tee "$pihole_conf" > /dev/null
 PIHOLE_INTERFACE=$INTERFACE
 IPV4_ADDRESS=$STATIC_IP/24
 PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT
@@ -557,12 +553,11 @@ LIGHTTPD_ENABLED=false
 WEBPORT=$PIHOLE_HTTP_PORT
 EOF
 
-        # Tentar instalação novamente com o arquivo de configuração pré-existente
-        curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended || {
-            log_error "Falha crítica na instalação do Pi-hole"
-            return 1
-        }
-    fi
+    # Executar instalação silenciosa redirecionando toda saída para /dev/null
+    curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended >/dev/null 2>&1 || {
+        log_error "Falha crítica na instalação do Pi-hole"
+        return 1
+    }
 
     # Aguardar um momento para a instalação completar
     sleep 5
