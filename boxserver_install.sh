@@ -65,8 +65,40 @@ load_config() {
 exec > >(tee -a "$LOGFILE") 2>&1
 
 # =========================
-# Funções auxiliares otimizadas
+# Funções auxiliares de verificação
 # =========================
+test_nginx_config() {
+    log_info "Testando configuração do Nginx..."
+
+    # Testar configuração do nginx
+    if sudo nginx -t 2>/dev/null; then
+        log_success "Configuração do Nginx está correta"
+        return 0
+    else
+        log_error "Configuração do Nginx contém erros"
+        sudo nginx -t  # Mostrar os erros específicos
+        return 1
+    fi
+}
+
+safe_nginx_restart() {
+    log_info "Reiniciando Nginx..."
+
+    # Testar configuração primeiro
+    if test_nginx_config; then
+        # Se a configuração estiver correta, tentar reiniciar
+        if sudo systemctl restart nginx; then
+            log_success "Nginx reiniciado com sucesso"
+            return 0
+        else
+            log_error "Falha ao reiniciar Nginx"
+            return 1
+        fi
+    else
+        log_error "Não foi possível reiniciar Nginx devido a erros de configuração"
+        return 1
+    fi
+}
 whiptail_msg() {
     local message="$1"
     if [[ "$SILENT_MODE" = false ]]; then
@@ -261,6 +293,22 @@ check_rk322x_compatibility() {
     fi
 
     log_success "✅ Compatibilidade RK322x verificada"
+}
+
+# =========================
+# Função de limpeza do Nginx
+# =========================
+cleanup_nginx_configs() {
+    log_info "Limpando configurações conflitantes do Nginx..."
+
+    # Remover configurações padrão que podem conflitar
+    sudo rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+    sudo rm -f /etc/nginx/sites-available/default 2>/dev/null || true
+
+    # Garantir que os diretórios existam
+    sudo mkdir -p /etc/nginx/conf.d
+
+    log_success "Configurações do Nginx limpas"
 }
 
 # =========================
@@ -468,33 +516,132 @@ install_pihole() {
     safe_execute "sudo systemctl stop systemd-resolved 2>/dev/null || true" "Falha ao parar systemd-resolved"
     safe_execute "sudo systemctl disable systemd-resolved 2>/dev/null || true" "Falha ao desabilitar systemd-resolved"
 
-    # Baixar e executar instalador do Pi-hole
-    curl -sSL https://install.pi-hole.net | bash
+    # Parar e desabilitar lighttpd para evitar conflitos com nginx
+    safe_execute "sudo systemctl stop lighttpd 2>/dev/null || true" "Falha ao parar lighttpd"
+    safe_execute "sudo systemctl disable lighttpd 2>/dev/null || true" "Falha ao desabilitar lighttpd"
 
-    # Configurar Pi-hole para usar portas personalizadas
-    local pihole_conf="/etc/pihole/setupVars.conf"
-    backup_file "$pihole_conf"
+    # Pré-configurar variáveis de ambiente para instalação não-interativa
+    export PIHOLE_INTERFACE="$INTERFACE"
+    export IPV4_ADDRESS="$STATIC_IP/24"
+    export PIHOLE_DNS_1="127.0.0.1#$UNBOUND_PORT"
+    export PIHOLE_DNS_2=""
+    export WEBPASSWORD="$PIHOLE_PASSWORD"
+    export QUERY_LOGGING="true"
+    export INSTALL_WEB_SERVER="false"
+    export INSTALL_WEB_INTERFACE="true"
+    export LIGHTTPD_ENABLED="false"
+    export WEBPORT="$PIHOLE_HTTP_PORT"
 
-    cat << EOF | sudo tee -a "$pihole_conf" > /dev/null
+    # Baixar e executar instalador do Pi-hole em modo não-interativo
+    log_info "Executando instalador do Pi-hole em modo não-interativo..."
+
+    # Tentar instalação não-interativa primeiro
+    if ! curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended; then
+        log_info "Instalação não-interativa falhou, tentando método alternativo..."
+
+        # Método alternativo: criar manualmente o arquivo de configuração primeiro
+        local pihole_conf="/etc/pihole/setupVars.conf"
+        sudo mkdir -p /etc/pihole
+        backup_file "$pihole_conf"
+
+        cat << EOF | sudo tee "$pihole_conf" > /dev/null
 PIHOLE_INTERFACE=$INTERFACE
 IPV4_ADDRESS=$STATIC_IP/24
 PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT
+PIHOLE_DNS_2=
 WEBPASSWORD=$PIHOLE_PASSWORD
 QUERY_LOGGING=true
-INSTALL_WEB_SERVER=true
+INSTALL_WEB_SERVER=false
 INSTALL_WEB_INTERFACE=true
 LIGHTTPD_ENABLED=false
 WEBPORT=$PIHOLE_HTTP_PORT
 EOF
 
+        # Tentar instalação novamente com o arquivo de configuração pré-existente
+        curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended || {
+            log_error "Falha crítica na instalação do Pi-hole"
+            return 1
+        }
+    fi
+
+    # Aguardar um momento para a instalação completar
+    sleep 5
+
+    # Verificar se a instalação foi concluída
+    if command -v pihole >/dev/null 2>&1; then
+        log_success "Pi-hole instalado com sucesso"
+
+        # Configurar arquivo setupVars.conf manualmente para garantir todas as configurações
+        local pihole_conf="/etc/pihole/setupVars.conf"
+        backup_file "$pihole_conf"
+
+        cat << EOF | sudo tee "$pihole_conf" > /dev/null
+PIHOLE_INTERFACE=$INTERFACE
+IPV4_ADDRESS=$STATIC_IP/24
+PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT
+PIHOLE_DNS_2=
+WEBPASSWORD=$PIHOLE_PASSWORD
+QUERY_LOGGING=true
+INSTALL_WEB_SERVER=false
+INSTALL_WEB_INTERFACE=true
+LIGHTTPD_ENABLED=false
+WEBPORT=$PIHOLE_HTTP_PORT
+EOF
+
+        # Configurar permissões corretas
+        safe_execute "sudo chmod 644 '$pihole_conf'" "Falha ao configurar permissões do setupVars.conf"
+
+    else
+        log_error "Falha na instalação do Pi-hole"
+        return 1
+    fi
+
     # Configurar Nginx para Pi-hole
+    cleanup_nginx_configs
     configure_nginx_pihole
+
+    # Garantir permissões corretas nos arquivos do Pi-hole
+    safe_execute "sudo chown -R pihole:pihole /etc/pihole 2>/dev/null || true" "Falha ao configurar permissões do Pi-hole"
+    safe_execute "sudo chmod -R 755 /var/www/html/admin 2>/dev/null || true" "Falha ao configurar permissões do admin"
 
     # Reiniciar serviços
     safe_execute "sudo systemctl restart pihole-FTL" "Falha ao reiniciar pihole-FTL"
     safe_execute "sudo systemctl restart nginx" "Falha ao reiniciar nginx"
 
     log_success "Pi-hole instalado e configurado com sucesso"
+}
+
+# =========================
+# Função para corrigir problemas pós-instalação do Pi-hole
+# =========================
+fix_pihole_issues() {
+    log_info "Corrigindo problemas pós-instalação do Pi-hole..."
+
+    # Verificar e corrigir permissões
+    safe_execute "sudo chown -R pihole:pihole /etc/pihole 2>/dev/null || true" "Falha ao configurar permissões do /etc/pihole"
+    safe_execute "sudo chmod -R 755 /var/www/html/admin 2>/dev/null || true" "Falha ao configurar permissões do admin"
+    safe_execute "sudo chmod 644 /etc/pihole/setupVars.conf 2>/dev/null || true" "Falha ao configurar permissões do setupVars.conf"
+
+    # Garantir que o lighttpd está completamente desativado
+    safe_execute "sudo systemctl stop lighttpd 2>/dev/null || true" "Falha ao parar lighttpd"
+    safe_execute "sudo systemctl disable lighttpd 2>/dev/null || true" "Falha ao desabilitar lighttpd"
+    safe_execute "sudo systemctl mask lighttpd 2>/dev/null || true" "Falha ao mascarar lighttpd"
+
+    # Reiniciar pihole-FTL para garantir que está usando a configuração correta
+    safe_execute "sudo systemctl restart pihole-FTL" "Falha ao reiniciar pihole-FTL"
+
+    # Forçar atualização da lista de bloqueio
+    safe_execute "sudo pihole -g" "Falha ao atualizar lista de bloqueio" || true
+
+    # Verificar status do serviço
+    if systemctl is-active --quiet pihole-FTL; then
+        log_success "Pi-hole FTL está ativo"
+    else
+        log_error "Pi-hole FTL não está ativo - tentando reiniciar..."
+        safe_execute "sudo systemctl restart pihole-FTL" "Falha ao reiniciar pihole-FTL"
+    fi
+
+    log_success "Correções pós-instalação do Pi-hole concluídas"
 }
 
 configure_nginx_pihole() {
@@ -509,12 +656,33 @@ server {
     listen [::]:$PIHOLE_HTTP_PORT;
     server_name $DOMAIN_NAME;
 
+    # Headers adicionais para compatibilidade com Pi-hole
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+
+    # Aumentar limites para uploads e requisições POST
+    client_max_body_size 10M;
+    client_body_buffer_size 128k;
+    proxy_buffering off;
+
+    # Timeout para requisições longas
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+
     location / {
         proxy_pass http://127.0.0.1:80;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # Habilitar WebSocket para atualizações em tempo real
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 
     location /admin {
@@ -523,11 +691,26 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # Configurações específicas para o admin do Pi-hole
+        proxy_buffering off;
+        proxy_cache off;
+
+        # Habilitar WebSocket para o painel admin
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    # Bloquear acesso a arquivos sensíveis
+    location ~ /admin/\.(ht|git|svn) {
+        deny all;
+        return 403;
     }
 }
 EOF
 
-    safe_execute "sudo systemctl reload nginx" "Falha ao recarregar Nginx"
+    safe_nginx_restart || log_error "Falha ao reiniciar Nginx, continuando mesmo assim..."
     log_success "Nginx configurado para Pi-hole"
 }
 
@@ -892,8 +1075,8 @@ EOF
 
     cat << EOF | sudo tee "$dashboard_nginx" > /dev/null
 server {
-    listen 80;
-    listen [::]:80;
+    listen 81;
+    listen [::]:81;
     server_name _;
     root $DASHBOARD_DIR;
     index index.html;
@@ -910,7 +1093,7 @@ server {
 }
 EOF
 
-    safe_execute "sudo systemctl reload nginx" "Falha ao recarregar Nginx"
+    safe_nginx_restart || log_error "Falha ao reiniciar Nginx, continuando mesmo assim..."
     log_success "Dashboard instalado e configurado com sucesso"
 }
 
@@ -1091,6 +1274,7 @@ main_install() {
     # Instalar serviços
     install_unbound
     install_pihole
+    fix_pihole_issues
     install_wireguard
     install_cloudflared
     install_rng_tools
