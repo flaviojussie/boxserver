@@ -959,8 +959,42 @@ EOF
 install_samba() {
     log_info "Instalando Samba..."
 
-    ensure_pkg "samba"
-    ensure_pkg "samba-common-bin"
+    # Limpar instalações anteriores do Samba
+    log_info "Verificando e limpando instalações anteriores do Samba..."
+
+    # Parar serviços se estiverem rodando
+    safe_execute "sudo systemctl stop smbd nmbd 2>/dev/null || true" "Parando serviços Samba existentes"
+    safe_execute "sudo systemctl stop samba-ad-dc 2>/dev/null || true" "Parando serviço Samba AD DC"
+
+    # Remover pacotes conflitantes
+    local conflicting_packages=("samba" "samba-common" "samba-common-bin" "samba-ad-dc")
+
+    for package in "${conflicting_packages[@]}"; do
+        if dpkg -s "$package" >/dev/null 2>&1; then
+            log_info "Removendo pacote conflitante: $package"
+            safe_execute "sudo apt-get remove --purge -y $package 2>/dev/null || true" "Removendo $package"
+        fi
+    done
+
+    # Limpar configurações residuais
+    safe_execute "sudo rm -f /etc/samba/smb.conf /etc/samba/smb.conf~* 2>/dev/null || true" "Limpando configurações antigas"
+    safe_execute "sudo rm -rf /var/lib/samba/* /var/cache/samba/* 2>/dev/null || true" "Limpando dados do Samba"
+
+    # Atualizar lista de pacotes
+    if [[ "$VERBOSE_MODE" = true ]]; then
+        verbose_execute "sudo apt-get update" "Atualizando lista de pacotes"
+    else
+        safe_execute "sudo apt-get update" "Falha ao atualizar lista de pacotes"
+    fi
+
+    # Instalar pacotes necessários
+    log_info "Instalando pacotes Samba..."
+
+    if [[ "$VERBOSE_MODE" = true ]]; then
+        verbose_execute "sudo apt-get install -y samba samba-common-bin" "Instalando Samba"
+    else
+        safe_execute "sudo apt-get install -y samba samba-common-bin" "Falha ao instalar Samba"
+    fi
 
     # Configurar Samba
     local smb_conf="/etc/samba/smb.conf"
@@ -1006,10 +1040,18 @@ EOF
     # Criar grupo de usuários Samba
     safe_execute "sudo groupadd smbusers 2>/dev/null || true" "Falha ao criar grupo smbusers"
 
+    # Habilitar e iniciar serviços
     safe_execute "sudo systemctl enable smbd nmbd" "Falha ao habilitar serviços Samba"
     safe_execute "sudo systemctl start smbd nmbd" "Falha ao iniciar serviços Samba"
 
-    log_success "Samba instalado e configurado com sucesso"
+    # Verificar status
+    if systemctl is-active --quiet smbd && systemctl is-active --quiet nmbd; then
+        log_success "Samba instalado e configurado com sucesso"
+    else
+        log_error "Serviços Samba não iniciaram corretamente"
+        systemctl status smbd nmbd | tail -10
+        return 1
+    fi
 }
 
 install_minidlna() {
@@ -1470,6 +1512,33 @@ EOF
 }
 
 # =========================
+# Função de limpeza pré-instalação
+# =========================
+cleanup_before_install() {
+    log_info "Limpando instalações anteriores..."
+
+    # Parar serviços conflitantes
+    local services=("smbd" "nmbd" "samba-ad-dc" "pihole-FTL" "lighttpd" "unbound" "cloudflared" "minidlna" "filebrowser")
+
+    for service in "${services[@]}"; do
+        if systemctl is-active --quiet "$service"; then
+            safe_execute "sudo systemctl stop '$service' 2>/dev/null || true" "Parando serviço $service"
+        fi
+    done
+
+    # Corrigir dependências quebradas
+    log_info "Verificando e corrigindo dependências quebradas..."
+    safe_execute "sudo dpkg --configure -a 2>/dev/null || true" "Configurando pacotes pendentes"
+    safe_execute "sudo apt-get install -f -y 2>/dev/null || true" "Corrigindo dependências quebradas"
+
+    # Limpar cache do apt
+    safe_execute "sudo apt-get clean 2>/dev/null || true" "Limpando cache do apt"
+    safe_execute "sudo apt-get autoremove -y 2>/dev/null || true" "Removendo pacotes não necessários"
+
+    log_success "Limpeza pré-instalação concluída"
+}
+
+# =========================
 # Função principal de instalação
 # =========================
 main_install() {
@@ -1487,6 +1556,9 @@ main_install() {
 
     # Carregar configuração
     load_config
+
+    # Limpeza pré-instalação
+    cleanup_before_install
 
     # Verificar e alocar portas
     check_and_set_ports
@@ -1546,22 +1618,119 @@ main_clean() {
         fi
     done
 
-    # Remover pacotes
-    local packages=("pi-hole" "unbound" "wireguard" "wireguard-tools" "samba" "samba-common-bin" "minidlna" "rng-tools")
+    # Remover pacotes de forma completa para cada serviço
+    log_info "Removendo pacotes instalados pelo BoxServer..."
 
-    for package in "${packages[@]}"; do
+    # Pi-hole (já tratado pelo uninstall_pihole_clean, mas garantir remoção completa)
+    local pihole_packages=("pi-hole" "pihole-ftl" "pihole-web")
+
+    # Unbound
+    local unbound_packages=("unbound")
+
+    # WireGuard
+    local wireguard_packages=("wireguard" "wireguard-tools")
+
+    # Samba
+    local samba_packages=("samba" "samba-common" "samba-common-bin" "samba-ad-dc")
+
+    # Cloudflared
+    local cloudflared_packages=("cloudflared")
+
+    # MiniDLNA
+    local minidlna_packages=("minidlna")
+
+    # RNG-tools
+    local rng_packages=("rng-tools" "rng-tools5")
+
+    # Filebrowser (instalado manualmente)
+    local filebrowser_packages=()
+
+    # Nginx e dependências
+    local nginx_packages=("nginx" "lighttpd")
+
+    # Outras dependências
+    local dependency_packages=("resolvconf")
+
+    # Combinar todos os pacotes
+    local all_packages=(
+        "${pihole_packages[@]}"
+        "${unbound_packages[@]}"
+        "${wireguard_packages[@]}"
+        "${samba_packages[@]}"
+        "${cloudflared_packages[@]}"
+        "${minidlna_packages[@]}"
+        "${rng_packages[@]}"
+        "${filebrowser_packages[@]}"
+        "${nginx_packages[@]}"
+        "${dependency_packages[@]}"
+    )
+
+    # Remover cada pacote se existir
+    for package in "${all_packages[@]}"; do
         if dpkg -s "$package" >/dev/null 2>&1; then
-            safe_execute "sudo apt-get remove --purge -y '$package'" "Falha ao remover pacote $package"
+            log_info "Removendo pacote: $package"
+            safe_execute "sudo apt-get remove --purge -y '$package' 2>/dev/null || true" "Falha ao remover pacote $package"
         fi
     done
 
-    # Limpar arquivos de configuração
-    safe_execute "sudo rm -rf /etc/wireguard /etc/samba /etc/minidlna.conf /opt/filebrowser $DASHBOARD_DIR" \
-                "Falha ao remover arquivos de configuração"
+    # Limpar arquivos de configuração de cada serviço
+    log_info "Removendo arquivos de configuração e dados..."
+
+    # Pi-hole
+    safe_execute "sudo rm -rf /etc/pi-hole /var/www/html/admin /var/www/html/pihole /opt/pihole 2>/dev/null || true" "Removendo arquivos Pi-hole"
+
+    # Unbound
+    safe_execute "sudo rm -rf /etc/unbound /var/lib/unbound 2>/dev/null || true" "Removendo arquivos Unbound"
+
+    # WireGuard
+    safe_execute "sudo rm -rf /etc/wireguard /var/lib/wireguard 2>/dev/null || true" "Removendo arquivos WireGuard"
+
+    # Samba
+    safe_execute "sudo rm -rf /etc/samba /var/lib/samba /var/cache/samba /etc/default/samba* 2>/dev/null || true" "Removendo arquivos Samba"
+
+    # Cloudflared
+    safe_execute "sudo rm -f /usr/local/bin/cloudflared /etc/systemd/system/cloudflared.service /etc/default/cloudflared 2>/dev/null || true" "Removendo arquivos Cloudflared"
+    safe_execute "sudo userdel cloudflared 2>/dev/null || true" "Removendo usuário cloudflared"
+
+    # MiniDLNA
+    safe_execute "sudo rm -f /etc/minidlna.conf /var/lib/minidlna /var/cache/minidlna 2>/dev/null || true" "Removendo arquivos MiniDLNA"
+
+    # RNG-tools
+    safe_execute "sudo rm -f /etc/default/rng-tools /etc/default/rng-tools5 2>/dev/null || true" "Removendo arquivos RNG-tools"
+
+    # Filebrowser
+    safe_execute "sudo rm -rf /opt/filebrowser /etc/systemd/system/filebrowser.service 2>/dev/null || true" "Removendo arquivos Filebrowser"
+
+    # Dashboard
+    safe_execute "sudo rm -rf $DASHBOARD_DIR /etc/nginx/conf.d/dashboard.conf 2>/dev/null || true" "Removendo arquivos Dashboard"
+
+    # Nginx
+    safe_execute "sudo rm -f /etc/nginx/conf.d/pihole.conf 2>/dev/null || true" "Removendo configuração Nginx do Pi-hole"
+    safe_execute "sudo rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default 2>/dev/null || true" "Removendo configuração padrão Nginx"
+
+    # Diretórios compartilhados
+    safe_execute "sudo rm -rf /srv/samba /srv/media 2>/dev/null || true" "Removendo diretórios compartilhados"
+
+    # Logs temporários
+    safe_execute "sudo rm -rf /tmp/pihole* /tmp/filebrowser* 2>/dev/null || true" "Removendo arquivos temporários"
+
+    # Remover usuários e grupos criados
+    log_info "Removendo usuários e grupos criados..."
+    safe_execute "sudo groupdel smbusers 2>/dev/null || true" "Removendo grupo smbusers"
+
+    # Limpar systemd completamente
+    safe_execute "sudo systemctl daemon-reload 2>/dev/null || true" "Recarregando systemd"
+    safe_execute "sudo systemctl reset-failed 2>/dev/null || true" "Resetando serviços falhos"
 
     # Restaurar configuração de rede
     safe_execute "sudo rm -f /etc/netplan/01-netcfg.yaml" "Falha ao remover configuração de rede"
     safe_execute "sudo netplan apply" "Falha ao aplicar configuração de rede padrão"
+
+    # Limpeza final do sistema
+    log_info "Realizando limpeza final do sistema..."
+    safe_execute "sudo apt-get autoremove -y 2>/dev/null || true" "Removendo pacotes órfãos"
+    safe_execute "sudo apt-get autoclean 2>/dev/null || true" "Limpando cache do apt"
+    safe_execute "sudo apt-get clean 2>/dev/null || true" "Limpando arquivos de pacotes"
 
     whiptail_msg "✅ Limpeza do BoxServer concluída com sucesso!"
     log_success "Limpeza do BoxServer concluída com sucesso!"
