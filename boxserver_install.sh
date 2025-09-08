@@ -755,11 +755,41 @@ install_cloudflared() {
     log_info "Instalando Cloudflared..."
 
     local arch=$(detect_arch)
-    local version="latest"
-    local download_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$arch"
+    log_info "Arquitetura detectada: $arch"
 
-    safe_execute "sudo wget -O /usr/local/bin/cloudflared '$download_url'" "Falha ao baixar cloudflared"
-    safe_execute "sudo chmod +x /usr/local/bin/cloudflared" "Falha ao dar permissões ao cloudflared"
+    # Mapeamento de arquiteturas para o cloudflared
+    case "$arch" in
+        amd64) cloudflared_arch="amd64" ;;
+        arm64) cloudflared_arch="arm64" ;;
+        arm) cloudflared_arch="arm" ;;
+        *)
+            log_error "Arquitetura não suportada: $arch"
+            return 1
+            ;;
+    esac
+
+    local download_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cloudflared_arch}"
+    log_info "URL de download: $download_url"
+
+    # Criar usuário cloudflared antes de baixar
+    if ! id "cloudflared" &>/dev/null; then
+        safe_execute "sudo useradd -r -s /bin/false -d /nonexistent cloudflared" "Falha ao criar usuário cloudflared"
+    else
+        log_info "Usuário cloudflared já existe"
+    fi
+
+    # Baixar cloudflared com tratamento de erros
+    if ! safe_execute "sudo wget -O /usr/local/bin/cloudflared '$download_url'" "Falha ao baixar cloudflared"; then
+        log_error "Download falhou, tentando método alternativo..."
+        # Tentar com curl se wget falhar
+        safe_execute "sudo curl -L -o /usr/local/bin/cloudflared '$download_url'" "Falha ao baixar cloudflared com curl"
+    fi
+
+    # Verificar se o download foi bem sucedido
+    if [[ ! -f "/usr/local/bin/cloudflared" ]]; then
+        log_error "Arquivo cloudflared não foi baixado"
+        return 1
+    fi
 
     # Configurar cloudflared como serviço
     cat << EOF | sudo tee /etc/systemd/system/cloudflared.service > /dev/null
@@ -774,12 +804,16 @@ ExecStart=/usr/local/bin/cloudflared proxy-dns --port 5053 --address 127.0.0.1
 Restart=always
 RestartSec=5
 
-[Install]
-WantedBy=multi-user.target
-EOF
+# Dar permissões e verificar se é executável
+    safe_execute "sudo chmod +x /usr/local/bin/cloudflared" "Falha ao dar permissões ao cloudflared"
 
-    # Criar usuário cloudflared
-    safe_execute "sudo useradd -r -s /bin/false cloudflared" "Falha ao criar usuário cloudflared"
+    # Verificar se o binário é executável
+    if ! /usr/local/bin/cloudflared --version >/dev/null 2>&1; then
+        log_error "Binário cloudflared não é executável ou está corrompido"
+        return 1
+    fi
+
+    log_success "Cloudflared baixado e verificado com sucesso"
 
     safe_execute "sudo systemctl daemon-reload" "Falha ao recarregar systemd"
     safe_execute "sudo systemctl enable cloudflared" "Falha ao habilitar cloudflared"
