@@ -4,6 +4,11 @@
 # Inclui: Unbound, Pi-hole, WireGuard, Cloudflared, RNG-tools, Samba, MiniDLNA, Filebrowser, Dashboard
 # Cria IP fixo default 192.168.0.100
 # Exibe relatório com IPs, portas, chaves e senhas ao final
+#
+# DESINSTALAÇÃO DO PI-HOLE:
+# - Use: ./script.sh --uninstall-pihole (usa pihole uninstall --clean automaticamente)
+# - Use: ./script.sh --clean (purga completa do BoxServer incluindo Pi-hole com --clean)
+# - O comando 'pihole uninstall --clean' é usado por padrão para desinstalação completa
 
 set -euo pipefail
 
@@ -355,10 +360,172 @@ rollback_changes() {
 }
 
 # =========================
+# Função específica para desinstalação do Pi-hole
+# =========================
+uninstall_pihole_clean() {
+  echo "🕳️ Desinstalando Pi-hole usando comando oficial com --clean..."
+
+  # Verificar se Pi-hole está instalado
+  if command -v pihole &> /dev/null; then
+    echo "   ✅ Pi-hole detectado, iniciando desinstalação oficial..."
+
+    # Parar serviços relacionados primeiro
+    echo "   Parando serviços do Pi-hole..."
+    sudo systemctl stop pihole-ftl 2>/dev/null || true
+    sudo systemctl stop lighttpd 2>/dev/null || true
+
+    # Mostrar status atual antes da desinstalação
+    echo "   Status atual do Pi-hole:"
+    pihole status 2>/dev/null | head -3 | sed 's/^/      /' || echo "      Status não disponível"
+
+    # Usar o comando oficial do Pi-hole com --clean por padrão
+    echo "   Executando: pihole uninstall --clean"
+    echo "   (Este processo remove TODOS os arquivos, configurações e dados do Pi-hole)"
+
+    # Automatizar respostas para desinstalação completa com --clean
+    if printf "y\ny\ny\ny\ny\n" | sudo pihole uninstall --clean 2>/dev/null; then
+      echo "   ✅ Pi-hole desinstalado com sucesso usando comando oficial --clean"
+    else
+      echo "   ⚠️ Desinstalação automática falhou, tentando método alternativo..."
+      if yes | sudo pihole uninstall --clean 2>/dev/null; then
+        echo "   ✅ Pi-hole desinstalado com método alternativo"
+      else
+        echo "   ❌ Falha na desinstalação oficial, executando limpeza manual..."
+        manual_pihole_cleanup
+      fi
+    fi
+
+    sleep 3
+  else
+    echo "   ℹ️ Comando 'pihole' não encontrado - Pi-hole pode não estar instalado"
+    echo "   Verificando resquícios de instalação..."
+
+    # Verificar se existem arquivos do Pi-hole mesmo sem comando
+    if [ -d /etc/pihole ] || [ -d /opt/pihole ] || systemctl list-units | grep -q pihole; then
+      echo "   ⚠️ Encontrados resquícios do Pi-hole, executando limpeza manual..."
+      manual_pihole_cleanup
+    else
+      echo "   ✅ Nenhum resquício do Pi-hole encontrado"
+    fi
+  fi
+
+  # Verificar se a desinstalação foi bem-sucedida
+  echo ""
+  verify_pihole_uninstall
+}
+
+# Função auxiliar para limpeza manual quando pihole uninstall falha
+manual_pihole_cleanup() {
+  echo "   🧹 Executando limpeza manual do Pi-hole..."
+
+  # Parar e desabilitar serviços
+  for service in pihole-ftl lighttpd; do
+    if systemctl list-units --type=service | grep -q "$service"; then
+      echo "      Parando serviço: $service"
+      sudo systemctl stop "$service" 2>/dev/null || true
+      sudo systemctl disable "$service" 2>/dev/null || true
+    fi
+  done
+
+  # Remover pacotes
+  echo "      Removendo pacotes do Pi-hole..."
+  sudo apt-get remove --purge -y pihole-ftl 2>/dev/null || true
+  sudo apt-get remove --purge -y pi-hole 2>/dev/null || true
+  sudo apt-get remove --purge -y lighttpd 2>/dev/null || true
+
+  # Remover diretórios e arquivos
+  echo "      Removendo diretórios e configurações..."
+  sudo rm -rf /etc/pihole /opt/pihole /var/www/html/pihole 2>/dev/null || true
+  sudo rm -rf /etc/lighttpd /var/log/pihole* 2>/dev/null || true
+  sudo rm -f /etc/cron.d/pihole 2>/dev/null || true
+  sudo rm -f /etc/dnsmasq.d/01-pihole.conf 2>/dev/null || true
+  sudo rm -f /etc/dnsmasq.d/06-rfc6761.conf 2>/dev/null || true
+
+  # Remover usuários e grupos
+  echo "      Removendo usuários e grupos..."
+  sudo userdel pihole 2>/dev/null || true
+  sudo groupdel pihole 2>/dev/null || true
+  sudo userdel www-data 2>/dev/null || true  # Usado pelo lighttpd
+
+  # Restaurar resolv.conf se necessário
+  if [ -f /etc/resolv.conf.backup* ]; then
+    echo "      Restaurando resolv.conf..."
+    sudo cp /etc/resolv.conf.backup* /etc/resolv.conf 2>/dev/null || true
+  fi
+
+  echo "   ✅ Limpeza manual do Pi-hole concluída"
+}
+
+# Função para verificar se a desinstalação do Pi-hole foi bem-sucedida
+verify_pihole_uninstall() {
+  echo "🔍 Verificando se a desinstalação do Pi-hole foi completa..."
+
+  local issues_found=0
+
+  # Verificar comando pihole
+  if command -v pihole &> /dev/null; then
+    echo "   ❌ Comando 'pihole' ainda disponível"
+    issues_found=$((issues_found + 1))
+  else
+    echo "   ✅ Comando 'pihole' removido"
+  fi
+
+  # Verificar serviços
+  for service in pihole-ftl lighttpd; do
+    if systemctl list-units --type=service | grep -q "$service"; then
+      if systemctl is-active --quiet "$service"; then
+        echo "   ❌ Serviço $service ainda ativo"
+        issues_found=$((issues_found + 1))
+      else
+        echo "   ✅ Serviço $service parado"
+      fi
+    else
+      echo "   ✅ Serviço $service removido"
+    fi
+  done
+
+  # Verificar diretórios
+  for dir in /etc/pihole /opt/pihole /var/www/html/pihole; do
+    if [ -d "$dir" ]; then
+      echo "   ❌ Diretório $dir ainda existe"
+      issues_found=$((issues_found + 1))
+    else
+      echo "   ✅ Diretório $dir removido"
+    fi
+  done
+
+  # Verificar porta 53
+  if sudo netstat -tlnp | grep ":53 " | grep -q pihole; then
+    echo "   ❌ Pi-hole ainda usando porta 53"
+    issues_found=$((issues_found + 1))
+  else
+    echo "   ✅ Porta 53 liberada do Pi-hole"
+  fi
+
+  # Verificar usuário pihole
+  if id pihole &>/dev/null; then
+    echo "   ❌ Usuário 'pihole' ainda existe"
+    issues_found=$((issues_found + 1))
+  else
+    echo "   ✅ Usuário 'pihole' removido"
+  fi
+
+  # Resultado final
+  if [ $issues_found -eq 0 ]; then
+    echo "   🎉 Pi-hole completamente desinstalado! Sistema limpo."
+    return 0
+  else
+    echo "   ⚠️ $issues_found problema(s) encontrado(s) na desinstalação"
+    echo "   Pode ser necessária limpeza manual adicional"
+    return 1
+  fi
+}
+
+# =========================
 # Função de purga completa
 # =========================
 purge_existing_installations() {
-  whiptail_msg "🧹 Iniciando purga simples e robusta do BoxServer..."
+  whiptail_msg "🧹 Iniciando purga completa do BoxServer com pihole uninstall --clean..."
 
   echo "Parando serviços..."
   # Lista simples de serviços principais
@@ -367,9 +534,12 @@ purge_existing_installations() {
     sudo systemctl disable "$service" 2>/dev/null || true
   done
 
-  echo "Removendo pacotes principais..."
-  # Remoção simples e direta dos pacotes principais
-  for pkg in unbound pihole-ftl lighttpd wireguard wireguard-tools rng-tools samba minidlna nginx filebrowser cloudflared; do
+  # Usar função específica para Pi-hole
+  uninstall_pihole_clean
+
+  echo "Removendo outros pacotes..."
+  # Remoção dos demais pacotes
+  for pkg in unbound lighttpd wireguard wireguard-tools rng-tools samba minidlna nginx filebrowser cloudflared; do
     if dpkg -s "$pkg" >/dev/null 2>&1; then
       sudo apt-get remove --purge -y "$pkg" 2>/dev/null || true
     fi
@@ -1342,44 +1512,13 @@ install_pihole() {
     fi
   fi
 
-  # Verificar se porta 53 está em uso por outros serviços (exceto Pi-hole existente e systemd-resolved)
-  local port_53_process=$(sudo netstat -tlnp | grep ":53 " | grep -v systemd-resolved | head -1)
-
-  if [ -n "$port_53_process" ]; then
-    # Verificar se é o próprio Pi-hole usando a porta
-    if echo "$port_53_process" | grep -q "pihole-FTL"; then
-      echo_msg "✅ Pi-hole já instalado detectado na porta 53"
-      echo_msg "   Processo existente: $(echo "$port_53_process" | awk '{print $7}')"
-      echo_msg "   Procedendo com reconfiguração..."
-
-      # Parar temporariamente o Pi-hole para reconfiguração
-      echo_msg "   Parando Pi-hole temporariamente para reconfiguração..."
-      sudo systemctl stop pihole-ftl 2>/dev/null || true
-      sleep 3
-
-      # Verificar se a porta foi liberada
-      if sudo netstat -tln | grep -q ":53 "; then
-        echo_msg "⚠️ Porta 53 ainda ocupada, forçando liberação..."
-        sudo pkill -9 pihole-FTL 2>/dev/null || true
-        sleep 2
-      fi
-
-      echo_msg "✅ Porta 53 liberada para reconfiguração do Pi-hole"
-    else
-      echo_msg "❌ Porta 53 (DNS) está sendo usada por outro serviço (não Pi-hole):"
-      echo_msg "   $port_53_process"
-      echo_msg "   Pi-hole precisa da porta 53 para funcionar como servidor DNS principal"
-      echo_msg "   Pare o serviço conflitante antes de continuar"
-      return 1
-    fi
-  fi
-
-  # Se systemd-resolved estiver ativo, desabilitar para liberar porta 53
+  # --- VERIFICAÇÃO DA PORTA 53 ---
+  # 1. Tratar o caso específico do systemd-resolved PRIMEIRO.
   if systemctl is-active --quiet systemd-resolved; then
-    echo_msg "⚠️  systemd-resolved detectado na porta 53. Desabilitando para Pi-hole..."
+    echo_msg "⚠️  systemd-resolved detectado. Desabilitando para liberar a porta 53 para o Pi-hole..."
     sudo systemctl disable --now systemd-resolved
 
-    # Remover link simbólico do resolv.conf se existir
+    # Remover link simbólico do resolv.conf, se gerenciado pelo systemd-resolved
     if [ -L /etc/resolv.conf ]; then
       sudo rm /etc/resolv.conf
     fi
@@ -1387,13 +1526,42 @@ install_pihole() {
     # Garantir que o arquivo não é imutável antes de escrever
     sudo chattr -i /etc/resolv.conf 2>/dev/null || true
 
-    # Criar um resolv.conf temporário apontando para localhost (futuro Pi-hole)
+    # Criar um resolv.conf temporário para manter a conectividade durante a instalação
     echo "# Configurado para Pi-hole + Unbound" | sudo tee /etc/resolv.conf
     echo "nameserver 127.0.0.1" | sudo tee -a /etc/resolv.conf
-    echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf
+    echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf # Fallback temporário
 
-    echo_msg "✅ systemd-resolved desabilitado, porta 53 liberada para Pi-hole"
-    sleep 2
+    echo_msg "✅ systemd-resolved desabilitado. Porta 53 liberada."
+    sleep 2 # Aguardar a liberação da porta
+  fi
+
+  # 2. AGORA, verificar se a porta 53 está em uso por QUALQUER outro serviço.
+  local port_53_process=$(sudo netstat -tlnp | grep ":53 " | head -1)
+
+  if [ -n "$port_53_process" ]; then
+    # Se o processo for o próprio Pi-hole, podemos parar e reconfigurar.
+    if echo "$port_53_process" | grep -q "pihole-FTL"; then
+      echo_msg "✅ Pi-hole já instalado e usando a porta 53. Reconfigurando..."
+      echo_msg "   Processo existente: $(echo "$port_53_process" | awk '{print $7}')"
+      echo_msg "   Parando Pi-hole temporariamente..."
+      sudo systemctl stop pihole-ftl 2>/dev/null || true
+      sleep 3
+
+      # Forçar a liberação se ainda estiver ocupada
+      if sudo netstat -tln | grep -q ":53 "; then
+        echo_msg "⚠️ Porta 53 ainda ocupada, forçando liberação..."
+        sudo pkill -9 pihole-FTL 2>/dev/null || true
+        sleep 2
+      fi
+      echo_msg "✅ Porta 53 liberada para reconfiguração."
+    else
+      # Se for outro processo (que não seja o Pi-hole), a instalação deve parar.
+      echo_msg "❌ Porta 53 (DNS) ainda está sendo usada por outro serviço:"
+      echo_msg "   $port_53_process"
+      echo_msg "   Pi-hole precisa da porta 53 para funcionar."
+      echo_msg "   Pare o serviço conflitante e execute o script novamente."
+      return 1
+    fi
   fi
 
   # Verificar se Unbound está rodando antes de instalar Pi-hole
@@ -2988,15 +3156,16 @@ show_summary() {
 usage() {
   echo "Uso: $0 [OPÇÕES]"
   echo "Opções:"
-  echo "  --clean         Remove completamente todas as instalações e dados do BoxServer antes de instalar."
-  echo "  --verify-clean  Verifica se o sistema está limpo após purga"
-  echo "  --fix-dnssec    Verificar e corrigir problemas de DNSSEC root key"
-  echo "  --fix-unbound   Diagnosticar e corrigir problemas do Unbound DNS"
-  echo "  -s, --silent    Modo silencioso (sem interface whiptail)"
-  echo "  -u, --update    Atualizar serviços já instalados"
-  echo "  -r, --rollback  Reverter alterações"
-  echo "  --diagnose-wg   Executar diagnóstico completo do WireGuard"
-  echo "  -h, --help      Mostrar esta ajuda"
+  echo "  --clean           Remove completamente todas as instalações e dados do BoxServer antes de instalar."
+  echo "  --uninstall-pihole Desinstala apenas o Pi-hole usando pihole uninstall --clean"
+  echo "  --verify-clean    Verifica se o sistema está limpo após purga"
+  echo "  --fix-dnssec      Verificar e corrigir problemas de DNSSEC root key"
+  echo "  --fix-unbound     Diagnosticar e corrigir problemas do Unbound DNS"
+  echo "  -s, --silent      Modo silencioso (sem interface whiptail)"
+  echo "  -u, --update      Atualizar serviços já instalados"
+  echo "  -r, --rollback    Reverter alterações"
+  echo "  --diagnose-wg     Executar diagnóstico completo do WireGuard"
+  echo "  -h, --help        Mostrar esta ajuda"
   exit 1
 }
 
@@ -3009,6 +3178,17 @@ while [[ $# -gt 0 ]]; do
     --clean)
       CLEAN_INSTALL=true
       shift
+      ;;
+    --uninstall-pihole)
+      echo "🕳️ Desinstalando apenas o Pi-hole usando pihole uninstall --clean..."
+      check_system
+      uninstall_pihole_clean
+      if verify_pihole_uninstall; then
+        echo "✅ Pi-hole desinstalado completamente usando --clean"
+      else
+        echo "⚠️ Pi-hole desinstalado mas podem haver resquícios - verifique manualmente"
+      fi
+      exit 0
       ;;
     -s|--silent)
       SILENT_MODE=true
