@@ -225,7 +225,7 @@ rollback_changes() {
 purge_existing_installations() {
   whiptail_msg "Iniciando desinstalação e purga de instalações existentes..."
 
-  # Parar e desabilitar serviços
+  # Parar e desabilitar todos os serviços primeiro
   local services=("unbound" "pihole-ftl" "lighttpd" "wg-quick@wg0" "cloudflared" "rng-tools" "smbd" "minidlna" "filebrowser" "nginx")
   for service in "${services[@]}"; do
     if systemctl list-units --type=service --all | grep -q "$service"; then
@@ -235,11 +235,18 @@ purge_existing_installations() {
   done
   echo "Serviços parados e desabilitados."
 
-  # Remover pacotes com purge
-  local packages_to_purge=()
-  local all_possible_packages=("pihole-ftl" "lighttpd" "unbound" "wireguard-tools" "rng-tools" "samba" "minidlna" "nginx")
+  # 1. Usar o desinstalador oficial do Pi-hole (método preferencial)
+  if command -v pihole >/dev/null 2>&1; then
+    echo "Desinstalando Pi-hole com o desinstalador oficial..."
+    sudo pihole uninstall --unattended
+  fi
 
-  echo "Verificando pacotes instalados para purga..."
+  # 2. Purgar os pacotes restantes
+  local packages_to_purge=()
+  # Lista não inclui mais pihole-ftl e lighttpd, pois o desinstalador do pihole cuida deles.
+  local all_possible_packages=("unbound" "wireguard-tools" "rng-tools" "samba" "minidlna" "nginx")
+
+  echo "Verificando pacotes restantes para purga..."
   for pkg in "${all_possible_packages[@]}"; do
     if dpkg -s "$pkg" >/dev/null 2>&1; then
       packages_to_purge+=("$pkg")
@@ -248,24 +255,26 @@ purge_existing_installations() {
 
   if [ ${#packages_to_purge[@]} -gt 0 ]; then
     echo "Purgando os seguintes pacotes: ${packages_to_purge[*]}"
-    sudo apt-get purge -y "${packages_to_purge[@]}"
+    # A remoção individual é mais robusta
+    for pkg_to_purge in "${packages_to_purge[@]}"; do
+        sudo apt-get purge -y "$pkg_to_purge" || echo "Info: Não foi possível purgar o pacote '$pkg_to_purge'."
+    done
     sudo apt-get autoremove -y
-    echo "Pacotes removidos."
+    echo "Pacotes restantes purgados."
   else
-    echo "Nenhum dos pacotes alvo foi encontrado para purga."
+    echo "Nenhum dos pacotes restantes foi encontrado para purga."
   fi
 
-  # Remover binários e serviços manuais
+  # 3. Remover binários e serviços manuais
   sudo rm -f /usr/local/bin/cloudflared /usr/local/bin/filebrowser
   sudo rm -f /etc/systemd/system/cloudflared.service /etc/systemd/system/filebrowser.service
   sudo systemctl daemon-reload
   echo "Binários e serviços manuais removidos."
 
-  # Remover arquivos de configuração e dados restantes
-  sudo rm -rf /etc/pihole \
-              /etc/lighttpd \
-              /etc/unbound \
-              /etc/wireguard \
+  # 4. Remover arquivos de configuração e dados restantes
+  # A lista foi reduzida, pois o desinstalador do pihole e o purge devem remover a maioria.
+  # Esta é uma garantia final.
+  sudo rm -rf /etc/wireguard \
               /etc/cloudflared \
               /etc/samba \
               /etc/minidlna \
@@ -274,9 +283,8 @@ purge_existing_installations() {
               /srv/boxserver-dashboard \
               /srv/filebrowser \
               /srv/samba/share \
-              /srv/media \
-              /var/www/html/admin
-  echo "Arquivos de configuração e dados removidos."
+              /srv/media
+  echo "Arquivos de configuração e dados restantes removidos."
 
   whiptail_msg "Purga concluída. O sistema está pronto para uma instalação limpa."
 }
