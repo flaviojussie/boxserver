@@ -458,6 +458,9 @@ EOF
     sudo unbound-anchor -a /var/lib/unbound/root.key || true
   fi
 
+  # Corrigir permissões para o usuário unbound
+  sudo chown -R unbound:unbound /var/lib/unbound
+
   sudo systemctl enable --now unbound
 
   # Verificar se o serviço está rodando
@@ -472,114 +475,80 @@ install_pihole() {
   echo_msg "Instalando/reconfigurando Pi-hole..."
   SUMMARY_ENTRIES+=("Pi-hole: Portas $PIHOLE_HTTP_PORT/$PIHOLE_HTTPS_PORT")
 
-  # Verificar se o Pi-hole já está instalado
-  if command -v pihole &> /dev/null; then
-    echo_msg "Pi-hole já está instalado. Reconfigurando..."
-  else
-    # Instalar lighttpd explicitamente antes do Pi-hole
-    echo_msg "Instalando lighttpd como dependência do Pi-hole..."
-    if ! sudo apt install -y lighttpd; then
-      echo_msg "❌ Falha ao instalar lighttpd"
-      return 1
-    fi
+  # Se o Pi-hole não estiver instalado, prepara e executa a instalação não interativa
+  if ! command -v pihole &> /dev/null; then
+    echo_msg "Preparando para instalação não interativa do Pi-hole..."
 
-    # Executar o instalador do Pi-hole em modo não interativo
-    echo_msg "Executando instalador do Pi-hole..."
-    if ! curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended; then
-      echo_msg "❌ Falha na instalação do Pi-hole"
+    # Criar setupVars.conf ANTES da instalação para garantir modo não interativo
+    sudo mkdir -p /etc/pihole
+    cat <<EOF | sudo tee /etc/pihole/setupVars.conf
+PIHOLE_INTERFACE=$NET_IF
+IPV4_ADDRESS=$STATIC_IP
+PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT
+QUERY_LOGGING=true
+INSTALL_WEB_SERVER=true
+INSTALL_WEB_INTERFACE=true
+WEBPASSWORD=
+EOF
+
+    echo_msg "Executando instalador do Pi-hole em modo não interativo..."
+    # Executa o instalador com sudo para ter as permissões necessárias
+    if ! curl -sSL https://install.pi-hole.net | sudo bash /dev/stdin --unattended; then
+      echo_msg "❌ Falha na instalação do Pi-hole."
       return 1
     fi
+  else
+    echo_msg "Pi-hole já está instalado. Reconfigurando..."
   fi
 
-  # Configurar o Pi-hole
+  # --- Reconfiguração (executa tanto para novas instalações quanto para existentes) ---
+
+  # Garante que o DNS do Pi-hole aponte para o Unbound local
   sudo mkdir -p /etc/pihole
-  sudo touch /etc/pihole/setupVars.conf
   if grep -q '^PIHOLE_DNS_1=' /etc/pihole/setupVars.conf; then
     sudo sed -i "s/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT/" /etc/pihole/setupVars.conf
   else
+    # Adiciona a configuração se ela não existir
     echo "PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT" | sudo tee -a /etc/pihole/setupVars.conf
   fi
 
-  # Reiniciar o DNS do Pi-hole
-  if command -v pihole &> /dev/null; then
-    sudo pihole restartdns
-  else
-    # Se o comando pihole não estiver disponível, reiniciar o serviço diretamente
-    sudo systemctl restart pihole-ftl
-  fi
-
-  echo_msg "Alterando Pi-hole para rodar em $PIHOLE_HTTP_PORT/$PIHOLE_HTTPS_PORT..."
-
-  # Verificar se o lighttpd está instalado, se não, instalar
-  if ! dpkg -s "lighttpd" >/dev/null 2>&1; then
-    echo_msg "lighttpd não está instalado. Instalando agora..."
-    if ! sudo apt-get install -y lighttpd; then
-        echo_msg "❌ Falha ao instalar lighttpd. A configuração do Pi-hole não pode continuar."
-        return 1
-    fi
-    # Recarregar systemd para garantir que o novo serviço seja encontrado
-    sudo systemctl daemon-reload
-  fi
-
-  backup_file /etc/lighttpd/lighttpd.conf
+  # Garante que a porta do lighttpd está correta
   if [ -f /etc/lighttpd/lighttpd.conf ]; then
+    backup_file /etc/lighttpd/lighttpd.conf
     sudo sed -i "s/server.port\s*=\s*80/server.port = $PIHOLE_HTTP_PORT/" /etc/lighttpd/lighttpd.conf
-  else
-    # Criar arquivo de configuração básico se não existir
-    sudo mkdir -p /etc/lighttpd
-    cat <<EOF | sudo tee /etc/lighttpd/lighttpd.conf
-server.modules = (
-    "mod_access",
-    "mod_alias",
-    "mod_compress",
-    "mod_redirect",
-)
-
-server.document-root        = "/var/www/html"
-server.upload-dirs          = ( "/var/cache/lighttpd/uploads" )
-server.errorlog             = "/var/log/lighttpd/error.log"
-server.pid-file             = "/var/run/lighttpd.pid"
-server.username             = "www-data"
-server.groupname            = "www-data"
-server.port                 = $PIHOLE_HTTP_PORT
-
-# SSL configuration
-$SERVER["socket"] == ":$PIHOLE_HTTPS_PORT" {
-    ssl.engine = "enable"
-    ssl.pemfile = "/etc/lighttpd/server.pem"
-}
-EOF
   fi
 
-  # Garantir que o diretório /etc/lighttpd exista
+  # Garante que a configuração de SSL para a porta customizada existe
+  # (O instalador do Pi-hole pode não criar isso para portas não-padrão)
   sudo mkdir -p /etc/lighttpd
-
-  # Criar o arquivo external.conf corretamente
   backup_file /etc/lighttpd/external.conf
   cat <<EOF | sudo tee /etc/lighttpd/external.conf
+# Configuração para habilitar SSL na porta customizada
 \$SERVER["socket"] == ":$PIHOLE_HTTPS_PORT" \{ ssl.engine = "enable" \}
 EOF
 
-  # Garante que o systemd está atualizado e tenta reiniciar o lighttpd
-  sudo systemctl daemon-reload
-  if ! sudo systemctl restart lighttpd >/dev/null 2>&1; then
-    echo_msg "Não foi possível reiniciar o lighttpd. Tentando reinstalar..."
+  # Reinicia os serviços para aplicar todas as configurações
+  echo_msg "Reiniciando serviços do Pi-hole para aplicar configurações..."
+  sudo pihole restartdns
+
+  # Tenta reiniciar o lighttpd de forma robusta
+  sudo systemctl restart lighttpd || {
+    echo_msg "Falha ao reiniciar lighttpd. Tentando reinstalar..."
     if ! sudo apt-get install --reinstall -y lighttpd; then
-        echo_msg "❌ Falha ao reinstalar lighttpd. A configuração do Pi-hole não pode continuar."
+        echo_msg "❌ Falha ao reinstalar lighttpd."
         return 1
     fi
-    # Tenta iniciar novamente após a reinstalação
-    if ! sudo systemctl enable --now lighttpd; then
+    sudo systemctl restart lighttpd || {
         echo_msg "❌ Mesmo após a reinstalação, não foi possível iniciar o lighttpd."
         return 1
-    fi
-  fi
+    }
+  }
 
   # Verificação final
-  if sudo systemctl is-active --quiet lighttpd; then
-    echo_msg "✅ Pi-hole instalado/reconfigurado e em execução nas portas $PIHOLE_HTTP_PORT/$PIHOLE_HTTPS_PORT"
+  if sudo systemctl is-active --quiet lighttpd && sudo systemctl is-active --quiet pihole-ftl; then
+    echo_msg "✅ Pi-hole instalado/reconfigurado e em execução."
   else
-    echo_msg "⚠️  Pi-hole instalado/reconfigurado, mas o serviço lighttpd pode não estar em execução corretamente."
+    echo_msg "⚠️  Pi-hole reconfigurado, mas um de seus componentes (lighttpd ou pihole-ftl) pode não estar em execução."
   fi
 }
 
