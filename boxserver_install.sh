@@ -1049,12 +1049,93 @@ install_filebrowser() {
     log_info "Instalando Filebrowser..."
 
     local arch=$(detect_arch)
-    local version="latest"
-    local download_url="https://github.com/filebrowser/filebrowser/releases/latest/download/linux-$arch-filebrowser.tar.gz"
+    log_info "Arquitetura detectada: $arch"
+
+    # Mapeamento correto de arquiteturas para o Filebrowser
+    case "$arch" in
+        amd64|x86_64)
+            filebrowser_arch="amd64"
+            ;;
+        arm64|aarch64)
+            filebrowser_arch="arm64"
+            ;;
+        arm|armv7l|armhf)
+            filebrowser_arch="armv7"
+            ;;
+        *)
+            log_error "Arquitetura não suportada: $arch"
+            return 1
+            ;;
+    esac
+
+    log_info "Arquitetura Filebrowser: $filebrowser_arch"
+
+    # Tentar diferentes URLs e métodos
+    local download_urls=(
+        "https://github.com/filebrowser/filebrowser/releases/latest/download/linux-$filebrowser_arch-filebrowser.tar.gz"
+        "https://github.com/filebrowser/filebrowser/releases/download/v2.23.0/linux-$filebrowser_arch-filebrowser.tar.gz"
+    )
 
     safe_execute "sudo mkdir -p /opt/filebrowser" "Falha ao criar diretório do Filebrowser"
-    safe_execute "sudo wget -O /tmp/filebrowser.tar.gz $download_url" "Falha ao baixar Filebrowser"
+
+    local download_success=false
+    for url in "${download_urls[@]}"; do
+        log_info "Tentando download: $url"
+
+        # Baixar sem sudo (não é necessário para /tmp)
+        if [[ "$VERBOSE_MODE" = true ]]; then
+            if verbose_execute "wget -O /tmp/filebrowser.tar.gz $url" "Download do Filebrowser"; then
+                download_success=true
+                break
+            fi
+        else
+            if safe_execute "wget -O /tmp/filebrowser.tar.gz $url" "Falha ao baixar Filebrowser"; then
+                download_success=true
+                break
+            fi
+        fi
+
+        # Tentar com curl se wget falhar
+        log_info "Tentando com curl..."
+        if [[ "$VERBOSE_MODE" = true ]]; then
+            if verbose_execute "curl -L -o /tmp/filebrowser.tar.gz $url" "Download do Filebrowser com curl"; then
+                download_success=true
+                break
+            fi
+        else
+            if safe_execute "curl -L -o /tmp/filebrowser.tar.gz $url" "Falha ao baixar Filebrowser com curl"; then
+                download_success=true
+                break
+            fi
+        fi
+    done
+
+    if [[ "$download_success" = false ]]; then
+        log_error "Não foi possível baixar o Filebrowser de nenhuma fonte"
+        log_info "URLs tentadas:"
+        for url in "${download_urls[@]}"; do
+            log_info "  - $url"
+        done
+        return 1
+    fi
+
+    # Verificar se o download foi bem sucedido
+    if [[ ! -f "/tmp/filebrowser.tar.gz" ]]; then
+        log_error "Arquivo do Filebrowser não foi baixado"
+        return 1
+    fi
+
+    # Extrair e instalar
     safe_execute "sudo tar -xzf /tmp/filebrowser.tar.gz -C /opt/filebrowser" "Falha ao extrair Filebrowser"
+
+    # Verificar se o binário foi extraído
+    if [[ ! -f "/opt/filebrowser/filebrowser" ]]; then
+        log_error "Binário do Filebrowser não encontrado após extração"
+        log_info "Conteúdo do diretório:"
+        ls -la /opt/filebrowser/
+        return 1
+    fi
+
     safe_execute "sudo chmod +x /opt/filebrowser/filebrowser" "Falha ao dar permissões ao Filebrowser"
     safe_execute "sudo rm /tmp/filebrowser.tar.gz" "Falha ao remover arquivo temporário"
 
