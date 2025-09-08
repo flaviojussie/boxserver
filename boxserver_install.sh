@@ -779,10 +779,10 @@ install_cloudflared() {
     fi
 
     # Baixar cloudflared com tratamento de erros
-    if ! safe_execute "sudo wget -O /usr/local/bin/cloudflared '$download_url'" "Falha ao baixar cloudflared"; then
+    if ! safe_execute "sudo wget -O /usr/local/bin/cloudflared $download_url" "Falha ao baixar cloudflared"; then
         log_error "Download falhou, tentando método alternativo..."
         # Tentar com curl se wget falhar
-        safe_execute "sudo curl -L -o /usr/local/bin/cloudflared '$download_url'" "Falha ao baixar cloudflared com curl"
+        safe_execute "sudo curl -L -o /usr/local/bin/cloudflared $download_url" "Falha ao baixar cloudflared com curl"
     fi
 
     # Verificar se o download foi bem sucedido
@@ -939,7 +939,7 @@ install_filebrowser() {
     local download_url="https://github.com/filebrowser/filebrowser/releases/latest/download/linux-$arch-filebrowser.tar.gz"
 
     safe_execute "sudo mkdir -p /opt/filebrowser" "Falha ao criar diretório do Filebrowser"
-    safe_execute "sudo wget -O /tmp/filebrowser.tar.gz '$download_url'" "Falha ao baixar Filebrowser"
+    safe_execute "sudo wget -O /tmp/filebrowser.tar.gz $download_url" "Falha ao baixar Filebrowser"
     safe_execute "sudo tar -xzf /tmp/filebrowser.tar.gz -C /opt/filebrowser" "Falha ao extrair Filebrowser"
     safe_execute "sudo chmod +x /opt/filebrowser/filebrowser" "Falha ao dar permissões ao Filebrowser"
     safe_execute "sudo rm /tmp/filebrowser.tar.gz" "Falha ao remover arquivo temporário"
