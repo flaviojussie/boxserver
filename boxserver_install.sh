@@ -516,6 +516,9 @@ install_unbound() {
 
     # Configurar Unbound
     local unbound_conf="/etc/unbound/unbound.conf.d/root.conf"
+
+    # Garantir que o diretório existe
+    safe_execute "sudo mkdir -p /etc/unbound/unbound.conf.d" "Criando diretório de configuração do Unbound"
     backup_file "$unbound_conf"
 
     cat << EOF | sudo tee "$unbound_conf" > /dev/null
