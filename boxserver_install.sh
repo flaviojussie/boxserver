@@ -275,11 +275,11 @@ update_services() {
     case "$ARCH" in
       amd64) FB_ARCH="linux-amd64";;
       arm64) FB_ARCH="linux-arm64";;
-      arm) FB_ARCH="linux-armv6";;
+      arm) FB_ARCH="linux-armv7";;
       *) echo "Arquitetura não suportada pelo Filebrowser"; return;;
     esac
 
-    if wget -O filebrowser.tar.gz https://github.com/filebrowser/filebrowser/releases/download/${FB_VERSION}/filebrowser-${FB_ARCH}.tar.gz; then
+    if wget -O filebrowser.tar.gz https://github.com/filebrowser/filebrowser/releases/download/${FB_VERSION}/${FB_ARCH}-filebrowser.tar.gz; then
       tar -xzf filebrowser.tar.gz
       sudo mv filebrowser /usr/local/bin/
       rm -f filebrowser.tar.gz
@@ -703,12 +703,12 @@ install_filebrowser() {
   case "$ARCH" in
     amd64) FB_ARCH="linux-amd64";;
     arm64) FB_ARCH="linux-arm64";;
-    arm) FB_ARCH="linux-armv6";;
+    arm) FB_ARCH="linux-armv7";;
     *) echo_msg "Arquitetura não suportada pelo Filebrowser"; return;;
   esac
 
   # Baixar e instalar Filebrowser
-  if wget -O filebrowser.tar.gz https://github.com/filebrowser/filebrowser/releases/download/${FB_VERSION}/filebrowser-${FB_ARCH}.tar.gz; then
+  if wget -O filebrowser.tar.gz https://github.com/filebrowser/filebrowser/releases/download/${FB_VERSION}/${FB_ARCH}-filebrowser.tar.gz; then
     tar -xzf filebrowser.tar.gz
     sudo mv filebrowser /usr/local/bin/
     rm -f filebrowser.tar.gz
