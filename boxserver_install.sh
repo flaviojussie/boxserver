@@ -1936,6 +1936,13 @@ EOF
     echo "PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT" | sudo tee -a /etc/pihole/setupVars.conf
   fi
 
+  # Criar setupVars.conf se não existir
+  if [ ! -f /etc/pihole/setupVars.conf ]; then
+    echo_msg "   📝 Criando setupVars.conf..."
+    sudo mkdir -p /etc/pihole
+    sudo touch /etc/pihole/setupVars.conf
+  fi
+
   # Garantir que não há DNS secundário configurado
   if grep -q '^PIHOLE_DNS_2=' /etc/pihole/setupVars.conf; then
     sudo sed -i "s/^PIHOLE_DNS_2=.*/PIHOLE_DNS_2=/" /etc/pihole/setupVars.conf
@@ -1946,6 +1953,27 @@ EOF
   # Otimizações específicas para RK322x
   sudo sed -i 's/^CACHE_SIZE=.*/CACHE_SIZE=1000/' /etc/pihole/setupVars.conf 2>/dev/null || echo "CACHE_SIZE=1000" | sudo tee -a /etc/pihole/setupVars.conf
   sudo sed -i 's/^MAXDBDAYS=.*/MAXDBDAYS=2/' /etc/pihole/setupVars.conf 2>/dev/null || echo "MAXDBDAYS=2" | sudo tee -a /etc/pihole/setupVars.conf
+
+  # Garantir que setupVars.conf existe e tem configurações básicas
+  if [ ! -f /etc/pihole/setupVars.conf ]; then
+    echo_msg "   📝 Criando arquivo de configuração setupVars.conf..."
+    sudo mkdir -p /etc/pihole
+    cat <<EOF | sudo tee /etc/pihole/setupVars.conf
+PIHOLE_INTERFACE=$NET_IF
+IPV4_ADDRESS=$STATIC_IP/24
+PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT
+PIHOLE_DNS_2=
+QUERY_LOGGING=true
+INSTALL_WEB_SERVER=true
+INSTALL_WEB_INTERFACE=true
+WEB_PORT=$PIHOLE_HTTP_PORT
+WEBPASSWORD=
+DNSSEC=false
+BLOCKING_ENABLED=true
+CACHE_SIZE=1000
+MAXDBDAYS=2
+EOF
+  fi
 
   # Configurar WEB_PORT no setupVars.conf
   if grep -q '^WEB_PORT=' /etc/pihole/setupVars.conf; then
@@ -2061,6 +2089,14 @@ EOF
   if ! sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
     echo_msg "   🔧 Lighttpd não está na porta correta, forçando reconfiguração..."
     configure_lighttpd_port
+
+    # Verificar novamente após reconfiguração
+    sleep 3
+    if sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
+      echo_msg "   ✅ Lighttpd corrigido para porta $PIHOLE_HTTP_PORT"
+    else
+      echo_msg "   ⚠️ Lighttpd ainda com problemas - pode precisar de configuração manual"
+    fi
   fi
 
   # Verificação final detalhada
@@ -2402,10 +2438,46 @@ fix_pihole_ftl_service() {
 configure_lighttpd_port() {
   echo_msg "      🌐 Configurando lighttpd para porta $PIHOLE_HTTP_PORT..."
 
+  # Verificar se lighttpd está instalado
+  if ! dpkg -s lighttpd >/dev/null 2>&1; then
+    echo_msg "      📦 Instalando lighttpd..."
+    sudo apt-get update
+    sudo apt-get install -y lighttpd
+  fi
+
   if [ ! -f /etc/lighttpd/lighttpd.conf ]; then
     echo_msg "      ⚠️ Arquivo lighttpd.conf não encontrado, criando..."
     sudo mkdir -p /etc/lighttpd
-    sudo touch /etc/lighttpd/lighttpd.conf
+    cat <<EOF | sudo tee /etc/lighttpd/lighttpd.conf
+server.modules = (
+    "mod_access",
+    "mod_alias",
+    "mod_compress",
+    "mod_redirect",
+)
+
+server.document-root = "/var/www/html"
+server.upload-dirs = ( "/var/cache/lighttpd/uploads" )
+server.errorlog = "/var/log/lighttpd/error.log"
+server.pid-file = "/var/run/lighttpd.pid"
+server.username = "www-data"
+server.groupname = "www-data"
+server.port = $PIHOLE_HTTP_PORT
+
+\$HTTP["url"] =~ "\.pdf\$" {
+    server.range-requests = "disable"
+}
+
+static-file.exclude-extensions = ( ".php", ".pl", ".fcgi" )
+
+compress.cache-dir = "/var/cache/lighttpd/compress/"
+compress.filetype = ( "application/javascript", "text/css", "text/html", "text/plain" )
+
+# default listening port for IPv6 falls back to the IPv4 port
+include_shell "/usr/share/lighttpd/use-ipv6.pl " + server.port
+include_shell "/usr/share/lighttpd/create-mime.assign.pl"
+include_shell "/usr/share/lighttpd/include-conf-enabled.pl"
+EOF
   fi
 
   backup_file /etc/lighttpd/lighttpd.conf
@@ -2434,9 +2506,10 @@ server.network-backend = "linux-sendfile"
 EOF
   fi
 
-  # Reiniciar lighttpd e aguardar
+  # Habilitar e iniciar lighttpd
+  sudo systemctl enable lighttpd 2>/dev/null || true
   sudo systemctl start lighttpd 2>/dev/null || true
-  sleep 3
+  sleep 5
 
   # Verificar se está rodando na porta correta
   if sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
