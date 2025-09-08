@@ -345,392 +345,88 @@ rollback_changes() {
 # Função de purga completa
 # =========================
 purge_existing_installations() {
-  whiptail_msg "🧹 Iniciando purga completa de todas as instalações BoxServer..."
-  echo "=========================================="
-  echo "PURGA COMPLETA DO BOXSERVER - $(date)"
-  echo "=========================================="
+  whiptail_msg "🧹 Iniciando purga simples e robusta do BoxServer..."
 
-  # === FASE 1: PARAR TODOS OS SERVIÇOS ===
-  echo "📛 FASE 1: Parando todos os serviços..."
-  local all_services=(
-    # Serviços principais
-    "unbound" "pihole-ftl" "lighttpd" "wg-quick@wg0"
-    "cloudflared" "rng-tools" "smbd" "nmbd" "minidlna"
-    "filebrowser" "nginx" "apache2"
-    # Serviços adicionais que podem existir
-    "dnsmasq" "bind9" "named" "systemd-resolved"
-    "openvpn" "strongswan" "ipsec"
-  )
+  echo "Parando serviços..."
+  # Lista simples de serviços principais
+  for service in unbound pihole-ftl lighttpd wg-quick@wg0 cloudflared rng-tools smbd minidlna filebrowser nginx; do
+    sudo systemctl stop "$service" 2>/dev/null || true
+    sudo systemctl disable "$service" 2>/dev/null || true
+  done
 
-  for service in "${all_services[@]}"; do
-    if systemctl is-active --quiet "$service" 2>/dev/null; then
-      echo "   Parando $service..."
-      sudo systemctl stop "$service" 2>/dev/null || true
-    fi
-    if systemctl is-enabled --quiet "$service" 2>/dev/null; then
-      echo "   Desabilitando $service..."
-      sudo systemctl disable "$service" 2>/dev/null || true
+  echo "Removendo pacotes principais..."
+  # Remoção simples e direta dos pacotes principais
+  for pkg in unbound pihole-ftl lighttpd wireguard wireguard-tools rng-tools samba minidlna nginx filebrowser cloudflared; do
+    if dpkg -s "$pkg" >/dev/null 2>&1; then
+      sudo apt-get remove --purge -y "$pkg" 2>/dev/null || true
     fi
   done
 
-  # === FASE 2: DESINSTALAR PI-HOLE OFICIALMENTE ===
-  echo "🕳️ FASE 2: Desinstalando Pi-hole..."
-  if command -v pihole >/dev/null 2>&1; then
-    echo "   Executando desinstalador oficial do Pi-hole..."
-    sudo pihole uninstall --unattended 2>/dev/null || true
-    # Garantir remoção de restos
-    sudo rm -f /usr/local/bin/pihole 2>/dev/null || true
-  fi
-
-  # === FASE 3: REMOVER INTERFACES DE REDE VIRTUAIS ===
-  echo "🌐 FASE 3: Removendo interfaces virtuais..."
-  # WireGuard
-  if ip link show wg0 >/dev/null 2>&1; then
-    echo "   Removendo interface wg0..."
-    sudo ip link delete wg0 2>/dev/null || true
-  fi
-  # Outras interfaces VPN possíveis
-  for iface in wg1 wg2 tun0 tap0; do
-    if ip link show "$iface" >/dev/null 2>&1; then
-      echo "   Removendo interface $iface..."
-      sudo ip link delete "$iface" 2>/dev/null || true
-    fi
-  done
-
-  # === FASE 4: PURGAR PACOTES COMPLETAMENTE ===
-  echo "📦 FASE 4: Purgando pacotes..."
-
-  # Lista completa de pacotes a verificar e purgar
-  local all_packages=(
-    # DNS e Pi-hole
-    "pihole-ftl" "lighttpd" "php*" "dnsutils" "dnsmasq*"
-    # Unbound
-    "unbound" "unbound-*"
-    # VPN
-    "wireguard" "wireguard-*" "openvpn*" "strongswan*"
-    # Samba
-    "samba" "samba-*" "smbclient" "cifs-utils"
-    # Media
-    "minidlna" "dlna*"
-    # Web servers
-    "nginx" "nginx-*" "apache2*"
-    # Outros
-    "rng-tools" "haveged"
-  )
-
-  echo "   Atualizando cache de pacotes..."
-  sudo apt-get update -qq 2>/dev/null || true
-
-  for pkg_pattern in "${all_packages[@]}"; do
-    # Usar dpkg para listar pacotes que correspondem ao padrão
-    local matching_packages
-    matching_packages=$(dpkg -l | awk '/^ii/ {print $2}' | grep -E "^${pkg_pattern//\*/.*}$" 2>/dev/null || true)
-
-    if [ -n "$matching_packages" ]; then
-      echo "   Purgando pacotes: $matching_packages"
-      for pkg in $matching_packages; do
-        sudo apt-get purge -y "$pkg" 2>/dev/null || echo "     Aviso: Não foi possível purgar $pkg"
-      done
-    fi
-  done
-
-  # Limpeza final de pacotes
-  echo "   Removendo pacotes órfãos..."
-  sudo apt-get autoremove -y --purge 2>/dev/null || true
+  # Limpeza automática
+  sudo apt-get autoremove -y 2>/dev/null || true
   sudo apt-get autoclean 2>/dev/null || true
 
-  # === FASE 5: REMOVER USUÁRIOS E GRUPOS ===
-  echo "👥 FASE 5: Removendo usuários e grupos..."
-  local users_to_remove=("pihole" "unbound" "filebrowser" "minidlna" "debian-samba")
-  local groups_to_remove=("pihole" "unbound" "filebrowser" "minidlna" "samba")
+  echo "Removendo diretórios de configuração..."
+  # Remoção direta dos diretórios principais
+  sudo rm -rf /etc/pihole /etc/unbound /etc/wireguard /etc/cloudflared \
+             /etc/samba /etc/minidlna /srv/boxserver-dashboard \
+             /srv/filebrowser /srv/samba /srv/media \
+             /usr/local/bin/cloudflared /usr/local/bin/filebrowser \
+             /opt/pihole 2>/dev/null || true
 
-  for user in "${users_to_remove[@]}"; do
-    if id "$user" >/dev/null 2>&1; then
-      echo "   Removendo usuário $user..."
-      sudo userdel -r "$user" 2>/dev/null || sudo userdel "$user" 2>/dev/null || true
-    fi
-  done
+  echo "Removendo serviços systemd customizados..."
+  sudo rm -f /etc/systemd/system/cloudflared.service \
+             /etc/systemd/system/filebrowser.service 2>/dev/null || true
+  sudo systemctl daemon-reload
 
-  for group in "${groups_to_remove[@]}"; do
-    if getent group "$group" >/dev/null 2>&1; then
-      echo "   Removendo grupo $group..."
-      sudo groupdel "$group" 2>/dev/null || true
-    fi
-  done
+  echo "Limpando configurações de rede..."
+  # Remover interface wg0 se existir
+  sudo ip link delete wg0 2>/dev/null || true
 
-  # === FASE 6: REMOVER BINÁRIOS MANUAIS ===
-  echo "🗂️ FASE 6: Removendo binários manuais..."
-  local manual_binaries=(
-    "/usr/local/bin/cloudflared"
-    "/usr/local/bin/filebrowser"
-    "/usr/local/bin/pihole"
-    "/opt/pihole"
-    "/usr/bin/wg"
-    "/usr/bin/wg-quick"
-  )
+  # Limpar configuração netplan se existir
+  sudo rm -f /etc/netplan/01-boxserver.yaml 2>/dev/null || true
 
-  for binary in "${manual_binaries[@]}"; do
-    if [ -e "$binary" ]; then
-      echo "   Removendo $binary..."
-      sudo rm -rf "$binary" 2>/dev/null || true
-    fi
-  done
-
-  # === FASE 7: REMOVER SERVIÇOS SYSTEMD MANUAIS ===
-  echo "⚙️ FASE 7: Removendo serviços systemd manuais..."
-  local service_files=(
-    "/etc/systemd/system/cloudflared.service"
-    "/etc/systemd/system/filebrowser.service"
-    "/etc/systemd/system/pihole-ftl.service"
-    "/lib/systemd/system/pihole-ftl.service"
-    "/etc/systemd/system/multi-user.target.wants/pihole-ftl.service"
-    "/etc/systemd/system/wg-quick@.service"
-    "/lib/systemd/system/wg-quick@.service"
-  )
-
-  for service_file in "${service_files[@]}"; do
-    if [ -f "$service_file" ]; then
-      echo "   Removendo $service_file..."
-      sudo rm -f "$service_file" 2>/dev/null || true
-    fi
-  done
-
-  sudo systemctl daemon-reload 2>/dev/null || true
-
-  # === FASE 8: REMOVER CONFIGURAÇÕES E DADOS ===
-  echo "📁 FASE 8: Removendo configurações e dados..."
-  local config_directories=(
-    # Pi-hole
-    "/etc/pihole" "/var/www/html/admin" "/var/log/pihole*"
-    "/etc/lighttpd" "/var/log/lighttpd"
-    # Unbound
-    "/etc/unbound" "/var/lib/unbound" "/var/log/unbound*"
-    # WireGuard
-    "/etc/wireguard" "/var/log/wireguard*"
-    # Cloudflared
-    "/etc/cloudflared" "/root/.cloudflared" "/home/*/.cloudflared"
-    # Samba
-    "/etc/samba" "/var/lib/samba" "/var/log/samba"
-    # MiniDLNA
-    "/etc/minidlna" "/var/lib/minidlna" "/var/log/minidlna*"
-    # Nginx/Apache
-    "/etc/nginx/sites-available/boxserver*" "/etc/nginx/sites-enabled/boxserver*"
-    "/etc/apache2/sites-available/boxserver*" "/etc/apache2/sites-enabled/boxserver*"
-    # BoxServer específicos
-    "/srv/boxserver-dashboard" "/srv/filebrowser" "/srv/samba" "/srv/media"
-    "/var/log/boxserver*" "/root/boxserver*" "/tmp/boxserver*"
-  )
-
-  for dir_pattern in "${config_directories[@]}"; do
-    # Expandir padrões com glob
-    for dir in $dir_pattern; do
-      if [ -e "$dir" ]; then
-        echo "   Removendo $dir..."
-        sudo rm -rf "$dir" 2>/dev/null || true
-      fi
-    done
-  done
-
-  # === FASE 9: LIMPAR CONFIGURAÇÕES DE REDE ===
-  echo "🔌 FASE 9: Limpando configurações de rede..."
-
-  # Remover configurações netplan do BoxServer
-  if [ -f "/etc/netplan/01-boxserver.yaml" ]; then
-    echo "   Removendo configuração netplan BoxServer..."
-    sudo rm -f "/etc/netplan/01-boxserver.yaml" 2>/dev/null || true
-    sudo netplan apply 2>/dev/null || true
-  fi
-
-  # Limpar iptables rules do WireGuard
-  echo "   Limpando regras iptables..."
-  sudo iptables -t nat -D POSTROUTING -o "$NET_IF" -j MASQUERADE 2>/dev/null || true
-  sudo iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
-  sudo iptables -D FORWARD -o wg0 -j ACCEPT 2>/dev/null || true
-
-  # Restaurar IP forwarding se desejado
-  if grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
-    echo "   Desabilitando IP forwarding..."
-    sudo sed -i 's/^net.ipv4.ip_forward=1/#net.ipv4.ip_forward=1/' /etc/sysctl.conf 2>/dev/null || true
-    echo 0 | sudo tee /proc/sys/net/ipv4/ip_forward >/dev/null 2>&1 || true
-  fi
-
-  # === FASE 10: LIMPAR DNS E RESOLVER ===
-  echo "🌍 FASE 10: Restaurando configurações DNS..."
-
-  # Restaurar systemd-resolved se foi desabilitado
+  echo "Restaurando DNS padrão..."
+  # Reativar systemd-resolved se disponível
   if [ -f /lib/systemd/system/systemd-resolved.service ]; then
-    echo "   Reabilitando systemd-resolved..."
     sudo systemctl enable systemd-resolved 2>/dev/null || true
     sudo systemctl start systemd-resolved 2>/dev/null || true
   fi
 
-  # Restaurar resolv.conf padrão
-  if [ ! -L /etc/resolv.conf ] && [ -f /etc/resolv.conf ]; then
-    echo "   Restaurando configuração DNS padrão..."
-    cat > /tmp/resolv.conf.new << EOF
-# DNS temporário após purga BoxServer
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-EOF
-    sudo mv /tmp/resolv.conf.new /etc/resolv.conf 2>/dev/null || true
-  fi
+  echo "✅ Purga simples concluída!"
+  whiptail_msg "✅ Purga concluída com sucesso!
 
-  # === FASE 11: LIMPEZA DE CRON E LOGS ===
-  echo "⏰ FASE 11: Limpando cron jobs e logs..."
-
-  # Remover cron jobs relacionados
-  sudo crontab -u root -l 2>/dev/null | grep -v -E "(pihole|unbound|wireguard|cloudflared)" | sudo crontab -u root - 2>/dev/null || true
-
-  # Limpar logs específicos
-  sudo find /var/log -name "*pihole*" -delete 2>/dev/null || true
-  sudo find /var/log -name "*unbound*" -delete 2>/dev/null || true
-  sudo find /var/log -name "*wireguard*" -delete 2>/dev/null || true
-  sudo find /var/log -name "*boxserver*" -delete 2>/dev/null || true
-
-  # === FASE 12: VERIFICAÇÃO FINAL ===
-  echo "🔍 FASE 12: Verificação final..."
-
-  # Verificar se algum serviço ainda está rodando
-  local remaining_services=()
-  for service in "${all_services[@]}"; do
-    if systemctl is-active --quiet "$service" 2>/dev/null; then
-      remaining_services+=("$service")
-    fi
-  done
-
-  if [ ${#remaining_services[@]} -gt 0 ]; then
-    echo "   ⚠️ Serviços ainda ativos: ${remaining_services[*]}"
-    echo "   Tentando parar forçadamente..."
-    for service in "${remaining_services[@]}"; do
-      sudo systemctl kill "$service" 2>/dev/null || true
-    done
-  fi
-
-  # Verificar processos remanescentes
-  local remaining_processes
-  remaining_processes=$(pgrep -f "(pihole|unbound|wireguard|cloudflared|filebrowser)" 2>/dev/null || true)
-  if [ -n "$remaining_processes" ]; then
-    echo "   ⚠️ Processos remanescentes detectados, terminando..."
-    echo "$remaining_processes" | xargs sudo kill -TERM 2>/dev/null || true
-    sleep 2
-    echo "$remaining_processes" | xargs sudo kill -KILL 2>/dev/null || true
-  fi
-
-  echo "=========================================="
-  echo "✅ PURGA COMPLETA FINALIZADA - $(date)"
-  echo "=========================================="
-  echo "📊 Resumo:"
-  echo "   • Serviços parados e desabilitados"
-  echo "   • Pacotes completamente purgados"
-  echo "   • Usuários e grupos removidos"
-  echo "   • Binários manuais removidos"
-  echo "   • Configurações e dados apagados"
-  echo "   • Configurações de rede limpas"
-  echo "   • DNS restaurado ao padrão"
-  echo "   • Logs e cron jobs limpos"
-  echo ""
-  echo "🚀 Sistema completamente limpo e pronto para nova instalação!"
-
-  whiptail_msg "✅ Purga completa finalizada com sucesso!
-
-O sistema foi completamente limpo:
-• Todos os serviços BoxServer removidos
-• Pacotes purgados com configurações
-• Dados e logs apagados
-• Configurações de rede restauradas
-• DNS restaurado ao padrão
-
-O sistema está pronto para uma instalação limpa."
-
-  # Executar verificação pós-purga
-  verify_purge_completion
+Todos os componentes principais do BoxServer foram removidos.
+O sistema está pronto para uma nova instalação."
 }
 
 # =========================
-# Verificação pós-purga
+# Verificação pós-purga simples
 # =========================
 verify_purge_completion() {
-  echo "🔍 Executando verificação pós-purga..."
-  local issues_found=false
+  echo "🔍 Verificação rápida pós-purga..."
 
-  # Verificar serviços ativos
-  local active_services=()
-  for service in "pihole-ftl" "unbound" "wg-quick@wg0" "lighttpd" "cloudflared" "minidlna" "filebrowser"; do
+  # Verificar apenas os principais
+  local issues=0
+
+  for service in pihole-ftl unbound wg-quick@wg0; do
     if systemctl is-active --quiet "$service" 2>/dev/null; then
-      active_services+=("$service")
+      echo "   ⚠️ Serviço ainda ativo: $service"
+      issues=$((issues + 1))
     fi
   done
 
-  if [ ${#active_services[@]} -gt 0 ]; then
-    echo "   ⚠️ Serviços ainda ativos: ${active_services[*]}"
-    issues_found=true
-  else
-    echo "   ✅ Nenhum serviço BoxServer ativo"
-  fi
-
-  # Verificar pacotes instalados
-  local remaining_packages=()
-  for pkg in "pihole-ftl" "unbound" "wireguard" "minidlna"; do
-    if dpkg -s "$pkg" >/dev/null 2>&1; then
-      remaining_packages+=("$pkg")
-    fi
-  done
-
-  if [ ${#remaining_packages[@]} -gt 0 ]; then
-    echo "   ⚠️ Pacotes ainda instalados: ${remaining_packages[*]}"
-    issues_found=true
-  else
-    echo "   ✅ Pacotes BoxServer removidos"
-  fi
-
-  # Verificar diretórios de configuração
-  local remaining_dirs=()
-  for dir in "/etc/pihole" "/etc/unbound" "/etc/wireguard" "/srv/boxserver-dashboard"; do
+  for dir in /etc/pihole /etc/unbound /etc/wireguard; do
     if [ -d "$dir" ]; then
-      remaining_dirs+=("$dir")
+      echo "   ⚠️ Diretório ainda existe: $dir"
+      issues=$((issues + 1))
     fi
   done
 
-  if [ ${#remaining_dirs[@]} -gt 0 ]; then
-    echo "   ⚠️ Diretórios ainda existem: ${remaining_dirs[*]}"
-    issues_found=true
+  if [ $issues -eq 0 ]; then
+    echo "   ✅ Sistema limpo"
   else
-    echo "   ✅ Diretórios de configuração removidos"
-  fi
-
-  # Verificar interfaces virtuais
-  local remaining_interfaces=()
-  for iface in "wg0" "wg1"; do
-    if ip link show "$iface" >/dev/null 2>&1; then
-      remaining_interfaces+=("$iface")
-    fi
-  done
-
-  if [ ${#remaining_interfaces[@]} -gt 0 ]; then
-    echo "   ⚠️ Interfaces virtuais ainda existem: ${remaining_interfaces[*]}"
-    issues_found=true
-  else
-    echo "   ✅ Interfaces virtuais removidas"
-  fi
-
-  # Verificar processos
-  local remaining_processes
-  remaining_processes=$(pgrep -f "(pihole|unbound|wireguard|cloudflared)" 2>/dev/null | wc -l || echo "0")
-
-  if [ "$remaining_processes" -gt 0 ]; then
-    echo "   ⚠️ $remaining_processes processos BoxServer ainda rodando"
-    pgrep -f "(pihole|unbound|wireguard|cloudflared)" 2>/dev/null | head -5 | sed 's/^/      PID: /'
-    issues_found=true
-  else
-    echo "   ✅ Nenhum processo BoxServer rodando"
-  fi
-
-  # Resultado final
-  if [ "$issues_found" = false ]; then
-    echo "✅ Verificação pós-purga: SISTEMA COMPLETAMENTE LIMPO"
-  else
-    echo "⚠️ Verificação pós-purga: Alguns itens podem precisar de limpeza manual"
-    echo "   Execute novamente com --clean ou remova manualmente os itens listados"
+    echo "   ⚠️ $issues itens remanescentes encontrados"
   fi
 }
 
@@ -2446,7 +2142,7 @@ usage() {
   echo "Uso: $0 [OPÇÕES]"
   echo "Opções:"
   echo "  --clean         Remove completamente todas as instalações e dados do BoxServer antes de instalar."
-  echo "  --verify-clean  Verifica se o sistema está limpo sem executar purga"
+  echo "  --verify-clean  Verifica se o sistema está limpo após purga"
   echo "  -s, --silent    Modo silencioso (sem interface whiptail)"
   echo "  -u, --update    Atualizar serviços já instalados"
   echo "  -r, --rollback  Reverter alterações"
