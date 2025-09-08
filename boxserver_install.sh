@@ -17,7 +17,14 @@ TIMESTAMP="$(date +%Y%m%d%H%M%S)"
 BACKUP_SUFFIX=".bak.${TIMESTAMP}"
 SILENT_MODE=false
 
-exec > >(tee -a "$LOGFILE") 2>&1
+# =========================
+# Cores para mensagens
+# =========================
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
 # =========================
 # Funções auxiliares
@@ -26,14 +33,35 @@ whiptail_msg() {
   if [ "$SILENT_MODE" = false ]; then
     whiptail --title "BoxServer Instalador" --msgbox "$1" 12 76
   else
-    echo "[MSG] $1"
+    echo -e "${BLUE}[MSG]${NC} $1"
   fi
 }
 
 echo_msg() {
-  echo "$1"
+  echo -e "$1"
   if [ "$SILENT_MODE" = false ]; then
     whiptail --title "BoxServer Instalador" --msgbox "$1" 12 76
+  fi
+}
+
+error_msg() {
+  echo -e "${RED}[ERRO]${NC} $1" >&2
+  if [ "$SILENT_MODE" = false ]; then
+    whiptail --title "BoxServer Instalador - ERRO" --msgbox "$1" 12 76
+  fi
+}
+
+success_msg() {
+  echo -e "${GREEN}[SUCESSO]${NC} $1"
+  if [ "$SILENT_MODE" = false ]; then
+    whiptail --title "BoxServer Instalador - SUCESSO" --msgbox "$1" 12 76
+  fi
+}
+
+warning_msg() {
+  echo -e "${YELLOW}[AVISO]${NC} $1"
+  if [ "$SILENT_MODE" = false ]; then
+    whiptail --title "BoxServer Instalador - AVISO" --msgbox "$1" 12 76
   fi
 }
 
@@ -53,7 +81,7 @@ ensure_pkg() {
 }
 
 ensure_deps() {
-  echo "Instalando dependências básicas..."
+  echo_msg "Instalando dependências básicas..."
   sudo apt-get update -y
   sudo apt-get install -y whiptail curl wget tar gnupg lsb-release ca-certificates \
                           net-tools iproute2 sed grep jq nginx
@@ -78,18 +106,18 @@ check_disk_space() {
   available_space_mb=$(df / | awk 'NR==2 {print int($4/1024)}')
   
   if [ "$available_space_mb" -lt "$required_space_mb" ]; then
-    whiptail_msg "❌ Espaço em disco insuficiente. Necessário: ${required_space_mb}MB, Disponível: ${available_space_mb}MB"
+    error_msg "Espaço em disco insuficiente. Necessário: ${required_space_mb}MB, Disponível: ${available_space_mb}MB"
     exit 1
   fi
-  echo "✅ Espaço em disco suficiente: ${available_space_mb}MB disponível"
+  success_msg "Espaço em disco suficiente: ${available_space_mb}MB disponível"
 }
 
 check_connectivity() {
   if ! ping -c 1 -W 5 1.1.1.1 >/dev/null 2>&1; then
-    whiptail_msg "❌ Sem conectividade de rede. Verifique sua conexão."
+    error_msg "Sem conectividade de rede. Verifique sua conexão."
     exit 1
   fi
-  echo "✅ Conectividade de rede verificada"
+  success_msg "Conectividade de rede verificada"
 }
 
 # =========================
@@ -97,24 +125,24 @@ check_connectivity() {
 # =========================
 check_system() {
   if [ ! -f /etc/armbian-release ]; then
-    whiptail_msg "❌ Este instalador requer Armbian 21.08.8 (Debian 11 Bullseye).
+    error_msg "Este instalador requer Armbian 21.08.8 (Debian 11 Bullseye).
 Arquivo /etc/armbian-release não encontrado."
     exit 1
   fi
 
   . /etc/armbian-release
   if [ "$VERSION" != "21.08.8" ]; then
-    whiptail_msg "❌ Este instalador é exclusivo para Armbian 21.08.8.
+    error_msg "Este instalador é exclusivo para Armbian 21.08.8.
 Detectado: $VERSION"
     exit 1
   fi
 
   if ! grep -q 'VERSION_ID="11"' /etc/os-release; then
-    whiptail_msg "❌ Base incompatível. É necessário Debian 11 (Bullseye)."
+    error_msg "Base incompatível. É necessário Debian 11 (Bullseye)."
     exit 1
   fi
 
-  echo "✅ Sistema compatível: Armbian $VERSION (Debian 11 Bullseye)"
+  success_msg "Sistema compatível: Armbian $VERSION (Debian 11 Bullseye)"
 }
 
 # =========================
@@ -140,7 +168,7 @@ WG_PUBLIC=""
 # Funções de rollback
 # =========================
 rollback_changes() {
-  echo "Executando rollback das alterações..."
+  echo_msg "Executando rollback das alterações..."
   if [ -f "$ROLLBACK_LOG" ]; then
     while IFS= read -r line; do
       if [[ $line == "Backup criado: "* ]]; then
@@ -148,7 +176,7 @@ rollback_changes() {
         original_file="${backup_file%$BACKUP_SUFFIX}"
         if [ -f "$backup_file" ]; then
           sudo mv "$backup_file" "$original_file"
-          echo "Restaurado: $original_file"
+          echo_msg "Restaurado: $original_file"
         fi
       fi
     done < "$ROLLBACK_LOG"
@@ -178,7 +206,7 @@ rollback_changes() {
               "$ROLLBACK_LOG" \
               2>/dev/null || true
               
-  echo "Rollback concluído."
+  success_msg "Rollback concluído."
 }
 
 # =========================
@@ -251,31 +279,31 @@ choose_services() {
 # Funções de atualização
 # =========================
 update_services() {
-  echo "Atualizando serviços..."
+  echo_msg "Atualizando serviços..."
   
   # Atualizar Pi-hole
   if command -v pihole &> /dev/null; then
-    echo "Atualizando Pi-hole..."
+    echo_msg "Atualizando Pi-hole..."
     sudo pihole -up
   fi
   
   # Atualizar Unbound
   if dpkg -l | grep -q "^ii.*unbound"; then
-    echo "Atualizando Unbound..."
+    echo_msg "Atualizando Unbound..."
     sudo apt-get update
     sudo apt-get install --only-upgrade -y unbound
   fi
   
   # Atualizar Filebrowser
   if command -v filebrowser &> /dev/null; then
-    echo "Atualizando Filebrowser..."
+    echo_msg "Atualizando Filebrowser..."
     FB_VERSION=$(curl -s https://api.github.com/repos/filebrowser/filebrowser/releases/latest | grep tag_name | cut -d '"' -f4)
     ARCH=$(detect_arch)
     case "$ARCH" in
       amd64) FB_ARCH="linux-amd64";;
       arm64) FB_ARCH="linux-arm64";;
       arm) FB_ARCH="linux-armv6";;
-      *) echo "Arquitetura não suportada pelo Filebrowser"; return;;
+      *) echo_msg "Arquitetura não suportada pelo Filebrowser"; return;;
     esac
     
     if wget -O filebrowser.tar.gz https://github.com/filebrowser/filebrowser/releases/download/${FB_VERSION}/filebrowser-${FB_ARCH}.tar.gz; then
@@ -288,7 +316,7 @@ update_services() {
   
   # Atualizar Cloudflared
   if command -v cloudflared &> /dev/null; then
-    echo "Atualizando Cloudflared..."
+    echo_msg "Atualizando Cloudflared..."
     ARCH=$(detect_arch)
     URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}"
     if sudo wget -O /usr/local/bin/cloudflared "$URL"; then
@@ -297,7 +325,7 @@ update_services() {
     fi
   fi
   
-  echo "Atualização concluída."
+  success_msg "Atualização concluída."
 }
 
 # =========================
@@ -353,9 +381,9 @@ EOF
 
   # Verificar se o serviço está rodando
   if sudo systemctl is-active --quiet unbound; then
-    echo_msg "✅ Unbound instalado/reconfigurado e em execução"
+    success_msg "Unbound instalado/reconfigurado e em execução"
   else
-    echo_msg "⚠️  Unbound instalado/reconfigurado, mas pode não estar em execução"
+    error_msg "Unbound instalado/reconfigurado, mas pode não estar em execução"
   fi
 }
 
@@ -370,14 +398,14 @@ install_pihole() {
     # Instalar lighttpd explicitamente antes do Pi-hole
     echo_msg "Instalando lighttpd como dependência do Pi-hole..."
     if ! sudo apt install -y lighttpd; then
-      echo_msg "❌ Falha ao instalar lighttpd"
+      error_msg "Falha ao instalar lighttpd"
       return 1
     fi
 
     # Executar o instalador do Pi-hole em modo não interativo
     echo_msg "Executando instalador do Pi-hole..."
     if ! curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended; then
-      echo_msg "❌ Falha na instalação do Pi-hole"
+      error_msg "Falha na instalação do Pi-hole"
       return 1
     fi
   fi
@@ -454,12 +482,12 @@ EOF
 
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet lighttpd; then
-      echo_msg "✅ Pi-hole instalado/reconfigurado e em execução nas portas $PIHOLE_HTTP_PORT/$PIHOLE_HTTPS_PORT"
+      success_msg "Pi-hole instalado/reconfigurado e em execução nas portas $PIHOLE_HTTP_PORT/$PIHOLE_HTTPS_PORT"
     else
-      echo_msg "⚠️  Pi-hole instalado/reconfigurado, mas o serviço lighttpd pode não estar em execução corretamente"
+      error_msg "Pi-hole instalado/reconfigurado, mas o serviço lighttpd pode não estar em execução corretamente"
     fi
   else
-    echo_msg "⚠️  Serviço lighttpd não encontrado. Verifique se ele foi instalado corretamente."
+    error_msg "Serviço lighttpd não encontrado. Verifique se ele foi instalado corretamente."
   fi
 }
 
@@ -504,9 +532,9 @@ EOF
 
   # Verificar se o serviço está rodando
   if sudo systemctl is-active --quiet wg-quick@wg0; then
-    echo_msg "✅ WireGuard instalado/reconfigurado e em execução"
+    success_msg "WireGuard instalado/reconfigurado e em execução"
   else
-    echo_msg "⚠️  WireGuard instalado/reconfigurado, mas pode não estar em execução"
+    error_msg "WireGuard instalado/reconfigurado, mas pode não estar em execução"
   fi
 }
 
@@ -553,12 +581,12 @@ EOF
 
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet cloudflared; then
-      echo_msg "✅ Cloudflare Tunnel instalado/reconfigurado e em execução"
+      success_msg "Cloudflare Tunnel instalado/reconfigurado e em execução"
     else
-      echo_msg "⚠️  Cloudflare Tunnel instalado/reconfigurado, execute 'cloudflared tunnel login' para autenticar"
+      error_msg "Cloudflare Tunnel instalado/reconfigurado, execute 'cloudflared tunnel login' para autenticar"
     fi
   else
-    echo_msg "❌ Falha ao baixar Cloudflare Tunnel"
+    error_msg "Falha ao baixar Cloudflare Tunnel"
   fi
 }
 
@@ -591,9 +619,9 @@ EOF
 
   # Verificar se o serviço está rodando
   if sudo systemctl is-active --quiet rng-tools; then
-    echo_msg "✅ RNG-tools instalado/reconfigurado e em execução"
+    success_msg "RNG-tools instalado/reconfigurado e em execução"
   else
-    echo_msg "⚠️  RNG-tools instalado/reconfigurado, mas pode não estar em execução"
+    error_msg "RNG-tools instalado/reconfigurado, mas pode não estar em execução"
   fi
 }
 
@@ -634,9 +662,9 @@ EOF
 
   # Verificar se o serviço está rodando
   if sudo systemctl is-active --quiet smbd; then
-    echo_msg "✅ Samba instalado/reconfigurado e em execução"
+    success_msg "Samba instalado/reconfigurado e em execução"
   else
-    echo_msg "⚠️  Samba instalado/reconfigurado, mas pode não estar em execução"
+    error_msg "Samba instalado/reconfigurado, mas pode não estar em execução"
   fi
 }
 
@@ -674,9 +702,9 @@ EOF
 
   # Verificar se o serviço está rodando
   if sudo systemctl is-active --quiet minidlna; then
-    echo_msg "✅ MiniDLNA instalado/reconfigurado e em execução"
+    success_msg "MiniDLNA instalado/reconfigurado e em execução"
   else
-    echo_msg "⚠️  MiniDLNA instalado/reconfigurado, mas pode não estar em execução"
+    error_msg "MiniDLNA instalado/reconfigurado, mas pode não estar em execução"
   fi
 }
 
@@ -720,12 +748,12 @@ EOF
 
     # Verificar se o serviço está rodando
     if sudo systemctl is-active --quiet filebrowser; then
-      echo_msg "✅ Filebrowser instalado/reconfigurado e em execução"
+      success_msg "Filebrowser instalado/reconfigurado e em execução"
     else
-      echo_msg "⚠️  Filebrowser instalado/reconfigurado, mas pode não estar em execução"
+      error_msg "Filebrowser instalado/reconfigurado, mas pode não estar em execução"
     fi
   else
-    echo_msg "❌ Falha ao baixar Filebrowser"
+    error_msg "Falha ao baixar Filebrowser"
   fi
 }
 
@@ -735,6 +763,7 @@ EOF
 install_dashboard() {
   echo_msg "Instalando/reconfigurando Dashboard Web..."
   SUMMARY_ENTRIES+=("Dashboard: http://$STATIC_IP/")
+  DASHBOARD_DIR="/srv/boxserver-dashboard"
   sudo mkdir -p "$DASHBOARD_DIR"
 
   backup_file "$DASHBOARD_DIR/index.html"
@@ -882,9 +911,9 @@ EOF
 
   # Verificar se o serviço está rodando
   if sudo systemctl is-active --quiet nginx; then
-    echo_msg "✅ Dashboard instalado/reconfigurado e acessível em http://$STATIC_IP/"
+    success_msg "Dashboard instalado/reconfigurado e acessível em http://$STATIC_IP/"
   else
-    echo_msg "⚠️  Dashboard instalado/reconfigurado, mas o Nginx pode não estar em execução"
+    error_msg "Dashboard instalado/reconfigurado, mas o Nginx pode não estar em execução"
   fi
 }
 
@@ -912,7 +941,7 @@ show_summary() {
   if [ "$SILENT_MODE" = false ]; then
     whiptail --title "Resumo da instalação" --textbox "$SUMMARY_FILE" 25 80
   else
-    echo "Resumo da instalação salvo em: $SUMMARY_FILE"
+    echo_msg "Resumo da instalação salvo em: $SUMMARY_FILE"
   fi
 }
 
@@ -968,7 +997,7 @@ main() {
   if [ "$SILENT_MODE" = false ]; then
     whiptail_msg "Bem-vindo ao instalador BoxServer (Armbian 21.08.8 Debian 11 Bullseye)."
   else
-    echo "Bem-vindo ao instalador BoxServer (Armbian 21.08.8 Debian 11 Bullseye)."
+    echo_msg "Bem-vindo ao instalador BoxServer (Armbian 21.08.8 Debian 11 Bullseye)."
   fi
   ensure_deps
   ask_static_ip
