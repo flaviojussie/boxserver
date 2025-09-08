@@ -58,7 +58,7 @@ ask_static_ip() {
     GATEWAY=$(ip route | awk '/^default/ {print $3; exit}')
     # Se não encontrar gateway, usar padrão baseado no IP
     if [ -z "$GATEWAY" ]; then
-        GATEWAY=$(echo "$STATIC_IP" | sed 's/\.[0-9]*$/.1')
+        GATEWAY=$(echo "$STATIC_IP" | sed 's/\.[0-9]*$/.1/')
         msg "⚠️  Gateway não detectado. Usando gateway padrão: $GATEWAY"
     fi
 
@@ -251,9 +251,6 @@ install_pihole() {
         purge_pihole
     fi
     
-    # Parar qualquer serviço web que possa estar usando a porta 80
-    sudo systemctl stop apache2 nginx lighttpd || true
-    
     # Instalar lighttpd explicitamente antes do Pi-hole (correção baseada na análise do especialista)
     msg "Instalando lighttpd como dependência do Pi-hole..."
     if ! sudo apt install -y lighttpd; then
@@ -298,22 +295,41 @@ install_pihole() {
         return 1
     fi
     
-    # Modificar a porta do Pi-hole usando a ferramenta oficial
-    sudo pihole -a -p 8081
-    
-    # Configurar SSL na porta 8443
-    sudo mkdir -p /etc/lighttpd/certs
-    sudo openssl req -new -x509 -keyout /etc/lighttpd/certs/server.pem -out /etc/lighttpd/certs/server.pem -days 365 -nodes -subj "/C=BR/ST=BoxServer/L=BoxServer/O=BoxServer/CN=$STATIC_IP"
+    if [ -f /etc/lighttpd/lighttpd.conf ]; then
+        sudo sed -i 's/server.port\s*=\s*80/server.port = 8081/' /etc/lighttpd/lighttpd.conf
+    else
+        # Criar arquivo de configuração básico se não existir
+        sudo mkdir -p /etc/lighttpd
+        cat <<EOF | sudo tee /etc/lighttpd/lighttpd.conf
+server.modules = (
+    "mod_access",
+    "mod_alias",
+    "mod_compress",
+    "mod_redirect",
+)
+
+server.document-root        = "/var/www/html"
+server.upload-dirs          = ( "/var/cache/lighttpd/uploads" )
+server.errorlog             = "/var/log/lighttpd/error.log"
+server.pid-file             = "/var/run/lighttpd.pid"
+server.username             = "www-data"
+server.groupname            = "www-data"
+server.port                 = 8081
+
+# SSL configuration
+\$SERVER["socket"] == ":8443" {
+    ssl.engine = "enable"
+    ssl.pemfile = "/etc/lighttpd/server.pem"
+}
+EOF
+    fi
     
     # Garantir que o diretório /etc/lighttpd exista
     sudo mkdir -p /etc/lighttpd
     
     # Criar o arquivo external.conf corretamente
     cat <<EOF | sudo tee /etc/lighttpd/external.conf
-\$SERVER["socket"] == ":8443" { 
-    ssl.engine = "enable" 
-    ssl.pemfile = "/etc/lighttpd/certs/server.pem"
-}
+\$SERVER["socket"] == ":8443" { ssl.engine = "enable" }
 EOF
     
     # Antes de reiniciar, verifique se o serviço existe (correção baseada na análise do especialista)
@@ -746,7 +762,7 @@ install_dashboard() {
 EOF
 
     # Parar serviços que possam estar usando a porta 80
-    sudo systemctl stop apache2 nginx lighttpd || true  # Parar todos os servidores web
+    sudo systemctl stop apache2 || true  # Apache se estiver instalado
     
     # Configurar nginx para servir o dashboard
     cat <<EOF | sudo tee /etc/nginx/sites-available/boxserver-dashboard
