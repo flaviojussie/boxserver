@@ -537,12 +537,12 @@ install_wireguard() {
     ensure_pkg "wireguard"
     ensure_pkg "wireguard-tools"
 
-    # Gerar chaves se ainda não foram geradas
-    if [[ "$WG_PUBLIC_KEY" == "gerada_durante_instalacao" ]] || [[ -z "$WG_PRIVATE_KEY" ]]; then
-        log_info "Gerando chaves WireGuard..."
+    # Gerar chaves se ainda não foram geradas corretamente
+    if [[ "$WG_PUBLIC_KEY" == "pendente_instalacao_wireguard" ]] || [[ -z "$WG_PRIVATE_KEY" ]] || [[ -z "$WG_PUBLIC_KEY" ]]; then
+        log_info "Gerando chaves WireGuard corretamente..."
         WG_PRIVATE_KEY=$(wg genkey)
         WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
-        log_success "Chaves WireGuard geradas durante instalação"
+        log_success "Chaves WireGuard geradas corretamente durante instalação"
     fi
 
     # Configurar WireGuard
@@ -954,18 +954,17 @@ generate_credentials() {
     # Gerar senha do Pi-hole
     PIHOLE_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | cut -c1-12)
 
-    # Gerar chaves WireGuard (se wg estiver disponível)
+    # Gerar chaves WireGuard (usando método que não depende do wg)
     if command -v wg >/dev/null 2>&1; then
+        # Usar wg se estiver disponível
         WG_PRIVATE_KEY=$(wg genkey)
         WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
         log_success "Chaves WireGuard geradas com wg command"
     else
-        # Gerar chaves WireGuard usando método alternativo (openssl)
-        WG_PRIVATE_KEY=$(openssl genpkey -algorithm X25519 | openssl base64 -A)
-        # Para WireGuard, a chave pública é derivada da privada
-        # Vamos deixar isso para a função de instalação do WireGuard
-        WG_PUBLIC_KEY="gerada_durante_instalacao"
-        log_info "Chave WireGuard privada gerada com OpenSSL, pública será gerada durante instalação"
+        # Gerar chave temporária - será regenerada durante instalação do WireGuard
+        WG_PRIVATE_KEY="temp_${RANDOM}_${RANDOM}_${RANDOM}"
+        WG_PUBLIC_KEY="pendente_instalacao_wireguard"
+        log_info "Chave WireGuard temporária gerada, será finalizada durante instalação"
     fi
 
     log_success "Credenciais geradas com sucesso"
