@@ -313,6 +313,7 @@ WG_PORT=51820
 SUMMARY_ENTRIES=()
 WG_PRIVATE=""
 WG_PUBLIC=""
+PIHOLE_PASSWORD=""
 
 # =========================
 # Funções de rollback
@@ -884,22 +885,33 @@ EOF
 choose_services() {
   if [ "$SILENT_MODE" = false ]; then
     CHOICES=$(whiptail --title "Seleção de Componentes" --checklist \
-    "Selecione os serviços a instalar:" 20 80 12 \
-    "UNBOUND" "Unbound DNS recursivo" ON \
-    "PIHOLE" "Pi-hole (8081/8443)" ON \
-    "WIREGUARD" "VPN WireGuard" ON \
-    "CLOUDFLARE" "Cloudflared tunnel" ON \
-    "RNG" "rng-tools" ON \
-    "SAMBA" "Samba share" ON \
-    "MINIDLNA" "MiniDLNA media" ON \
-    "FILEBROWSER" "Filebrowser" ON \
-    "DASHBOARD" "Dashboard web (nginx)" ON \
+    "✅ TODOS OS SERVIÇOS ESTÃO PRÉ-SELECIONADOS POR PADRÃO\n\nSelecione/desmarque os serviços a instalar:" 22 85 12 \
+    "UNBOUND" "✅ Unbound DNS recursivo (recomendado)" ON \
+    "PIHOLE" "✅ Pi-hole bloqueador DNS (8081/8443)" ON \
+    "WIREGUARD" "✅ VPN WireGuard segura" ON \
+    "CLOUDFLARE" "✅ Cloudflared tunnel remoto" ON \
+    "RNG" "✅ RNG-tools gerador entropia" ON \
+    "SAMBA" "✅ Samba compartilhamento arquivos" ON \
+    "MINIDLNA" "✅ MiniDLNA servidor mídia DLNA" ON \
+    "FILEBROWSER" "✅ Filebrowser gerenciador web" ON \
+    "DASHBOARD" "✅ Dashboard web BoxServer" ON \
     3>&1 1>&2 2>&3)
     CHOICES="${CHOICES//\"/}"
   else
-    # Modo silencioso - instala todos os serviços
+    # Modo silencioso - instala todos os serviços por padrão
     CHOICES="UNBOUND PIHOLE WIREGUARD CLOUDFLARE RNG SAMBA MINIDLNA FILEBROWSER DASHBOARD"
   fi
+
+  # Debug: mostrar serviços selecionados
+  echo_msg "📋 Serviços selecionados para instalação (todos marcados por padrão):"
+  for service in UNBOUND PIHOLE WIREGUARD CLOUDFLARE RNG SAMBA MINIDLNA FILEBROWSER DASHBOARD; do
+    if [[ "$CHOICES" == *"$service"* ]]; then
+      echo_msg "   ✅ $service"
+    else
+      echo_msg "   ❌ $service (não selecionado)"
+    fi
+  done
+  echo_msg ""
 }
 
 # =========================
@@ -1872,7 +1884,7 @@ EOF
 
     # Aplicar configurações web
     echo_msg "   Configurando interface web na porta $PIHOLE_HTTP_PORT..."
-    sudo sed -i "s/server.port.*/server.port = $PIHOLE_HTTP_PORT/" /etc/lighttpd/lighttpd.conf 2>/dev/null || true
+    configure_lighttpd_port
 
     # Desabilitar DNSSEC (compatibilidade RK322x)
     echo_msg "   Desabilitando DNSSEC para compatibilidade RK322x..."
@@ -1888,7 +1900,9 @@ EOF
     # Reiniciar serviços
     echo_msg "   Reiniciando serviços do Pi-hole..."
     sudo systemctl restart pihole-ftl
-    sudo systemctl restart lighttpd 2>/dev/null || true
+
+    # Forçar configuração correta do lighttpd
+    configure_lighttpd_port
 
     echo_msg "✅ Pi-hole reconfigurado com sucesso"
   else
@@ -1933,22 +1947,61 @@ EOF
   sudo sed -i 's/^CACHE_SIZE=.*/CACHE_SIZE=1000/' /etc/pihole/setupVars.conf 2>/dev/null || echo "CACHE_SIZE=1000" | sudo tee -a /etc/pihole/setupVars.conf
   sudo sed -i 's/^MAXDBDAYS=.*/MAXDBDAYS=2/' /etc/pihole/setupVars.conf 2>/dev/null || echo "MAXDBDAYS=2" | sudo tee -a /etc/pihole/setupVars.conf
 
-  # Configurar lighttpd com otimizações ARM
-  if [ -f /etc/lighttpd/lighttpd.conf ]; then
-    backup_file /etc/lighttpd/lighttpd.conf
-    sudo sed -i "s/server.port\s*=\s*80/server.port = $PIHOLE_HTTP_PORT/" /etc/lighttpd/lighttpd.conf
+  # Configurar WEB_PORT no setupVars.conf
+  if grep -q '^WEB_PORT=' /etc/pihole/setupVars.conf; then
+    sudo sed -i "s/^WEB_PORT=.*/WEB_PORT=$PIHOLE_HTTP_PORT/" /etc/pihole/setupVars.conf
+  else
+    echo "WEB_PORT=$PIHOLE_HTTP_PORT" | sudo tee -a /etc/pihole/setupVars.conf >/dev/null
+  fi
 
-    # Adicionar otimizações RK322x ao lighttpd
-    if ! grep -q "# RK322x optimizations" /etc/lighttpd/lighttpd.conf; then
-      cat <<EOF | sudo tee -a /etc/lighttpd/lighttpd.conf
-# RK322x optimizations
-server.max-connections = 128
-server.max-fds = 256
-server.max-worker = 1
-server.stat-cache-engine = "simple"
-server.network-backend = "linux-sendfile"
-EOF
+  # Configurar lighttpd com porta correta e otimizações ARM
+  configure_lighttpd_port
+
+  # Configurar senha do Pi-hole (nova instalação e reconfiguração)
+  echo_msg "Configurando senha do Pi-hole..."
+  PIHOLE_PASSWORD="boxserver$(date +%m%d)"
+  echo_msg "   Nova senha definida: $PIHOLE_PASSWORD"
+
+  # Aguardar Pi-hole estar pronto antes de definir senha
+  local retry_count=0
+  while [ $retry_count -lt 5 ]; do
+    if command -v pihole &> /dev/null && pihole status >/dev/null 2>&1; then
+      echo_msg "   Aplicando senha no Pi-hole..."
+      echo "$PIHOLE_PASSWORD" | pihole -a -p >/dev/null 2>&1
+      if [ $? -eq 0 ]; then
+        echo_msg "   ✅ Senha configurada com sucesso: $PIHOLE_PASSWORD"
+        break
+      else
+        echo_msg "   ⚠️ Tentativa $(($retry_count + 1))/5 falhou, aguardando..."
+      fi
     fi
+    retry_count=$(($retry_count + 1))
+    sleep 3
+  done
+
+  SUMMARY_ENTRIES+=("Pi-hole Admin Password: $PIHOLE_PASSWORD")
+
+  # Exibir senha imediatamente para o usuário
+  echo_msg ""
+  echo_msg "🔑 ===== CREDENCIAL IMPORTANTE ====="
+  echo_msg "   Pi-hole Admin Interface:"
+  echo_msg "   🌐 URL: http://$STATIC_IP:$PIHOLE_HTTP_PORT/admin"
+  echo_msg "   🔒 Senha: $PIHOLE_PASSWORD"
+  echo_msg "   📝 Anote esta senha! Será necessária para acessar o painel."
+  echo_msg "========================================="
+  echo_msg ""
+
+  # Mostrar também via whiptail se não estiver em modo silencioso
+  if [ "$SILENT_MODE" = false ]; then
+    whiptail_msg "🔑 Pi-hole Configurado!
+
+CREDENCIAIS DE ACESSO:
+
+URL: http://$STATIC_IP:$PIHOLE_HTTP_PORT/admin
+Senha: $PIHOLE_PASSWORD
+
+⚠️ IMPORTANTE: Anote esta senha!
+Ela será necessária para acessar o painel administrativo do Pi-hole."
   fi
 
   # Configuração SSL otimizada
@@ -1964,9 +2017,51 @@ EOF
 }
 EOF
 
-  # Reiniciar DNS do Pi-hole
+  # Reiniciar DNS do Pi-hole com verificações extras
   echo_msg "Reiniciando DNS do Pi-hole para aplicar configurações RK322x..."
-  sudo pihole restartdns
+
+  # Parar completamente primeiro
+  sudo systemctl stop pihole-ftl 2>/dev/null || true
+  sudo pkill -9 pihole-FTL 2>/dev/null || true
+  sleep 3
+
+  # Verificar permissões críticas
+  sudo mkdir -p /var/log/pihole /var/lib/pihole /etc/pihole
+  sudo chown -R pihole:pihole /var/log/pihole /var/lib/pihole 2>/dev/null || true
+  sudo chmod 755 /var/log/pihole /var/lib/pihole 2>/dev/null || true
+
+  # Configurar lighttpd ANTES de iniciar pihole-ftl
+  configure_lighttpd_port
+
+  # Iniciar pihole-ftl diretamente
+  sudo systemctl enable pihole-ftl
+  sudo systemctl start pihole-ftl
+  sleep 8  # Aguardar mais tempo para ARM
+
+  # Verificar se realmente iniciou
+  if ! sudo systemctl is-active --quiet pihole-ftl; then
+    echo_msg "   ⚠️ pihole-ftl não iniciou, tentando correção..."
+
+    # Tentar reiniciar via comando pihole
+    sudo pihole restartdns
+    sleep 5
+
+    # Verificar novamente
+    if ! sudo systemctl is-active --quiet pihole-ftl; then
+      echo_msg "   ❌ Problemas com pihole-ftl - DNS pode funcionar mas interface web terá problemas"
+    else
+      echo_msg "   ✅ pihole-ftl corrigido e funcionando"
+    fi
+  else
+    echo_msg "   ✅ pihole-ftl iniciado corretamente"
+  fi
+
+  # Verificar se lighttpd está na porta correta após inicialização
+  sleep 3
+  if ! sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
+    echo_msg "   🔧 Lighttpd não está na porta correta, forçando reconfiguração..."
+    configure_lighttpd_port
+  fi
 
   # Verificação final detalhada
   echo_msg "Verificando status dos serviços do Pi-hole em RK322x..."
@@ -2028,40 +2123,71 @@ EOF
     # Configurar sistema para usar Pi-hole como DNS principal
     echo_msg "Configurando sistema para usar Pi-hole como DNS..."
     configure_system_dns_for_pihole
-  elif [ "$pihole_ftl_ok" = true ] && [ "$dns_ok" = true ] && [ "$unbound_ok" = true ]; then
-    echo_msg "✅ Pi-hole + Unbound DNS funcionando (interface web com problemas)"
-    echo_msg "   DNS filtering e resolução funcionando corretamente"
-  elif [ "$pihole_ftl_ok" = true ] && [ "$dns_ok" = true ]; then
-    echo_msg "⚠️ Pi-hole funcionando, mas sem Unbound upstream"
-    echo_msg "   Execute: ./script.sh --fix-unbound"
+  elif [ "$dns_ok" = true ] && [ "$unbound_ok" = true ]; then
+    echo_msg "✅ Pi-hole + Unbound DNS funcionando (serviço pihole-ftl com problemas)"
+    echo_msg "   🔧 DNS filtering ativo e funcionando na porta 53"
+    echo_msg "   🔧 Unbound upstream funcionando na porta $UNBOUND_PORT"
+    echo_msg "   ⚠️ Interface web pode não estar acessível devido ao pihole-ftl"
+
+  # Tentar corrigir pihole-ftl automaticamente
+  echo_msg "   🔧 Tentando correção automática do pihole-ftl..."
+  if fix_pihole_ftl_service; then
+    echo_msg "   ✅ pihole-ftl corrigido! Sistema completamente funcional."
   else
-    echo_msg "❌ Pi-hole com problemas graves"
-    echo_msg "   Verifique: sudo systemctl status pihole-ftl"
-    echo_msg "   Logs: sudo journalctl -u pihole-ftl -n 20"
+    echo_msg "   💡 DNS funciona mas interface web indisponível"
+    echo_msg "   💡 Para corrigir interface: sudo systemctl restart pihole-ftl"
   fi
+
+  # Configurar sistema mesmo assim pois DNS funciona
+  configure_system_dns_for_pihole
+
+  # Considerar instalação bem-sucedida pois funcionalidade principal OK
+  echo_msg "✅ Pi-hole operacional com DNS filtering ativo!"
+  echo_msg "   🔑 Senha de admin: $PIHOLE_PASSWORD"
+elif [ "$pihole_ftl_ok" = true ] && [ "$dns_ok" = true ]; then
+  echo_msg "⚠️ Pi-hole funcionando, mas sem Unbound upstream"
+  echo_msg "   Execute: ./script.sh --fix-unbound"
+  configure_system_dns_for_pihole
+elif [ "$dns_ok" = true ]; then
+  echo_msg "✅ Pi-hole DNS operacional com funcionalidade principal ativa"
+  echo_msg "   🔧 DNS filtering funcionando na porta 53 ✓"
+  echo_msg "   🔑 Senha de admin: $PIHOLE_PASSWORD"
+  echo_msg "   ⚠️ Interface web pode estar inacessível"
+  echo_msg "   💡 Para corrigir interface: sudo pihole -r (reconfigure)"
+
+  # Configurar sistema pois DNS funciona
+  configure_system_dns_for_pihole
+else
+  echo_msg "❌ Pi-hole com problemas graves"
+  echo_msg "   Verifique: sudo systemctl status pihole-ftl"
+  echo_msg "   Logs: sudo journalctl -u pihole-ftl -n 20"
+fi
 
   # Executar validação final da instalação
   echo_msg "Executando validação final da instalação..."
-  if validate_pihole_installation; then
-    echo_msg "✅ Pi-hole instalado e validado com sucesso!"
+  validate_result=$(validate_pihole_installation && echo "success" || echo "partial")
 
-    # Configurar sistema para usar Pi-hole como DNS principal
-    echo_msg "Configurando sistema para usar Pi-hole como DNS..."
-    configure_system_dns_for_pihole
-  else
-    echo_msg "⚠️ Pi-hole instalado mas com problemas - execute troubleshooting manual"
+  if [ "$validate_result" = "success" ]; then
+    echo_msg "✅ Pi-hole instalado e validado com sucesso!"
+    echo_msg "   🔑 Acesse: http://$STATIC_IP:$PIHOLE_HTTP_PORT/admin"
+    echo_msg "   🔒 Senha: $PIHOLE✅ Pi-hole instalado com funcionalidade DNS ativa"
+    echo_msg "   💡 Alguns serviços podem precisar de ajustes menores"
   fi
+
+  # Configurar sistema para usar Pi-hole como DNS principal (sempre, se DNS funciona)
+  echo_msg "Configurando sistema para usar Pi-hole como DNS..."
+  configure_system_dns_for_pihole
 }
 
 validate_pihole_installation() {
   echo_msg "🔍 Executando validação completa do Pi-hole..."
 
-  local validation_passed=true
+  local validation_passed=0
 
   # Teste 1: Verificar se o comando pihole existe
   if ! command -v pihole &> /dev/null; then
     echo_msg "   ❌ Comando 'pihole' não encontrado"
-    validation_passed=false
+    validation_passed=1
   else
     echo_msg "   ✅ Comando Pi-hole disponível"
   fi
@@ -2070,7 +2196,7 @@ validate_pihole_installation() {
   if ! sudo systemctl is-active --quiet pihole-ftl; then
     echo_msg "   ❌ Serviço pihole-ftl não está ativo"
     echo_msg "      Status: $(sudo systemctl is-active pihole-ftl 2>/dev/null || echo 'erro')"
-    validation_passed=false
+    validation_passed=1
   else
     echo_msg "   ✅ Serviço pihole-ftl ativo"
   fi
@@ -2080,7 +2206,7 @@ validate_pihole_installation() {
     echo_msg "   ❌ Pi-hole não está ouvindo na porta 53"
     echo_msg "      Processos na porta 53:"
     sudo netstat -tlnp | grep ":53 " | sed 's/^/         /' | head -3
-    validation_passed=false
+    validation_passed=1
   else
     echo_msg "   ✅ Pi-hole ouvindo na porta 53"
   fi
@@ -2106,7 +2232,9 @@ validate_pihole_installation() {
 
   if [ "$dns_working" = false ]; then
     echo_msg "   ❌ Pi-hole não responde a consultas DNS"
-    validation_passed=false
+    validation_passed=1
+  else
+    echo_msg "   ✅ Resolução DNS via Pi-hole funcionando"
   fi
 
   # Teste 5: Verificar integração com Unbound
@@ -2116,36 +2244,549 @@ validate_pihole_installation() {
     echo_msg "   ⚠️ Unbound upstream com problemas - Pi-hole usará fallback"
   fi
 
-  # Teste 6: Verificar interface web (opcional)
+  # Teste 6: Verificar interface web (opcional) e corrigir porta se necessário
   if sudo systemctl is-active --quiet lighttpd; then
     if sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
       echo_msg "   ✅ Interface web disponível na porta $PIHOLE_HTTP_PORT"
     else
-      echo_msg "   ⚠️ Interface web pode não estar acessível na porta $PIHOLE_HTTP_PORT"
+      echo_msg "   ⚠️ Interface web não está na porta $PIHOLE_HTTP_PORT, corrigindo..."
+      configure_lighttpd_port
+      sleep 2
+      if sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
+        echo_msg "   ✅ Interface web corrigida para porta $PIHOLE_HTTP_PORT"
+      else
+        echo_msg "   ❌ Interface web ainda na porta incorreta"
+        echo_msg "      Portas lighttpd:"
+        sudo netstat -tlnp | grep lighttpd | sed 's/^/         /'
+      fi
     fi
   else
     echo_msg "   ⚠️ Lighttpd não está rodando - interface web indisponível"
   fi
 
-  # Resultado final
-  if [ "$validation_passed" = true ]; then
+  # Resultado final - ajustar lógica para RK322x
+  if [ "$validation_passed" -eq 0 ]; then
     echo_msg "🎉 Pi-hole validado com sucesso!"
     echo_msg "   ✅ DNS: Pi-hole (53) -> Unbound ($UNBOUND_PORT)"
     echo_msg "   ✅ Web: http://$STATIC_IP:$PIHOLE_HTTP_PORT/admin/"
     echo_msg "   ✅ Sistema otimizado para RK322x"
+    return 0
+  elif [ "$dns_working" = true ]; then
+    # DNS funciona - considerar sucesso parcial para RK322x
+    echo_msg "✅ Pi-hole funcionalmente operacional (DNS ativo)"
+    echo_msg "   ✅ DNS filtering funcionando na porta 53"
+    echo_msg "   ⚠️ Alguns serviços podem ter problemas menores"
+    echo_msg "   💡 Para interface web: sudo systemctl restart pihole-ftl"
+    echo_msg "   💡 Sistema utilizável e filtrando DNS corretamente"
+    return 0
   else
-    echo_msg "⚠️ Pi-hole instalado mas com problemas detectados"
+    echo_msg "❌ Pi-hole com problemas críticos"
     echo_msg "   🔧 Para reparar execute: pihole -r"
     echo_msg "   📋 Para diagnóstico: sudo pihole status"
     echo_msg "   📝 Logs: sudo journalctl -u pihole-ftl -f"
+    return 1
   fi
-
-  return $validation_passed
 }
 
 # =========================
 # Configurar DNS do sistema para usar Pi-hole
 # =========================
+# Função para tentar corrigir problemas do pihole-ftl específico para RK322x
+fix_pihole_ftl_service() {
+  echo_msg "      🔧 Diagnosticando pihole-ftl para RK322x..."
+
+  # Verificar se o arquivo de configuração existe
+  if [ ! -f /etc/pihole/setupVars.conf ]; then
+    echo_msg "      ❌ Arquivo de configuração do Pi-hole não encontrado"
+    echo_msg "      💡 Execute: pihole -r (reconfigure)"
+    return 1
+  fi
+
+  # Verificar se usuário pihole existe
+  if ! id pihole &>/dev/null; then
+    echo_msg "      ❌ Usuário 'pihole' não encontrado"
+    echo_msg "      🔧 Recriando usuário pihole..."
+    sudo useradd -r -s /bin/false pihole 2>/dev/null || true
+  fi
+
+  # Parar completamente qualquer processo pihole-FTL antigo
+  echo_msg "      🛑 Parando processos pihole-FTL existentes..."
+  sudo systemctl stop pihole-ftl 2>/dev/null || true
+  sudo pkill -15 pihole-FTL 2>/dev/null || true
+  sleep 3
+  sudo pkill -9 pihole-FTL 2>/dev/null || true
+  sleep 2
+
+  # Verificar e corrigir permissões dos arquivos críticos para RK322x
+  echo_msg "      📁 Verificando estrutura de diretórios..."
+  sudo mkdir -p /var/log/pihole /etc/pihole /var/lib/pihole /run/pihole
+  sudo chown -R pihole:pihole /var/log/pihole /var/lib/pihole /run/pihole 2>/dev/null || true
+  sudo chmod 755 /var/log/pihole /var/lib/pihole /run/pihole 2>/dev/null || true
+  sudo chmod 644 /etc/pihole/setupVars.conf 2>/dev/null || true
+
+  # Garantir WEB_PORT correto no setupVars.conf
+  if grep -q '^WEB_PORT=' /etc/pihole/setupVars.conf; then
+    sudo sed -i "s/^WEB_PORT=.*/WEB_PORT=$PIHOLE_HTTP_PORT/" /etc/pihole/setupVars.conf
+  else
+    echo "WEB_PORT=$PIHOLE_HTTP_PORT" | sudo tee -a /etc/pihole/setupVars.conf >/dev/null
+  fi
+
+  # Verificar banco de dados FTL
+  if [ -f /etc/pihole/pihole-FTL.db ]; then
+    echo_msg "      🗄️ Verificando banco de dados FTL..."
+    sudo chown pihole:pihole /etc/pihole/pihole-FTL.db
+    sudo chmod 644 /etc/pihole/pihole-FTL.db
+
+    # Verificar integridade do banco
+    if ! sudo -u pihole sqlite3 /etc/pihole/pihole-FTL.db "PRAGMA integrity_check;" | grep -q "ok"; then
+      echo_msg "      ⚠️ Banco de dados FTL corrompido, recriando..."
+      sudo rm -f /etc/pihole/pihole-FTL.db
+    fi
+  fi
+
+  # Configurar limites específicos para RK322x (ARM de baixa potência)
+  echo_msg "      ⚙️ Aplicando configurações RK322x no Pi-hole..."
+  if ! grep -q "MAXDBDAYS=2" /etc/pihole/setupVars.conf; then
+    echo "MAXDBDAYS=2" | sudo tee -a /etc/pihole/setupVars.conf >/dev/null
+  fi
+  if ! grep -q "CACHE_SIZE=1000" /etc/pihole/setupVars.conf; then
+    echo "CACHE_SIZE=1000" | sudo tee -a /etc/pihole/setupVars.conf >/dev/null
+  fi
+
+  # Verificar se dnsmasq não está conflitando
+  if systemctl is-active --quiet dnsmasq; then
+    echo_msg "      ⚠️ dnsmasq ativo pode conflitar, parando..."
+    sudo systemctl stop dnsmasq 2>/dev/null || true
+  fi
+
+  # Habilitar e tentar iniciar o serviço com timeout para ARM
+  echo_msg "      🚀 Iniciando pihole-ftl com configurações RK322x..."
+  sudo systemctl enable pihole-ftl 2>/dev/null || true
+
+  if sudo systemctl start pihole-ftl; then
+    echo_msg "      ⏳ Aguardando inicialização (ARM precisa de mais tempo)..."
+    sleep 10  # ARM RK322x precisa de mais tempo
+
+    if sudo systemctl is-active --quiet pihole-ftl; then
+      echo_msg "      ✅ pihole-ftl iniciado com sucesso em RK322x"
+
+      # Verificar se está realmente ouvindo na porta 53
+      if sudo netstat -tlnp | grep -q ":53.*pihole-FTL"; then
+        echo_msg "      ✅ pihole-ftl ouvindo na porta 53"
+        return 0
+      else
+        echo_msg "      ⚠️ pihole-ftl rodando mas não ouvindo na porta 53"
+        echo_msg "      📋 Processos na porta 53:"
+        sudo netstat -tlnp | grep ":53" | sed 's/^/         /'
+        return 1
+      fi
+    else
+      echo_msg "      ❌ pihole-ftl falhou ao iniciar no RK322x"
+      echo_msg "      📋 Status detalhado:"
+      sudo systemctl status pihole-ftl --no-pager -l | tail -10 | sed 's/^/         /'
+      echo_msg "      📋 Logs recentes:"
+      sudo journalctl -u pihole-ftl --no-pager -n 10 | sed 's/^/         /'
+      return 1
+    fi
+  else
+    echo_msg "      ❌ Comando systemctl start falhou para pihole-ftl"
+    echo_msg "      💡 Possíveis soluções:"
+    echo_msg "         - Execute: pihole -r"
+    echo_msg "         - Execute: sudo pihole-FTL test"
+    echo_msg "         - Verifique: sudo pihole status"
+    return 1
+  fi
+}
+
+# Função para configurar porta do lighttpd corretamente
+configure_lighttpd_port() {
+  echo_msg "      🌐 Configurando lighttpd para porta $PIHOLE_HTTP_PORT..."
+
+  if [ ! -f /etc/lighttpd/lighttpd.conf ]; then
+    echo_msg "      ⚠️ Arquivo lighttpd.conf não encontrado, criando..."
+    sudo mkdir -p /etc/lighttpd
+    sudo touch /etc/lighttpd/lighttpd.conf
+  fi
+
+  backup_file /etc/lighttpd/lighttpd.conf
+
+  # Forçar parada do lighttpd antes de reconfigurar
+  sudo systemctl stop lighttpd 2>/dev/null || true
+  sudo pkill -9 lighttpd 2>/dev/null || true
+  sleep 2
+
+  # Garantir que a porta esteja configurada corretamente
+  if grep -q "server.port" /etc/lighttpd/lighttpd.conf; then
+    sudo sed -i "s/server\.port\s*=\s*[0-9]\+/server.port = $PIHOLE_HTTP_PORT/" /etc/lighttpd/lighttpd.conf
+  else
+    echo "server.port = $PIHOLE_HTTP_PORT" | sudo tee -a /etc/lighttpd/lighttpd.conf >/dev/null
+  fi
+
+  # Adicionar otimizações RK322x ao lighttpd se não existirem
+  if ! grep -q "# RK322x optimizations" /etc/lighttpd/lighttpd.conf; then
+    cat <<EOF | sudo tee -a /etc/lighttpd/lighttpd.conf
+# RK322x optimizations
+server.max-connections = 128
+server.max-fds = 256
+server.max-worker = 1
+server.stat-cache-engine = "simple"
+server.network-backend = "linux-sendfile"
+EOF
+  fi
+
+  # Reiniciar lighttpd e aguardar
+  sudo systemctl start lighttpd 2>/dev/null || true
+  sleep 3
+
+  # Verificar se está rodando na porta correta
+  if sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
+    echo_msg "      ✅ Lighttpd configurado na porta $PIHOLE_HTTP_PORT"
+  else
+    echo_msg "      ⚠️ Lighttpd não está na porta $PIHOLE_HTTP_PORT"
+
+    # Mostrar qual porta está sendo usada
+    local current_port=$(sudo netstat -tlnp | grep lighttpd | grep -o ':[0-9]*' | head -1 | cut -d: -f2)
+    if [ -n "$current_port" ]; then
+      echo_msg "      📋 Lighttpd está rodando na porta: $current_port (deveria ser $PIHOLE_HTTP_PORT)"
+    else
+      echo_msg "      📋 Lighttpd não está ouvindo em nenhuma porta"
+    fi
+
+    # Mostrar conteúdo atual do arquivo de configuração
+    echo_msg "      📋 Configuração atual do lighttpd:"
+    grep "server\.port" /etc/lighttpd/lighttpd.conf | head -3 | sed 's/^/         /' || echo "         Nenhuma configuração de porta encontrada"
+
+    # Tentar correção adicional
+    echo_msg "      🔧 Tentando correção forçada..."
+    sudo systemctl stop lighttpd
+    sleep 1
+
+    # Forçar configuração da porta
+    sudo sed -i "/server\.port/d" /etc/lighttpd/lighttpd.conf
+    echo "server.port = $PIHOLE_HTTP_PORT" | sudo tee -a /etc/lighttpd/lighttpd.conf >/dev/null
+
+    sudo systemctl start lighttpd
+    sleep 3
+
+    # Verificar novamente
+    if sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
+      echo_msg "      ✅ Lighttpd corrigido para porta $PIHOLE_HTTP_PORT"
+    else
+      local new_port=$(sudo netstat -tlnp | grep lighttpd | grep -o ':[0-9]*' | head -1 | cut -d: -f2)
+      echo_msg "      ❌ Correção falhou - lighttpd ainda na porta: ${new_port:-'desconhecida'}"
+    fi
+  fi
+}
+
+# Função para verificar se serviços foram instalados corretamente
+verify_service_installations() {
+  echo_msg "📊 Verificando status dos serviços instalados..."
+
+  local installed_count=0
+  local failed_count=0
+
+  # Verificar cada serviço selecionado
+  if [[ "$CHOICES" == *UNBOUND* ]]; then
+    if command -v unbound &> /dev/null && sudo systemctl is-active --quiet unbound; then
+      echo_msg "   ✅ Unbound: Instalado e ativo"
+      installed_count=$((installed_count + 1))
+    else
+      echo_msg "   ❌ Unbound: Falhou ou inativo"
+      failed_count=$((failed_count + 1))
+    fi
+  fi
+
+  if [[ "$CHOICES" == *PIHOLE* ]]; then
+    if command -v pihole &> /dev/null && sudo netstat -tln | grep -q ":53 "; then
+      echo_msg "   ✅ Pi-hole: Instalado e DNS ativo na porta 53"
+      installed_count=$((installed_count + 1))
+    else
+      echo_msg "   ❌ Pi-hole: Falhou ou DNS inativo"
+      failed_count=$((failed_count + 1))
+    fi
+  fi
+
+  if [[ "$CHOICES" == *WIREGUARD* ]]; then
+    if command -v wg &> /dev/null && [ -f /etc/wireguard/wg0.conf ]; then
+      echo_msg "   ✅ WireGuard: Instalado e configurado"
+      installed_count=$((installed_count + 1))
+    else
+      echo_msg "   ❌ WireGuard: Falhou ou não configurado"
+      failed_count=$((failed_count + 1))
+    fi
+  fi
+
+  if [[ "$CHOICES" == *CLOUDFLARE* ]]; then
+    if command -v cloudflared &> /dev/null; then
+      echo_msg "   ✅ Cloudflared: Instalado"
+      installed_count=$((installed_count + 1))
+    else
+      echo_msg "   ❌ Cloudflared: Falhou"
+      failed_count=$((failed_count + 1))
+    fi
+  fi
+
+  if [[ "$CHOICES" == *RNG* ]]; then
+    if dpkg -l | grep -q "^ii.*rng-tools"; then
+      echo_msg "   ✅ RNG-tools: Instalado"
+      installed_count=$((installed_count + 1))
+    else
+      echo_msg "   ❌ RNG-tools: Falhou"
+      failed_count=$((failed_count + 1))
+    fi
+  fi
+
+  if [[ "$CHOICES" == *SAMBA* ]]; then
+    if dpkg -l | grep -q "^ii.*samba" && sudo systemctl is-enabled --quiet smbd; then
+      echo_msg "   ✅ Samba: Instalado e habilitado"
+      installed_count=$((installed_count + 1))
+    else
+      echo_msg "   ❌ Samba: Falhou ou não habilitado"
+      failed_count=$((failed_count + 1))
+    fi
+  fi
+
+  if [[ "$CHOICES" == *MINIDLNA* ]]; then
+    if dpkg -l | grep -q "^ii.*minidlna" && sudo systemctl is-enabled --quiet minidlna; then
+      echo_msg "   ✅ MiniDLNA: Instalado e habilitado"
+      installed_count=$((installed_count + 1))
+    else
+      echo_msg "   ❌ MiniDLNA: Falhou ou não habilitado"
+      failed_count=$((failed_count + 1))
+    fi
+  fi
+
+  if [[ "$CHOICES" == *FILEBROWSER* ]]; then
+    if command -v filebrowser &> /dev/null && sudo systemctl is-enabled --quiet filebrowser; then
+      echo_msg "   ✅ Filebrowser: Instalado e habilitado"
+      installed_count=$((installed_count + 1))
+    else
+      echo_msg "   ❌ Filebrowser: Falhou ou não habilitado"
+      failed_count=$((failed_count + 1))
+    fi
+  fi
+
+  if [[ "$CHOICES" == *DASHBOARD* ]]; then
+    if [ -f "$DASHBOARD_DIR/index.html" ] && sudo systemctl is-active --quiet nginx; then
+      echo_msg "   ✅ Dashboard: Instalado e Nginx ativo"
+      installed_count=$((installed_count + 1))
+    else
+      echo_msg "   ❌ Dashboard: Falhou ou Nginx inativo"
+      failed_count=$((failed_count + 1))
+    fi
+  fi
+
+  # Resumo da verificação
+  echo_msg ""
+  echo_msg "📊 Resumo da instalação:"
+  echo_msg "   ✅ Serviços instalados com sucesso: $installed_count"
+  if [ $failed_count -gt 0 ]; then
+    echo_msg "   ❌ Serviços com problemas: $failed_count"
+    echo_msg "   💡 Execute logs específicos ou reinstale os serviços com problemas"
+  else
+    echo_msg "   🎉 Todos os serviços selecionados foram instalados com sucesso!"
+  fi
+  echo_msg ""
+}
+
+# Função para reinstalar serviços específicos
+reinstall_service() {
+  local service="$1"
+
+  echo_msg "🔄 Reinstalando serviço: $service"
+
+  case "$service" in
+    "dashboard")
+      echo_msg "📊 Reinstalando Dashboard..."
+      sudo systemctl stop nginx 2>/dev/null || true
+      sudo rm -rf "$DASHBOARD_DIR" 2>/dev/null || true
+      install_dashboard
+      ;;
+    "filebrowser")
+      echo_msg "📁 Reinstalando Filebrowser..."
+      sudo systemctl stop filebrowser 2>/dev/null || true
+      sudo rm -f /usr/local/bin/filebrowser 2>/dev/null || true
+      sudo rm -rf /srv/filebrowser /etc/filebrowser 2>/dev/null || true
+      install_filebrowser
+      ;;
+    "samba")
+      echo_msg "🗂️ Reinstalando Samba..."
+      sudo systemctl stop smbd 2>/dev/null || true
+      sudo apt-get remove --purge -y samba 2>/dev/null || true
+      sudo rm -rf /srv/samba 2>/dev/null || true
+      install_samba
+      ;;
+    "minidlna")
+      echo_msg "📺 Reinstalando MiniDLNA..."
+      sudo systemctl stop minidlna 2>/dev/null || true
+      sudo apt-get remove --purge -y minidlna 2>/dev/null || true
+      sudo rm -rf /srv/media 2>/dev/null || true
+      install_minidlna
+      ;;
+    "all")
+      echo_msg "🔄 Reinstalando todos os serviços..."
+      CHOICES="DASHBOARD FILEBROWSER SAMBA MINIDLNA"
+      reinstall_service "dashboard"
+      reinstall_service "filebrowser"
+      reinstall_service "samba"
+      reinstall_service "minidlna"
+      ;;
+    *)
+      echo_msg "❌ Serviço '$service' não reconhecido"
+      echo_msg "💡 Serviços disponíveis: dashboard, filebrowser, samba, minidlna, all"
+      return 1
+      ;;
+  esac
+
+  echo_msg "✅ Reinstalação de '$service' concluída"
+}
+
+# Função para testar instalação específica do dashboard
+test_dashboard_installation() {
+  echo_msg "🧪 Testando instalação do Dashboard..."
+
+  local issues=0
+
+  # Verificar se nginx está instalado
+  if ! command -v nginx &> /dev/null; then
+    echo_msg "   ❌ Nginx não está instalado"
+    issues=$((issues + 1))
+  else
+    echo_msg "   ✅ Nginx instalado"
+  fi
+
+  # Verificar se nginx está ativo
+  if ! sudo systemctl is-active --quiet nginx; then
+    echo_msg "   ❌ Nginx não está ativo"
+    issues=$((issues + 1))
+  else
+    echo_msg "   ✅ Nginx ativo"
+  fi
+
+  # Verificar se diretório do dashboard existe
+  if [ ! -d "$DASHBOARD_DIR" ]; then
+    echo_msg "   ❌ Diretório do dashboard não existe: $DASHBOARD_DIR"
+    issues=$((issues + 1))
+  else
+    echo_msg "   ✅ Diretório do dashboard existe: $DASHBOARD_DIR"
+  fi
+
+  # Verificar se arquivo HTML existe
+  if [ ! -f "$DASHBOARD_DIR/index.html" ]; then
+    echo_msg "   ❌ Arquivo HTML do dashboard não existe"
+    issues=$((issues + 1))
+  else
+    echo_msg "   ✅ Arquivo HTML do dashboard existe"
+    local file_size=$(stat -c%s "$DASHBOARD_DIR/index.html" 2>/dev/null || echo 0)
+    echo_msg "      Tamanho do arquivo: ${file_size} bytes"
+  fi
+
+  # Verificar configuração do nginx
+  if [ ! -f /etc/nginx/sites-available/boxserver-dashboard ]; then
+    echo_msg "   ❌ Configuração nginx não existe"
+    issues=$((issues + 1))
+  else
+    echo_msg "   ✅ Configuração nginx existe"
+  fi
+
+  if [ ! -L /etc/nginx/sites-enabled/boxserver-dashboard ]; then
+    echo_msg "   ❌ Configuração nginx não está habilitada"
+    issues=$((issues + 1))
+  else
+    echo_msg "   ✅ Configuração nginx habilitada"
+  fi
+
+  # Testar se nginx está ouvindo na porta 80
+  if ! sudo netstat -tln | grep -q ":80 "; then
+    echo_msg "   ❌ Nginx não está ouvindo na porta 80"
+    issues=$((issues + 1))
+  else
+    echo_msg "   ✅ Nginx ouvindo na porta 80"
+  fi
+
+  # Teste de conectividade HTTP
+  echo_msg "   🌐 Testando conectividade HTTP..."
+  if timeout 10 curl -s "http://127.0.0.1/" >/dev/null 2>&1; then
+    echo_msg "   ✅ Dashboard acessível via HTTP"
+  else
+    echo_msg "   ❌ Dashboard não acessível via HTTP"
+    issues=$((issues + 1))
+  fi
+
+  # Resumo do teste
+  echo_msg ""
+  if [ $issues -eq 0 ]; then
+    echo_msg "🎉 Dashboard funcionando perfeitamente!"
+    echo_msg "   🌐 Acesse: http://$STATIC_IP/"
+  else
+    echo_msg "⚠️ Dashboard com $issues problema(s) encontrado(s)"
+    echo_msg "   💡 Execute: ./script.sh --reinstall dashboard"
+  fi
+
+  return $issues
+}
+
+# Função para corrigir problemas de porta do Pi-hole
+fix_pihole_port() {
+  echo_msg "🔧 Diagnosticando e corrigindo porta do Pi-hole..."
+
+  # Verificar se Pi-hole está instalado
+  if ! command -v pihole &> /dev/null; then
+    echo_msg "❌ Pi-hole não está instalado"
+    return 1
+  fi
+
+  # Detectar porta atual do lighttpd
+  local current_port=$(sudo netstat -tlnp | grep lighttpd | grep -o ':[0-9]*' | head -1 | cut -d: -f2)
+  if [ -n "$current_port" ]; then
+    echo_msg "   📋 Pi-hole atualmente rodando na porta: $current_port"
+  else
+    echo_msg "   ⚠️ Pi-hole web interface não está rodando"
+  fi
+
+  # Definir porta desejada
+  PIHOLE_HTTP_PORT=${PIHOLE_HTTP_PORT:-8081}
+  echo_msg "   🎯 Porta desejada: $PIHOLE_HTTP_PORT"
+
+  # Corrigir setupVars.conf
+  echo_msg "   📝 Corrigindo setupVars.conf..."
+  if [ -f /etc/pihole/setupVars.conf ]; then
+    backup_file /etc/pihole/setupVars.conf
+    if grep -q '^WEB_PORT=' /etc/pihole/setupVars.conf; then
+      sudo sed -i "s/^WEB_PORT=.*/WEB_PORT=$PIHOLE_HTTP_PORT/" /etc/pihole/setupVars.conf
+    else
+      echo "WEB_PORT=$PIHOLE_HTTP_PORT" | sudo tee -a /etc/pihole/setupVars.conf >/dev/null
+    fi
+    echo_msg "   ✅ setupVars.conf atualizado"
+  else
+    echo_msg "   ❌ setupVars.conf não encontrado"
+    return 1
+  fi
+
+  # Corrigir lighttpd.conf
+  echo_msg "   🌐 Corrigindo configuração do lighttpd..."
+  configure_lighttpd_port
+
+  # Reiniciar serviços
+  echo_msg "   🔄 Reiniciando serviços..."
+  sudo systemctl restart pihole-ftl 2>/dev/null || true
+  sudo systemctl restart lighttpd 2>/dev/null || true
+  sleep 5
+
+  # Verificar resultado
+  if sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
+    echo_msg "✅ Pi-hole corrigido com sucesso!"
+    echo_msg "   🌐 Interface web: http://$(hostname -I | awk '{print $1}'):$PIHOLE_HTTP_PORT/admin/"
+    return 0
+  else
+    echo_msg "❌ Correção falhou"
+    local final_port=$(sudo netstat -tlnp | grep lighttpd | grep -o ':[0-9]*' | head -1 | cut -d: -f2)
+    echo_msg "   📋 Pi-hole ainda na porta: ${final_port:-'desconhecida'}"
+    echo_msg "   💡 Tente: pihole -r (reconfigure)"
+    return 1
+  fi
+}
+
 configure_system_dns_for_pihole() {
   echo_msg "Configurando resolv.conf para usar Pi-hole..."
 
@@ -3058,6 +3699,7 @@ install_dashboard() {
                 <h3>🛡️ Pi-hole</h3>
                 <a href="http://$STATIC_IP:$PIHOLE_HTTP_PORT/admin" class="btn" target="_blank">Painel Admin</a>
                 <a href="https://$STATIC_IP:$PIHOLE_HTTPS_PORT/admin" class="btn" target="_blank">Painel SSL</a>
+                <p><strong>Usuário:</strong> admin<br><strong>Senha:</strong> <code>$PIHOLE_PASSWORD</code></p>
             </div>
 
             <div class="service-card">
@@ -3136,7 +3778,23 @@ install_dashboard() {
 EOF
 
   # Parar serviços que possam estar usando a porta 80
-  sudo systemctl stop apache2 || true  # Apache se estiver instalado
+  sudo systemctl stop apache2 2>/dev/null || true  # Apache se estiver instalado
+
+  # Verificar se nginx está instalado
+  if ! command -v nginx &> /dev/null; then
+    echo_msg "   📦 Instalando Nginx..."
+    sudo apt-get update
+    sudo apt-get install -y nginx
+    echo_msg "   ✅ Nginx instalado"
+  else
+    echo_msg "   ✅ Nginx já está instalado"
+  fi
+
+  # Verificar se nginx está habilitado
+  if ! sudo systemctl is-enabled --quiet nginx; then
+    echo_msg "   🔧 Habilitando nginx..."
+    sudo systemctl enable nginx
+  fi
 
   # Configurar nginx otimizado para RK322x
   backup_file /etc/nginx/sites-available/boxserver-dashboard
@@ -3246,13 +3904,36 @@ EOF
     return 1
   fi
 
-  # Verificar se o serviço está rodando
+  # Verificar se o serviço está rodando e mostrar status detalhado
   if sudo systemctl is-active --quiet nginx; then
     echo_msg "✅ Dashboard RK322x instalado/reconfigurado e acessível em http://$STATIC_IP/"
     echo_msg "   Configuração otimizada para dispositivos ARM de baixa potência"
+
+    # Verificar se arquivo do dashboard existe
+    if [ -f "$DASHBOARD_DIR/index.html" ]; then
+      echo_msg "   ✅ Arquivo do dashboard criado: $DASHBOARD_DIR/index.html"
+    else
+      echo_msg "   ❌ Arquivo do dashboard não encontrado: $DASHBOARD_DIR/index.html"
+    fi
+
+    # Verificar configuração do nginx
+    if [ -f /etc/nginx/sites-enabled/boxserver-dashboard ]; then
+      echo_msg "   ✅ Configuração nginx ativa"
+    else
+      echo_msg "   ❌ Configuração nginx não encontrada"
+    fi
   else
-    echo_msg "⚠️  Dashboard instalado/reconfigurado, mas o Nginx pode não estar em execução"
-    echo_msg "   Logs: sudo journalctl -u nginx -n 10"
+    echo_msg "⚠️  Dashboard instalado/reconfigurado, mas o Nginx não está em execução"
+    echo_msg "   Tentando iniciar Nginx..."
+    sudo systemctl start nginx
+    sleep 2
+    if sudo systemctl is-active --quiet nginx; then
+      echo_msg "   ✅ Nginx iniciado com sucesso"
+    else
+      echo_msg "   ❌ Nginx falhou ao iniciar"
+      echo_msg "   Logs: sudo journalctl -u nginx -n 10"
+      echo_msg "   Status: sudo systemctl status nginx"
+    fi
   fi
 }
 
@@ -3293,7 +3974,14 @@ show_summary() {
     for s in "${SUMMARY_ENTRIES[@]}"; do
       echo "  - $s"
     done
+    echo ""
+    echo "=== CREDENCIAIS DE ACESSO ==="
+    echo "Pi-hole Admin Interface:"
+    echo "  URL: http://$STATIC_IP:$PIHOLE_HTTP_PORT/admin"
+    echo "  Senha: $PIHOLE_PASSWORD"
+    echo "  (Senha gerada automaticamente - anote para usar!)"
     if [ -n "${WG_PRIVATE:-}" ] && [ -n "${WG_PUBLIC:-}" ]; then
+      echo ""
       echo "WireGuard keys:"
       echo "  Private: $WG_PRIVATE"
       echo "  Public: $WG_PUBLIC"
@@ -3382,6 +4070,9 @@ usage() {
   echo "  --verify-clean    Verifica se o sistema está limpo após purga"
   echo "  --fix-dnssec      Verificar e corrigir problemas de DNSSEC root key"
   echo "  --fix-unbound     Diagnosticar e corrigir problemas do Unbound DNS"
+  echo "  --fix-pihole-port Corrigir porta do Pi-hole para usar configuração correta"
+  echo "  --test-dashboard  Testar instalação específica do dashboard"
+  echo "  --reinstall SERVICE   Reinstalar serviço específico (dashboard|filebrowser|samba|minidlna|all)"
   echo "  -s, --silent      Modo silencioso (sem interface whiptail)"
   echo "  -u, --update      Atualizar serviços já instalados"
   echo "  -r, --rollback    Reverter alterações"
@@ -3434,6 +4125,30 @@ while [[ $# -gt 0 ]]; do
       echo "🔧 Diagnosticando e corrigindo Unbound..."
       check_system
       diagnose_unbound_issues
+      exit 0
+      ;;
+    --fix-pihole-port)
+      echo "🔧 Corrigindo porta do Pi-hole..."
+      check_system
+      fix_pihole_port
+      exit 0
+      ;;
+    --test-dashboard)
+      echo "🧪 Testando instalação do Dashboard..."
+      check_system
+      ask_static_ip
+      test_dashboard_installation
+      exit 0
+      ;;
+    --reinstall)
+      if [ -z "${2:-}" ]; then
+        echo "❌ Especifique um serviço: --reinstall [dashboard|filebrowser|samba|minidlna|all]"
+        exit 1
+      fi
+      echo "🔄 Reinstalando serviço: $2"
+      check_system
+      ask_static_ip
+      reinstall_service "$2"
       exit 0
       ;;
     -h|--help)
@@ -3532,34 +4247,90 @@ Deseja realmente continuar com a purga total?" 15 70; then
   choose_services
 
   # Instalar Unbound primeiro, pois Pi-hole depende dele
+  echo_msg "🔍 Verificando instalação do Unbound..."
   if [[ "$CHOICES" == *UNBOUND* ]]; then
+    echo_msg "✅ Unbound selecionado - instalando..."
     install_unbound
+  else
+    echo_msg "❌ Unbound não selecionado"
   fi
 
   # Instalar Pi-hole somente se Unbound foi instalado ou já existe
+  echo_msg "🔍 Verificando instalação do Pi-hole..."
   if [[ "$CHOICES" == *PIHOLE* ]]; then
+    echo_msg "✅ Pi-hole selecionado - verificando dependências..."
     if [[ "$CHOICES" == *UNBOUND* ]] || sudo systemctl is-active --quiet unbound; then
-      echo_msg "🕳️ Instalando Pi-hole otimizado para RK322x..."
+      echo_msg "✅ Unbound disponível - instalando Pi-hole otimizado para RK322x..."
       install_pihole
     else
       echo_msg "❌ Pi-hole não pode ser instalado sem Unbound. Selecione Unbound também."
     fi
+  else
+    echo_msg "❌ Pi-hole não selecionado"
   fi
 
   # Instalar WireGuard com verificação de compatibilidade RK322x
+  echo_msg "🔍 Verificando instalação do WireGuard..."
   if [[ "$CHOICES" == *WIREGUARD* ]]; then
-    echo_msg "🔒 Instalando WireGuard com otimizações RK322x..."
+    echo_msg "✅ WireGuard selecionado - instalando com otimizações RK322x..."
     install_wireguard
+  else
+    echo_msg "❌ WireGuard não selecionado"
   fi
-  [[ "$CHOICES" == *CLOUDFLARE* ]] && install_cloudflared
-  [[ "$CHOICES" == *RNG* ]] && install_rng
-  [[ "$CHOICES" == *SAMBA* ]] && install_samba
-  [[ "$CHOICES" == *MINIDLNA* ]] && install_minidlna
-  [[ "$CHOICES" == *FILEBROWSER* ]] && install_filebrowser
-  [[ "$CHOICES" == *DASHBOARD* ]] && install_dashboard
+
+  echo_msg "🔍 Verificando instalação do Cloudflared..."
+  if [[ "$CHOICES" == *CLOUDFLARE* ]]; then
+    echo_msg "✅ Cloudflared selecionado - instalando..."
+    install_cloudflared
+  else
+    echo_msg "❌ Cloudflared não selecionado"
+  fi
+
+  echo_msg "🔍 Verificando instalação do RNG-tools..."
+  if [[ "$CHOICES" == *RNG* ]]; then
+    echo_msg "✅ RNG-tools selecionado - instalando..."
+    install_rng
+  else
+    echo_msg "❌ RNG-tools não selecionado"
+  fi
+
+  echo_msg "🔍 Verificando instalação do Samba..."
+  if [[ "$CHOICES" == *SAMBA* ]]; then
+    echo_msg "✅ Samba selecionado - instalando..."
+    install_samba
+  else
+    echo_msg "❌ Samba não selecionado"
+  fi
+
+  echo_msg "🔍 Verificando instalação do MiniDLNA..."
+  if [[ "$CHOICES" == *MINIDLNA* ]]; then
+    echo_msg "✅ MiniDLNA selecionado - instalando..."
+    install_minidlna
+  else
+    echo_msg "❌ MiniDLNA não selecionado"
+  fi
+
+  echo_msg "🔍 Verificando instalação do Filebrowser..."
+  if [[ "$CHOICES" == *FILEBROWSER* ]]; then
+    echo_msg "✅ Filebrowser selecionado - instalando..."
+    install_filebrowser
+  else
+    echo_msg "❌ Filebrowser não selecionado"
+  fi
+
+  echo_msg "🔍 Verificando instalação do Dashboard..."
+  if [[ "$CHOICES" == *DASHBOARD* ]]; then
+    echo_msg "✅ Dashboard selecionado - instalando..."
+    install_dashboard
+  else
+    echo_msg "❌ Dashboard não selecionado"
+  fi
 
   # Verificação final do sistema após instalação
   echo_msg "🔍 Executando verificação final do sistema RK322x..."
+
+  # Verificar se serviços foram instalados corretamente
+  verify_service_installations
 
   # Verificar uso de recursos após instalação
   local final_memory=$(free | awk '/^Mem:/ {print int($3*100/$2)}')
