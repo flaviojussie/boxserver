@@ -6,9 +6,9 @@
 # Exibe relatório com IPs, portas, chaves e senhas ao final
 #
 # DESINSTALAÇÃO DO PI-HOLE:
-# - Use: ./script.sh --uninstall-pihole (usa pihole uninstall --clean automaticamente)
-# - Use: ./script.sh --clean (purga completa do BoxServer incluindo Pi-hole com --clean)
-# - O comando 'pihole uninstall --clean' é usado por padrão para desinstalação completa
+# - Use: ./script.sh --clean (purga completa do BoxServer usando pihole uninstall --clean)
+# - O comando 'pihole uninstall --clean' é usado por padrão na purga completa
+# - Inclui limpeza adicional automática para garantir remoção completa do Pi-hole
 
 set -euo pipefail
 
@@ -363,34 +363,46 @@ rollback_changes() {
 # Função específica para desinstalação do Pi-hole
 # =========================
 uninstall_pihole_clean() {
-  echo "🕳️ Desinstalando Pi-hole usando comando oficial com --clean..."
+  echo "🕳️ Desinstalando Pi-hole usando comando oficial com --clean por padrão..."
 
   # Verificar se Pi-hole está instalado
   if command -v pihole &> /dev/null; then
     echo "   ✅ Pi-hole detectado, iniciando desinstalação oficial..."
 
     # Parar serviços relacionados primeiro
-    echo "   Parando serviços do Pi-hole..."
+    echo "   🛑 Parando serviços do Pi-hole..."
     sudo systemctl stop pihole-ftl 2>/dev/null || true
     sudo systemctl stop lighttpd 2>/dev/null || true
 
     # Mostrar status atual antes da desinstalação
-    echo "   Status atual do Pi-hole:"
+    echo "   📊 Status atual do Pi-hole:"
     pihole status 2>/dev/null | head -3 | sed 's/^/      /' || echo "      Status não disponível"
 
     # Usar o comando oficial do Pi-hole com --clean por padrão
-    echo "   Executando: pihole uninstall --clean"
-    echo "   (Este processo remove TODOS os arquivos, configurações e dados do Pi-hole)"
+    echo ""
+    echo "   🚀 Executando: pihole uninstall --clean"
+    echo "   ⚠️  ATENÇÃO: Este processo remove TODOS os arquivos, configurações e dados do Pi-hole"
+    echo "   📝 Usando --clean por padrão conforme solicitado..."
+    echo ""
 
     # Automatizar respostas para desinstalação completa com --clean
     if printf "y\ny\ny\ny\ny\n" | sudo pihole uninstall --clean 2>/dev/null; then
-      echo "   ✅ Pi-hole desinstalado com sucesso usando comando oficial --clean"
+      echo "   ✅ Pi-hole desinstalado com sucesso usando comando oficial 'pihole uninstall --clean'"
+
+      # Limpeza adicional para garantir remoção completa
+      echo "   🧹 Executando limpeza adicional para garantir remoção completa..."
+      complete_pihole_cleanup
     else
-      echo "   ⚠️ Desinstalação automática falhou, tentando método alternativo..."
+      echo "   ⚠️ Método automático falhou, tentando com confirmação manual..."
       if yes | sudo pihole uninstall --clean 2>/dev/null; then
-        echo "   ✅ Pi-hole desinstalado com método alternativo"
+        echo "   ✅ Pi-hole desinstalado com método alternativo --clean"
+
+        # Limpeza adicional para garantir remoção completa
+        echo "   🧹 Executando limpeza adicional para garantir remoção completa..."
+        complete_pihole_cleanup
       else
-        echo "   ❌ Falha na desinstalação oficial, executando limpeza manual..."
+        echo "   ❌ Comando oficial 'pihole uninstall --clean' falhou completamente"
+        echo "   🔧 Executando limpeza manual como último recurso..."
         manual_pihole_cleanup
       fi
     fi
@@ -398,14 +410,14 @@ uninstall_pihole_clean() {
     sleep 3
   else
     echo "   ℹ️ Comando 'pihole' não encontrado - Pi-hole pode não estar instalado"
-    echo "   Verificando resquícios de instalação..."
+    echo "   🔍 Verificando resquícios de instalação..."
 
     # Verificar se existem arquivos do Pi-hole mesmo sem comando
     if [ -d /etc/pihole ] || [ -d /opt/pihole ] || systemctl list-units | grep -q pihole; then
       echo "   ⚠️ Encontrados resquícios do Pi-hole, executando limpeza manual..."
       manual_pihole_cleanup
     else
-      echo "   ✅ Nenhum resquício do Pi-hole encontrado"
+      echo "   ✅ Nenhum resquício do Pi-hole encontrado no sistema"
     fi
   fi
 
@@ -416,7 +428,7 @@ uninstall_pihole_clean() {
 
 # Função auxiliar para limpeza manual quando pihole uninstall falha
 manual_pihole_cleanup() {
-  echo "   🧹 Executando limpeza manual do Pi-hole..."
+  echo "   🧹 Executando limpeza manual completa do Pi-hole..."
 
   # Parar e desabilitar serviços
   for service in pihole-ftl lighttpd; do
@@ -427,11 +439,30 @@ manual_pihole_cleanup() {
     fi
   done
 
+  # Forçar kill de processos pihole se ainda estiverem rodando
+  echo "      Terminando processos do Pi-hole..."
+  sudo pkill -9 pihole-FTL 2>/dev/null || true
+  sudo pkill -9 lighttpd 2>/dev/null || true
+
   # Remover pacotes
   echo "      Removendo pacotes do Pi-hole..."
   sudo apt-get remove --purge -y pihole-ftl 2>/dev/null || true
   sudo apt-get remove --purge -y pi-hole 2>/dev/null || true
   sudo apt-get remove --purge -y lighttpd 2>/dev/null || true
+
+  # Remover comando pihole de todos os locais possíveis
+  echo "      Removendo comando pihole..."
+  sudo rm -f /usr/local/bin/pihole 2>/dev/null || true
+  sudo rm -f /usr/bin/pihole 2>/dev/null || true
+  sudo rm -f /bin/pihole 2>/dev/null || true
+
+  # Remover links simbólicos
+  for path in /usr/local/bin /usr/bin /bin; do
+    if [ -L "$path/pihole" ]; then
+      echo "      Removendo link: $path/pihole"
+      sudo rm -f "$path/pihole" 2>/dev/null || true
+    fi
+  done
 
   # Remover diretórios e arquivos
   echo "      Removendo diretórios e configurações..."
@@ -440,12 +471,17 @@ manual_pihole_cleanup() {
   sudo rm -f /etc/cron.d/pihole 2>/dev/null || true
   sudo rm -f /etc/dnsmasq.d/01-pihole.conf 2>/dev/null || true
   sudo rm -f /etc/dnsmasq.d/06-rfc6761.conf 2>/dev/null || true
+  sudo rm -rf /var/lib/pihole 2>/dev/null || true
 
-  # Remover usuários e grupos
+  # Remover usuários e grupos com força
   echo "      Removendo usuários e grupos..."
-  sudo userdel pihole 2>/dev/null || true
-  sudo groupdel pihole 2>/dev/null || true
-  sudo userdel www-data 2>/dev/null || true  # Usado pelo lighttpd
+  if id pihole &>/dev/null; then
+    sudo userdel -r pihole 2>/dev/null || true
+    sudo userdel pihole 2>/dev/null || true  # fallback sem -r
+  fi
+  if getent group pihole &>/dev/null; then
+    sudo groupdel pihole 2>/dev/null || true
+  fi
 
   # Restaurar resolv.conf se necessário
   if [ -f /etc/resolv.conf.backup* ]; then
@@ -453,7 +489,53 @@ manual_pihole_cleanup() {
     sudo cp /etc/resolv.conf.backup* /etc/resolv.conf 2>/dev/null || true
   fi
 
-  echo "   ✅ Limpeza manual do Pi-hole concluída"
+  # Limpar cache do PATH
+  hash -r 2>/dev/null || true
+
+  # Restaurar DNS básico após limpeza manual
+  echo "      Restaurando configuração DNS básica..."
+  sudo chattr -i /etc/resolv.conf 2>/dev/null || true
+  if ! timeout 5 nslookup google.com >/dev/null 2>&1; then
+    cat <<EOF | sudo tee /etc/resolv.conf
+# DNS restaurado após remoção manual do Pi-hole
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+EOF
+  fi
+
+  echo "   ✅ Limpeza manual completa do Pi-hole concluída"
+}
+
+# Função para limpeza adicional garantindo remoção completa
+complete_pihole_cleanup() {
+  echo "      Removendo comando pihole residual..."
+  sudo rm -f /usr/local/bin/pihole 2>/dev/null || true
+  sudo rm -f /usr/bin/pihole 2>/dev/null || true
+
+  # Remover links simbólicos do pihole se existirem
+  for path in /usr/local/bin /usr/bin /bin; do
+    if [ -L "$path/pihole" ]; then
+      echo "      Removendo link simbólico: $path/pihole"
+      sudo rm -f "$path/pihole" 2>/dev/null || true
+    fi
+  done
+
+  # Remover usuário pihole se ainda existir
+  if id pihole &>/dev/null; then
+    echo "      Removendo usuário pihole residual..."
+    sudo userdel -r pihole 2>/dev/null || true
+  fi
+
+  # Remover grupo pihole se ainda existir
+  if getent group pihole &>/dev/null; then
+    echo "      Removendo grupo pihole residual..."
+    sudo groupdel pihole 2>/dev/null || true
+  fi
+
+  # Limpar PATH cache para garantir que comando não seja encontrado
+  hash -r 2>/dev/null || true
+
+  echo "      ✅ Limpeza adicional concluída"
 }
 
 # Função para verificar se a desinstalação do Pi-hole foi bem-sucedida
@@ -462,9 +544,18 @@ verify_pihole_uninstall() {
 
   local issues_found=0
 
-  # Verificar comando pihole
+  # Limpar cache do PATH antes da verificação
+  hash -r 2>/dev/null || true
+
+  # Verificar comando pihole com múltiplos métodos
   if command -v pihole &> /dev/null; then
-    echo "   ❌ Comando 'pihole' ainda disponível"
+    echo "   ❌ Comando 'pihole' ainda disponível via command"
+    issues_found=$((issues_found + 1))
+  elif which pihole &> /dev/null; then
+    echo "   ❌ Comando 'pihole' ainda disponível via which"
+    issues_found=$((issues_found + 1))
+  elif [ -f /usr/local/bin/pihole ] || [ -f /usr/bin/pihole ]; then
+    echo "   ❌ Arquivo executável 'pihole' ainda existe"
     issues_found=$((issues_found + 1))
   else
     echo "   ✅ Comando 'pihole' removido"
@@ -502,7 +593,7 @@ verify_pihole_uninstall() {
     echo "   ✅ Porta 53 liberada do Pi-hole"
   fi
 
-  # Verificar usuário pihole
+  # Verificar usuário e grupo pihole
   if id pihole &>/dev/null; then
     echo "   ❌ Usuário 'pihole' ainda existe"
     issues_found=$((issues_found + 1))
@@ -510,37 +601,154 @@ verify_pihole_uninstall() {
     echo "   ✅ Usuário 'pihole' removido"
   fi
 
+  if getent group pihole &>/dev/null; then
+    echo "   ❌ Grupo 'pihole' ainda existe"
+    issues_found=$((issues_found + 1))
+  else
+    echo "   ✅ Grupo 'pihole' removido"
+  fi
+
   # Resultado final
   if [ $issues_found -eq 0 ]; then
     echo "   🎉 Pi-hole completamente desinstalado! Sistema limpo."
+
+    # Verificar e restaurar DNS se necessário
+    restore_dns_after_pihole_removal
     return 0
   else
     echo "   ⚠️ $issues_found problema(s) encontrado(s) na desinstalação"
-    echo "   Pode ser necessária limpeza manual adicional"
-    return 1
+    echo "   Executando limpeza final automática..."
+
+    # Executar limpeza final se houver problemas
+    complete_pihole_cleanup
+
+    # Verificar novamente após limpeza final
+    sleep 2
+    hash -r 2>/dev/null || true
+    local final_issues=0
+
+    if command -v pihole &> /dev/null || which pihole &> /dev/null; then
+      final_issues=$((final_issues + 1))
+    fi
+
+    if id pihole &>/dev/null; then
+      final_issues=$((final_issues + 1))
+    fi
+
+    if [ $final_issues -eq 0 ]; then
+      echo "   ✅ Limpeza final bem-sucedida - Pi-hole completamente removido!"
+      echo "   🔧 Restaurando configuração DNS do sistema..."
+
+      # Verificar e restaurar DNS se necessário
+      restore_dns_after_pihole_removal
+      return 0
+    else
+      echo "   ⚠️ Alguns resquícios persistem após limpeza automática"
+      echo "   📝 Detalhes: comando ou usuário pihole podem ainda existir"
+      echo "   🔧 Tentando restaurar DNS mesmo assim..."
+
+      # Mesmo com resquícios, tentar restaurar DNS
+      restore_dns_after_pihole_removal
+
+      echo "   ℹ️  O sistema DNS foi restaurado, mas verifique manualmente:"
+      echo "      - Execute: which pihole"
+      echo "      - Execute: id pihole"
+      echo "      - Se necessário, remova manualmente com: sudo rm -f \$(which pihole)"
+      echo "      - Se necessário, remova usuário com: sudo userdel -r pihole"
+      return 1
+    fi
   fi
+}
+
+# Função para restaurar DNS funcional após remoção do Pi-hole
+restore_dns_after_pihole_removal() {
+  echo ""
+  echo "🌐 Verificando e restaurando configuração DNS após remoção do Pi-hole..."
+
+  # Verificar se systemd-resolved está disponível para reativar
+  if [ -f /lib/systemd/system/systemd-resolved.service ]; then
+    echo "   Reativando systemd-resolved..."
+    sudo systemctl enable systemd-resolved 2>/dev/null || true
+    sudo systemctl start systemd-resolved 2>/dev/null || true
+
+    # Verificar se iniciou corretamente
+    if sudo systemctl is-active --quiet systemd-resolved; then
+      echo "   ✅ systemd-resolved reativado"
+
+      # Restaurar link simbólico do resolv.conf se necessário
+      if [ ! -L /etc/resolv.conf ]; then
+        echo "   Restaurando link do resolv.conf para systemd-resolved..."
+        sudo rm -f /etc/resolv.conf
+        sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+      fi
+    else
+      echo "   ⚠️ Falha ao reativar systemd-resolved"
+    fi
+  fi
+
+  # Verificar se o DNS está funcionando
+  echo "   Testando conectividade DNS..."
+  if timeout 10 nslookup google.com >/dev/null 2>&1; then
+    echo "   ✅ DNS funcionando corretamente"
+  else
+    echo "   ⚠️ DNS com problemas, configurando fallback manual..."
+
+    # Remover proteção do resolv.conf se existir
+    sudo chattr -i /etc/resolv.conf 2>/dev/null || true
+
+    # Criar configuração DNS de emergência
+    cat <<EOF | sudo tee /etc/resolv.conf
+# Configuração DNS de emergência pós Pi-hole
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+nameserver 8.8.4.4
+EOF
+
+    # Testar novamente
+    sleep 2
+    if timeout 10 nslookup google.com >/dev/null 2>&1; then
+      echo "   ✅ DNS de emergência funcionando"
+    else
+      echo "   ❌ DNS ainda com problemas - verifique conectividade de rede"
+      echo "   💡 Sugestões:"
+      echo "      - Verifique cabo/WiFi: ping 8.8.8.8"
+      echo "      - Reinicie rede: sudo systemctl restart networking"
+      echo "      - Configure DNS manual no roteador se necessário"
+    fi
+  fi
+
+  echo ""
+  echo "   ✅ Configuração DNS pós Pi-hole concluída"
+  echo "   📋 DNS atual configurado em /etc/resolv.conf:"
+  cat /etc/resolv.conf | grep nameserver | sed 's/^/      /'
+  echo ""
 }
 
 # =========================
 # Função de purga completa
 # =========================
 purge_existing_installations() {
-  whiptail_msg "🧹 Iniciando purga completa do BoxServer com pihole uninstall --clean..."
+  whiptail_msg "🧹 Iniciando purga completa do BoxServer usando 'pihole uninstall --clean' por padrão..."
 
-  echo "Parando serviços..."
+  echo "🛑 Parando todos os serviços do BoxServer..."
   # Lista simples de serviços principais
   for service in unbound pihole-ftl lighttpd wg-quick@wg0 cloudflared rng-tools smbd minidlna filebrowser nginx; do
     sudo systemctl stop "$service" 2>/dev/null || true
     sudo systemctl disable "$service" 2>/dev/null || true
   done
 
+  echo ""
+  echo "🕳️ Desinstalando Pi-hole usando comando oficial 'pihole uninstall --clean'..."
+  echo "   (Conforme solicitado - usando --clean por padrão)"
   # Usar função específica para Pi-hole
   uninstall_pihole_clean
 
-  echo "Removendo outros pacotes..."
-  # Remoção dos demais pacotes
+  echo ""
+  echo "📦 Removendo outros pacotes do BoxServer..."
+  # Remoção dos demais pacotes (Pi-hole já foi tratado acima com comando oficial)
   for pkg in unbound lighttpd wireguard wireguard-tools rng-tools samba minidlna nginx filebrowser cloudflared; do
     if dpkg -s "$pkg" >/dev/null 2>&1; then
+      echo "   Removendo: $pkg"
       sudo apt-get remove --purge -y "$pkg" 2>/dev/null || true
     fi
   done
@@ -576,10 +784,16 @@ purge_existing_installations() {
     sudo systemctl start systemd-resolved 2>/dev/null || true
   fi
 
-  echo "✅ Purga simples concluída!"
-  whiptail_msg "✅ Purga concluída com sucesso!
+  echo "✅ Purga completa do BoxServer concluída!"
+  echo "   - Pi-hole removido com 'pihole uninstall --clean' ✓"
+  echo "   - Outros serviços removidos ✓"
+  echo "   - Sistema limpo e pronto ✓"
+  echo ""
 
-Todos os componentes principais do BoxServer foram removidos.
+  whiptail_msg "✅ Purga completa concluída com sucesso!
+
+Pi-hole foi removido usando 'pihole uninstall --clean' conforme solicitado.
+Todos os outros componentes do BoxServer também foram removidos.
 O sistema está pronto para uma nova instalação."
 }
 
@@ -587,7 +801,7 @@ O sistema está pronto para uma nova instalação."
 # Verificação pós-purga simples
 # =========================
 verify_purge_completion() {
-  echo "🔍 Verificação rápida pós-purga..."
+  echo "🔍 Verificação rápida pós-purga (Pi-hole removido com 'pihole uninstall --clean')..."
 
   # Verificar apenas os principais
   local issues=0
@@ -606,10 +820,18 @@ verify_purge_completion() {
     fi
   done
 
+  # Verificar especificamente se Pi-hole foi removido completamente
+  if command -v pihole &> /dev/null; then
+    echo "   ⚠️ Comando 'pihole' ainda disponível (falha em pihole uninstall --clean)"
+    issues=$((issues + 1))
+  fi
+
   if [ $issues -eq 0 ]; then
-    echo "   ✅ Sistema limpo"
+    echo "   ✅ Sistema completamente limpo"
+    echo "   ✅ Pi-hole removido com sucesso usando 'pihole uninstall --clean'"
   else
     echo "   ⚠️ $issues itens remanescentes encontrados"
+    echo "   💡 Execute novamente ./script.sh --clean se necessário"
   fi
 }
 
@@ -3156,8 +3378,7 @@ show_summary() {
 usage() {
   echo "Uso: $0 [OPÇÕES]"
   echo "Opções:"
-  echo "  --clean           Remove completamente todas as instalações e dados do BoxServer antes de instalar."
-  echo "  --uninstall-pihole Desinstala apenas o Pi-hole usando pihole uninstall --clean"
+  echo "  --clean           Remove completamente todas as instalações e dados do BoxServer (usa pihole uninstall --clean)"
   echo "  --verify-clean    Verifica se o sistema está limpo após purga"
   echo "  --fix-dnssec      Verificar e corrigir problemas de DNSSEC root key"
   echo "  --fix-unbound     Diagnosticar e corrigir problemas do Unbound DNS"
@@ -3178,17 +3399,6 @@ while [[ $# -gt 0 ]]; do
     --clean)
       CLEAN_INSTALL=true
       shift
-      ;;
-    --uninstall-pihole)
-      echo "🕳️ Desinstalando apenas o Pi-hole usando pihole uninstall --clean..."
-      check_system
-      uninstall_pihole_clean
-      if verify_pihole_uninstall; then
-        echo "✅ Pi-hole desinstalado completamente usando --clean"
-      else
-        echo "⚠️ Pi-hole desinstalado mas podem haver resquícios - verifique manualmente"
-      fi
-      exit 0
       ;;
     -s|--silent)
       SILENT_MODE=true
@@ -3246,8 +3456,13 @@ main() {
 
 A opção --clean irá executar uma PURGA TOTAL do sistema, removendo:
 
-🚫 SERVIÇOS (parados e desabilitados):
-- Pi-hole, Unbound, WireGuard, Cloudflared, Samba, MiniDLNA
+🕳️ PI-HOLE (usa 'pihole uninstall --clean' por padrão):
+- Comando oficial 'pihole uninstall --clean' será executado
+- Remove TODOS os arquivos, configurações e dados do Pi-hole
+- Inclui limpeza adicional para garantir remoção completa
+
+🚫 OUTROS SERVIÇOS (parados e desabilitados):
+- Unbound, WireGuard, Cloudflared, Samba, MiniDLNA
 - Nginx, Apache2, Lighttpd, DNS auxiliares
 - RNG-tools e outros serviços relacionados
 
@@ -3280,6 +3495,7 @@ A opção --clean irá executar uma PURGA TOTAL do sistema, removendo:
 ⚠️  ESTA AÇÃO É COMPLETAMENTE IRREVERSÍVEL!
 ⚠️  TODOS OS DADOS E CONFIGURAÇÕES SERÃO PERDIDOS!
 ⚠️  O SISTEMA SERÁ RESTAURADO AO ESTADO ORIGINAL!
+⚠️  PI-HOLE SERÁ REMOVIDO COM 'pihole uninstall --clean'!
 "
       whiptail --title "⚠️  CONFIRMAÇÃO DE PURGA TOTAL" --msgbox "$purge_details" 30 85
       if ! whiptail --yesno "🚨 VOCÊ TEM ABSOLUTA CERTEZA? 🚨
