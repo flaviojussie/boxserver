@@ -93,6 +93,43 @@ check_connectivity() {
   echo "✅ Conectividade de rede verificada"
 }
 
+find_free_port() {
+  local port=$1
+  while sudo netstat -tln | awk '{print $4}' | grep -q ":$port$"; do
+    port=$((port + 1))
+  done
+  echo "$port"
+}
+
+check_and_set_ports() {
+  echo "Verificando e alocando portas de serviço..."
+  local original_port
+
+  original_port=$PIHOLE_HTTP_PORT
+  PIHOLE_HTTP_PORT=$(find_free_port "$PIHOLE_HTTP_PORT")
+  if [ "$PIHOLE_HTTP_PORT" != "$original_port" ]; then
+    whiptail_msg "A porta $original_port estava em uso. Pi-hole HTTP usará a porta $PIHOLE_HTTP_PORT."
+  fi
+
+  original_port=$PIHOLE_HTTPS_PORT
+  PIHOLE_HTTPS_PORT=$(find_free_port "$PIHOLE_HTTPS_PORT")
+  if [ "$PIHOLE_HTTPS_PORT" != "$original_port" ]; then
+    whiptail_msg "A porta $original_port estava em uso. Pi-hole HTTPS usará a porta $PIHOLE_HTTPS_PORT."
+  fi
+
+  original_port=$FILEBROWSER_PORT
+  FILEBROWSER_PORT=$(find_free_port "$FILEBROWSER_PORT")
+  if [ "$FILEBROWSER_PORT" != "$original_port" ]; then
+    whiptail_msg "A porta $original_port estava em uso. Filebrowser usará a porta $FILEBROWSER_PORT."
+  fi
+
+  original_port=$MINIDLNA_PORT
+  MINIDLNA_PORT=$(find_free_port "$MINIDLNA_PORT")
+  if [ "$MINIDLNA_PORT" != "$original_port" ]; then
+    whiptail_msg "A porta $original_port estava em uso. MiniDLNA usará a porta $MINIDLNA_PORT."
+  fi
+}
+
 # =========================
 # Verificação do sistema
 # =========================
@@ -1019,6 +1056,7 @@ main() {
   fi
   ensure_deps
   ask_static_ip
+  check_and_set_ports
   if [ "$SILENT_MODE" = false ]; then
     DOMAIN=$(whiptail --inputbox "Informe o domínio para o Pi-hole:" 10 68 "$DOMAIN_DEFAULT" 3>&1 1>&2 2>&3)
   else
