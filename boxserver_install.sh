@@ -452,20 +452,26 @@ EOF
 \$SERVER["socket"] == ":$PIHOLE_HTTPS_PORT" \{ ssl.engine = "enable" \}
 EOF
 
-  # Verificar se o serviço lighttpd existe
-  if systemctl list-units --type=service --all | grep -q 'lighttpd.service'; then
-    # Habilitar e iniciar o serviço lighttpd
-    sudo systemctl enable lighttpd
-    sudo systemctl restart lighttpd
-
-    # Verificar se o serviço está rodando
-    if sudo systemctl is-active --quiet lighttpd; then
-      echo_msg "✅ Pi-hole instalado/reconfigurado e em execução nas portas $PIHOLE_HTTP_PORT/$PIHOLE_HTTPS_PORT"
-    else
-      echo_msg "⚠️  Pi-hole instalado/reconfigurado, mas o serviço lighttpd pode não estar em execução corretamente"
+  # Garante que o systemd está atualizado e tenta reiniciar o lighttpd
+  sudo systemctl daemon-reload
+  if ! sudo systemctl restart lighttpd >/dev/null 2>&1; then
+    echo_msg "Não foi possível reiniciar o lighttpd. Tentando reinstalar..."
+    if ! sudo apt-get install --reinstall -y lighttpd; then
+        echo_msg "❌ Falha ao reinstalar lighttpd. A configuração do Pi-hole não pode continuar."
+        return 1
     fi
+    # Tenta iniciar novamente após a reinstalação
+    if ! sudo systemctl enable --now lighttpd; then
+        echo_msg "❌ Mesmo após a reinstalação, não foi possível iniciar o lighttpd."
+        return 1
+    fi
+  fi
+
+  # Verificação final
+  if sudo systemctl is-active --quiet lighttpd; then
+    echo_msg "✅ Pi-hole instalado/reconfigurado e em execução nas portas $PIHOLE_HTTP_PORT/$PIHOLE_HTTPS_PORT"
   else
-    echo_msg "⚠️  Serviço lighttpd não encontrado. Verifique se ele foi instalado corretamente."
+    echo_msg "⚠️  Pi-hole instalado/reconfigurado, mas o serviço lighttpd pode não estar em execução corretamente."
   fi
 }
 
