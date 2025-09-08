@@ -53,6 +53,9 @@ WG_PUBLIC_KEY=""
 # Modo silencioso
 SILENT_MODE=false
 
+# Modo verbose para depuração
+VERBOSE_MODE=false
+
 # Carregar configuração personalizada se existir
 load_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -137,12 +140,42 @@ safe_execute() {
     local error_msg="$2"
 
     log_info "Executando: $cmd"
-    if ! eval "$cmd"; then
-        log_error "$error_msg"
-        return 1
+
+    if [[ "$VERBOSE_MODE" = true ]]; then
+        # Modo verbose: mostrar saída do comando
+        if ! eval "$cmd"; then
+            log_error "$error_msg"
+            return 1
+        fi
+    else
+        # Modo normal: esconder saída
+        if ! eval "$cmd" >/dev/null 2>&1; then
+            log_error "$error_msg"
+            return 1
+        fi
     fi
+
     log_success "Comando executado com sucesso: $cmd"
     return 0
+}
+
+# Função para mostrar saída de comandos longos
+verbose_execute() {
+    local cmd="$1"
+    local description="$2"
+
+    log_info "$description"
+    echo "--- INÍCIO: $description ---"
+
+    if eval "$cmd"; then
+        echo "--- SUCESSO: $description ---"
+        log_success "$description concluído com sucesso"
+        return 0
+    else
+        echo "--- FALHA: $description ---"
+        log_error "Falha ao executar: $description"
+        return 1
+    fi
 }
 
 backup_file() {
@@ -322,7 +355,11 @@ install_dependencies() {
         net-tools iproute2 sed grep jq nginx resolvconf
     )
 
-    safe_execute "sudo apt-get update -y" "Falha ao atualizar lista de pacotes"
+    if [[ "$VERBOSE_MODE" = true ]]; then
+        verbose_execute "sudo apt-get update -y" "Atualizando lista de pacotes"
+    else
+        safe_execute "sudo apt-get update -y" "Falha ao atualizar lista de pacotes"
+    fi
 
     for package in "${packages[@]}"; do
         ensure_pkg "$package"
@@ -553,51 +590,35 @@ LIGHTTPD_ENABLED=false
 WEBPORT=$PIHOLE_HTTP_PORT
 EOF
 
-    # Executar instalação com progresso controlado
-    log_info "Iniciando instalação do Pi-hole (isso pode levar alguns minutos)..."
-
-    # Mostrar progresso com barra de loading
-    local spinner="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    local temp_log="/tmp/pihole_install_${TIMESTAMP}.log"
-
-    # Executar instalação em background enquanto mostra progresso
-    (
-        curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended > "$temp_log" 2>&1
-        echo $? > "${temp_log}.exit"
-    ) &
-
-    local install_pid=$!
-    local i=0
-
-    # Mostrar progresso enquanto instala
-    while kill -0 $install_pid 2>/dev/null; do
-        local char=${spinner:$((i % ${#spinner})):1}
-        printf "\r[INFO] Instalando Pi-hole... %s" "$char"
-        sleep 0.1
-        ((i++))
-    done
-
-    # Verificar resultado
-    wait $install_pid
-    local exit_code=$(cat "${temp_log}.exit" 2>/dev/null || echo "1")
-
-    printf "\r"
-
-    if [[ "$exit_code" -eq 0 ]]; then
-        log_success "Instalação do Pi-hole concluída"
+    # Executar instalação do Pi-hole
+    if [[ "$VERBOSE_MODE" = true ]]; then
+        verbose_execute "curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended" "Instalação do Pi-hole"
     else
-        log_error "Falha na instalação do Pi-hole (código: $exit_code)"
-        if [[ -f "$temp_log" ]]; then
-            log_error "Últimas linhas do log:"
-            tail -10 "$temp_log" | while read line; do
-                log_error "  $line"
-            done
-        fi
-        return 1
-    fi
+        log_info "Iniciando instalação do Pi-hole (isso pode levar alguns minutos)..."
 
-    # Limpar arquivo temporário
-    rm -f "$temp_log" "${temp_log}.exit"
+        local temp_log="/tmp/pihole_install_${TIMESTAMP}.log"
+
+        # Executar instalação mostrando saída em tempo real
+        echo "--- INÍCIO DA INSTALAÇÃO DO PI-HOLE ---"
+        curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended 2>&1 | tee "$temp_log"
+        local exit_code=${PIPESTATUS[0]}
+        echo "--- FIM DA INSTALAÇÃO DO PI-HOLE ---"
+
+        if [[ "$exit_code" -eq 0 ]]; then
+            log_success "Instalação do Pi-hole concluída com sucesso"
+        else
+            log_error "Falha na instalação do Pi-hole (código: $exit_code)"
+            log_error "Verifique o log completo em: $temp_log"
+            log_error "Últimas 20 linhas do erro:"
+            tail -20 "$temp_log" | while read line; do
+                echo "  [ERROR] $line"
+            done
+            return 1
+        fi
+
+        # Manter log para referência
+        log_info "Log da instalação salvo em: $temp_log"
+    fi
 
     # Aguardar um momento para a instalação completar
     sleep 5
@@ -814,10 +835,16 @@ install_cloudflared() {
     fi
 
     # Baixar cloudflared com tratamento de erros
-    if ! safe_execute "sudo wget -O /usr/local/bin/cloudflared $download_url" "Falha ao baixar cloudflared"; then
-        log_error "Download falhou, tentando método alternativo..."
-        # Tentar com curl se wget falhar
-        safe_execute "sudo curl -L -o /usr/local/bin/cloudflared $download_url" "Falha ao baixar cloudflared com curl"
+    if [[ "$VERBOSE_MODE" = true ]]; then
+        if ! verbose_execute "sudo wget -O /usr/local/bin/cloudflared $download_url" "Download do Cloudflared"; then
+            log_error "Download falhou, tentando método alternativo..."
+            verbose_execute "sudo curl -L -o /usr/local/bin/cloudflared $download_url" "Download do Cloudflared com curl"
+        fi
+    else
+        if ! safe_execute "sudo wget -O /usr/local/bin/cloudflared $download_url" "Falha ao baixar cloudflared"; then
+            log_error "Download falhou, tentando método alternativo..."
+            safe_execute "sudo curl -L -o /usr/local/bin/cloudflared $download_url" "Falha ao baixar cloudflared com curl"
+        fi
     fi
 
     # Verificar se o download foi bem sucedido
@@ -1453,6 +1480,10 @@ case "${1:-}" in
         SILENT_MODE=true
         main_install
         ;;
+    --verbose)
+        VERBOSE_MODE=true
+        main_install
+        ;;
     --help|-h)
         echo "BoxServer Instalador v2.0"
         echo ""
@@ -1461,6 +1492,7 @@ case "${1:-}" in
         echo "Opções:"
         echo "  --clean       Remove completamente o BoxServer"
         echo "  --silent      Instala sem interação (modo silencioso)"
+        echo "  --verbose     Instala mostrando toda a saída (modo depuração)"
         echo "  --help, -h    Mostra esta ajuda"
         echo ""
         echo "Sem argumentos: mostra menu interativo"
