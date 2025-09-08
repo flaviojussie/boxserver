@@ -1,9 +1,8 @@
 #!/bin/bash
-# BoxServer Install V2 - Versão otimizada e refatorada com correções
+# BoxServer Install V2 - Versão com Unbound OBRIGATÓRIO
 # Compatível apenas com Armbian 21.08.8 (Debian 11 Bullseye)
+# Unbound é componente obrigatório e deve funcionar
 # Inclui: Unbound, Pi-hole, WireGuard, Cloudflared, RNG-tools, Samba, MiniDLNA, Filebrowser, Dashboard
-# Cria IP fixo default 192.168.0.100
-# Exibe relatório com IPs, portas, chaves e senhas ao final
 
 set -euo pipefail
 
@@ -17,7 +16,6 @@ DASHBOARD_DIR="/srv/boxserver-dashboard"
 TIMESTAMP="$(date +%Y%m%d%H%M%S)"
 BACKUP_SUFFIX=".bak.${TIMESTAMP}"
 SILENT_MODE=false
-UNBOUND_FAILED=false
 
 exec > >(tee -a "$LOGFILE") 2>&1
 
@@ -113,6 +111,68 @@ check_connectivity() {
 }
 
 # =========================
+# Diagnóstico Unbound
+# =========================
+diagnose_unbound_issues() {
+  echo "=== DIAGNÓSTICO UNBOUND ==="
+  echo "Verificando status do serviço..."
+  systemctl status unbound --no-pager -l
+
+  echo ""
+  echo "Verificando logs recentes..."
+  journalctl -u unbound --no-pager -n 20
+
+  echo ""
+  echo "Verificando porta 53..."
+  netstat -tlnp | grep :53
+
+  echo ""
+  echo "Verificando processos DNS..."
+  ps aux | grep -E "(dns|unbound|dnsmasq|systemd-resolved)"
+
+  echo ""
+  echo "Testando configuração..."
+  unbound-checkconf /etc/unbound/unbound.conf || echo "ERRO NA CONFIGURAÇÃO"
+
+  echo ""
+  echo "Verificando permissões..."
+  ls -la /etc/unbound/
+  ls -la /var/lib/unbound/ 2>/dev/null || echo "Diretório /var/lib/unbound não encontrado"
+
+  echo ""
+  echo "=== FIM DO DIAGNÓSTICO ==="
+}
+
+force_stop_dns_services() {
+  echo "Forçando parada de todos os serviços DNS..."
+
+  # Lista de serviços DNS para parar
+  local dns_services=("systemd-resolved" "resolvconf" "dnsmasq" "unbound" "pihole-FTL")
+
+  for service in "${dns_services[@]}"; do
+    echo "Parando $service..."
+    sudo systemctl stop "$service" 2>/dev/null || true
+    sudo systemctl disable "$service" 2>/dev/null || true
+  done
+
+  # Matar processos persistentes
+  echo "Matando processos DNS restantes..."
+  sudo pkill -f systemd-resolved 2>/dev/null || true
+  sudo pkill -f dnsmasq 2>/dev/null || true
+  sudo pkill -f unbound 2>/dev/null || true
+
+  # Liberar porta 53
+  echo "Verificando porta 53..."
+  if netstat -tlnp | grep -q :53; then
+    echo "⚠️ Porta 53 ainda em uso, matando processos..."
+    sudo lsof -ti:53 | xargs sudo kill -9 2>/dev/null || true
+    sleep 2
+  fi
+
+  echo "✅ Serviços DNS parados"
+}
+
+# =========================
 # Configuração de rede
 # =========================
 configure_static_ip() {
@@ -142,22 +202,28 @@ EOF
 }
 
 # =========================
-# Instalação Unificada de Pacotes
+# Instalação Unbound OBRIGATÓRIO
 # =========================
-install_unbound() {
-  echo "Instalando Unbound..."
-  ensure_pkg unbound
+install_unbound_mandatory() {
+  echo "=== INSTALANDO UNBOUND (OBRIGATÓRIO) ==="
 
-  # Parar serviços que podem conflitar
-  sudo systemctl stop systemd-resolved 2>/dev/null || true
-  sudo systemctl disable systemd-resolved 2>/dev/null || true
-  sudo systemctl stop resolvconf 2>/dev/null || true
-  sudo systemctl stop unbound 2>/dev/null || true
-  sudo systemctl stop dnsmasq 2>/dev/null || true
+  # Etapa 1: Instalação limpa
+  echo "Etapa 1: Instalação limpa do Unbound..."
+  sudo apt-get remove --purge -y unbound 2>/dev/null || true
+  sudo apt-get autoremove -y
+  sudo rm -rf /etc/unbound /var/lib/unbound 2>/dev/null || true
+  sudo apt-get install -y unbound
 
-  backup_file "/etc/unbound/unbound.conf"
+  # Etapa 2: Forçar parada de serviços DNS
+  echo "Etapa 2: Parando serviços DNS conflitantes..."
+  force_stop_dns_services
 
-  # Configuração minimal e segura do Unbound
+  # Etapa 3: Configuração básica
+  echo "Etapa 3: Configurando Unbound..."
+  sudo mkdir -p /etc/unbound/unbound.conf.d
+  sudo mkdir -p /var/lib/unbound
+
+  # Configuração minimal
   sudo tee /etc/unbound/unbound.conf > /dev/null <<EOF
 server:
     verbosity: 1
@@ -175,73 +241,54 @@ server:
     access-control: 172.16.0.0/12 allow
     hide-identity: yes
     hide-version: yes
-    harden-glue: yes
     use-caps-for-id: yes
     cache-min-ttl: 3600
     cache-max-ttl: 86400
-    msg-cache-size: 50m
-    rrset-cache-size: 100m
+    msg-cache-size: 16m
+    rrset-cache-size: 32m
     minimal-responses: yes
     qname-minimisation: yes
-    prefetch: yes
-    prefetch-key: yes
-    root-hints: "/usr/share/dns/root.hints"
+    harden-glue: yes
 
 include: "/etc/unbound/unbound.conf.d/*.conf"
 EOF
 
-  # Criar diretório de configuração
-  sudo mkdir -p /etc/unbound/unbound.conf.d
+  # Etapa 4: Configurar permissões
+  echo "Etapa 4: Configurando permissões..."
+  sudo chown -R unbound:unbound /etc/unbound
+  sudo chown -R unbound:unbound /var/lib/unbound
+  sudo chmod 755 /etc/unbound
+  sudo chmod 755 /var/lib/unbound
 
-  # Baixar root hints se necessário
-  if [ ! -f "/usr/share/dns/root.hints" ]; then
-    echo "Baixando root.hints..."
-    sudo curl -o /usr/share/dns/root.hints https://www.internic.net/domain/named.root || true
-  fi
-
-  # Configurar permissões
-  sudo chown -R unbound:unbound /etc/unbound 2>/dev/null || true
-  sudo chmod 755 /etc/unbound 2>/dev/null || true
-
-  # Limpar qualquer estado anterior
-  sudo rm -f /var/lib/unbound/unbound_control.key 2>/dev/null || true
-  sudo rm -f /var/lib/unbound/unbound_server.key 2>/dev/null || true
-
-  # Recarregar systemd
-  sudo systemctl daemon-reload
-
-  # Testar configuração
+  # Etapa 5: Validar configuração
+  echo "Etapa 5: Validando configuração..."
   if sudo unbound-checkconf /etc/unbound/unbound.conf; then
-    echo "✅ Configuração do Unbound válida"
+    echo "✅ Configuração válida"
   else
-    echo "⚠️ Erro na configuração do Unbound - usando configuração minimal"
-    # Configuração minimal fallback
-    sudo tee /etc/unbound/unbound.conf > /dev/null <<EOF
-server:
-    verbosity: 1
-    interface: 127.0.0.1
-    port: $PORT_UNBOUND
-    access-control: 127.0.0.1/32 allow
-    access-control: 192.168.0.0/16 allow
-    hide-identity: yes
-    hide-version: yes
-    include: "/etc/unbound/unbound.conf.d/*.conf"
-EOF
+    echo "❌ Configuração inválida - abortando"
+    diagnose_unbound_issues
+    exit 1
   fi
 
-  # Tentar iniciar Unbound
+  # Etapa 6: Iniciar serviço
+  echo "Etapa 6: Iniciando serviço Unbound..."
+  sudo systemctl daemon-reload
   sudo systemctl enable unbound
   sudo systemctl start unbound
 
-  # Verificar status
-  if systemctl is-active --quiet unbound; then
-    echo "✅ Unbound instalado e configurado com sucesso"
-  else
-    echo "⚠️ Unbound não iniciou - tentando configuração alternativa..."
+  # Etapa 7: Verificar status
+  echo "Etapa 7: Verificando status..."
+  sleep 3
 
-    # Configuração alternativa - apenas localhost
+  if systemctl is-active --quiet unbound; then
+    echo "✅ Unbound iniciado com sucesso"
+    return 0
+  else
+    echo "❌ Unbound não iniciou - tentando estratégias alternativas..."
+
+    # Estratégia 1: Configuração ultra-minimal
+    echo "Estratégia 1: Configuração ultra-minimal..."
     sudo systemctl stop unbound
-    sleep 2
 
     sudo tee /etc/unbound/unbound.conf > /dev/null <<EOF
 server:
@@ -256,26 +303,64 @@ server:
     hide-version: yes
     cache-min-ttl: 3600
     cache-max-ttl: 86400
-    msg-cache-size: 16m
-    rrset-cache-size: 32m
+    msg-cache-size: 8m
+    rrset-cache-size: 16m
     include: "/etc/unbound/unbound.conf.d/*.conf"
 EOF
 
     sudo systemctl start unbound
+    sleep 3
 
     if systemctl is-active --quiet unbound; then
-      echo "✅ Unbound configurado em modo localhost"
-    else
-      echo "❌ Unbound não conseguiu iniciar - continuando sem Unbound"
-      UNBOUND_FAILED=true
-      # Criar configuração fallback para Pi-hole usar DNS externo
-      echo "Configurando fallback para DNS externo..."
-      return 1
+      echo "✅ Unbound iniciado com configuração minimal"
+      return 0
     fi
-  fi
 
-  # Reativar serviços necessários
-  sudo systemctl start resolvconf 2>/dev/null || true
+    # Estratégia 2: Reinstalação completa
+    echo "Estratégia 2: Reinstalação completa..."
+    sudo systemctl stop unbound
+    sudo apt-get remove --purge -y unbound
+    sudo rm -rf /etc/unbound /var/lib/unbound
+    sudo apt-get install -y unbound
+
+    # Configurar novamente
+    sudo mkdir -p /etc/unbound/unbound.conf.d
+    sudo mkdir -p /var/lib/unbound
+
+    sudo tee /etc/unbound/unbound.conf > /dev/null <<EOF
+server:
+    verbosity: 1
+    interface: 127.0.0.1
+    port: $PORT_UNBOUND
+    do-ip4: yes
+    do-ip6: no
+    do-daemonize: yes
+    access-control: 127.0.0.1/32 allow
+    hide-identity: yes
+    hide-version: yes
+    include: "/etc/unbound/unbound.conf.d/*.conf"
+EOF
+
+    sudo chown -R unbound:unbound /etc/unbound /var/lib/unbound
+    sudo systemctl daemon-reload
+    sudo systemctl enable unbound
+    sudo systemctl start unbound
+    sleep 3
+
+    if systemctl is-active --quiet unbound; then
+      echo "✅ Unbound iniciado após reinstalação"
+      return 0
+    fi
+
+    # Última tentativa: Diagnóstico e falha
+    echo "❌ Todas as estratégias falharam"
+    diagnose_unbound_issues
+    whiptail_msg "❌ FALHA CRÍTICA: Unbound não pôde ser iniciado. Este componente é obrigatório."
+    echo "=== FALHA CRÍTICA ==="
+    echo "Unbound é obrigatório e não pôde ser iniciado."
+    echo "Verifique o diagnóstico acima e o log: $LOGFILE"
+    exit 1
+  fi
 }
 
 install_pihole() {
@@ -285,19 +370,11 @@ install_pihole() {
 
   backup_file "/etc/pihole/setupVars.conf"
 
-  # Configurar DNS baseado no status do Unbound
-  local pihole_dns
-  if [ "$UNBOUND_FAILED" = true ]; then
-    pihole_dns="$DEFAULT_DNS1;$DEFAULT_DNS2"
-  else
-    pihole_dns="127.0.0.1#53"
-  fi
-
   sudo tee /etc/pihole/setupVars.conf > /dev/null <<EOF
 PIHOLE_INTERFACE=$(detect_interface)
 IPV4_ADDRESS=$DEFAULT_IP/24
 IPV6_ADDRESS=
-PIHOLE_DNS_1=$pihole_dns
+PIHOLE_DNS_1=127.0.0.1#53
 PIHOLE_DNS_2=
 QUERY_LOGGING=true
 INSTALL_WEB_SERVER=true
@@ -499,8 +576,6 @@ install_dashboard() {
         .service h3 { color: #2196F3; margin-top: 0; }
         .status { padding: 5px 10px; border-radius: 3px; font-weight: bold; }
         .online { background-color: #4CAF50; color: white; }
-        .offline { background-color: #f44336; color: white; }
-        .warning { background-color: #ff9800; color: white; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
     </style>
 </head>
@@ -508,6 +583,10 @@ install_dashboard() {
     <div class="container">
         <h1>BoxServer Dashboard</h1>
         <div class="grid">
+            <div class="service">
+                <h3>Unbound DNS</h3>
+                <p>Status: <span class="status online">Online</span></p>
+            </div>
             <div class="service">
                 <h3>Pi-hole</h3>
                 <p>Admin: http://$DEFAULT_IP/admin</p>
@@ -528,26 +607,6 @@ install_dashboard() {
                 <p>Porta: $PORT_WIREGUARD</p>
                 <p>Status: <span class="status online">Online</span></p>
             </div>
-EOF
-
-  # Adicionar status do Unbound baseado na variável
-  if [ "$UNBOUND_FAILED" = true ]; then
-    sudo tee -a "$DASHBOARD_DIR/index.html" > /dev/null <<EOF
-            <div class="service">
-                <h3>Unbound DNS</h3>
-                <p>Status: <span class="status warning">Falhou - usando DNS externo</span></p>
-            </div>
-EOF
-  else
-    sudo tee -a "$DASHBOARD_DIR/index.html" > /dev/null <<EOF
-            <div class="service">
-                <h3>Unbound DNS</h3>
-                <p>Status: <span class="status online">Online</span></p>
-            </div>
-EOF
-  fi
-
-  sudo tee -a "$DASHBOARD_DIR/index.html" > /dev/null <<EOF
         </div>
     </div>
 </body>
@@ -593,12 +652,7 @@ test_dns_resolution() {
 
 test_services() {
   echo "Testando serviços..."
-  local services=("pihole-FTL" "wg-quick@wg0" "cloudflared" "rng-tools" "smbd" "nmbd" "minidlna" "filebrowser" "nginx")
-
-  # Adicionar Unbound à lista se não falhou
-  if [ "$UNBOUND_FAILED" = false ]; then
-    services+=("unbound")
-  fi
+  local services=("unbound" "pihole-FTL" "wg-quick@wg0" "cloudflared" "rng-tools" "smbd" "nmbd" "minidlna" "filebrowser" "nginx")
 
   for service in "${services[@]}"; do
     if systemctl is-active --quiet "$service"; then
@@ -618,7 +672,7 @@ generate_summary() {
   {
     echo "=== BoxServer Install V2 - Relatório de Instalação ==="
     echo "Data: $(date)"
-    echo "Versão: 2.0"
+    echo "Versão: 2.0 (Unbound Obrigatório)"
     echo ""
     echo "=== Configurações de Rede ==="
     echo "IP Estático: $DEFAULT_IP"
@@ -646,11 +700,7 @@ generate_summary() {
     echo "WireGuard Public Key: $(grep PublicKey /etc/wireguard/wg0.conf | cut -d' ' -f3)"
     echo ""
     echo "=== Status dos Serviços ==="
-    if [ "$UNBOUND_FAILED" = true ]; then
-      echo "Unbound: Falhou - usando DNS externo ($DEFAULT_DNS1, $DEFAULT_DNS2)"
-    else
-      systemctl is-active unbound && echo "Unbound: Ativo" || echo "Unbound: Inativo"
-    fi
+    systemctl is-active unbound && echo "Unbound: Ativo" || echo "Unbound: Inativo"
     systemctl is-active pihole-FTL && echo "Pi-hole: Ativo" || echo "Pi-hole: Inativo"
     systemctl is-active wg-quick@wg0 && echo "WireGuard: Ativo" || echo "WireGuard: Inativo"
     systemctl is-active cloudflared && echo "Cloudflared: Ativo" || echo "Cloudflared: Inativo"
@@ -698,7 +748,7 @@ cleanup_installation() {
 # Função principal
 # =========================
 main() {
-  echo "Iniciando instalação do BoxServer V2..."
+  echo "Iniciando instalação do BoxServer V2 (Unbound Obrigatório)..."
 
   # Verificações iniciais
   check_disk_space
@@ -710,8 +760,10 @@ main() {
   # Configuração de rede
   configure_static_ip
 
-  # Instalação dos serviços
-  install_unbound
+  # Instalação do Unbound (obrigatório)
+  install_unbound_mandatory
+
+  # Instalação dos demais serviços
   install_pihole
   install_wireguard
   install_cloudflared
@@ -731,10 +783,7 @@ main() {
   echo_msg "🎉 BoxServer V2 instalado com sucesso!"
   echo_msg "📋 Relatório disponível em: $SUMMARY_FILE"
   echo_msg "🌐 Dashboard disponível em: http://$DEFAULT_IP:$PORT_DASHBOARD"
-
-  if [ "$UNBOUND_FAILED" = true ]; then
-    echo_msg "⚠️ Unbound falhou - usando DNS externo. Verifique logs: journalctl -u unbound"
-  fi
+  echo_msg "✅ Unbound DNS está funcionando corretamente"
 }
 
 # =========================
