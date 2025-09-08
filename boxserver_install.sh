@@ -537,6 +537,14 @@ install_wireguard() {
     ensure_pkg "wireguard"
     ensure_pkg "wireguard-tools"
 
+    # Gerar chaves se ainda não foram geradas
+    if [[ "$WG_PUBLIC_KEY" == "gerada_durante_instalacao" ]] || [[ -z "$WG_PRIVATE_KEY" ]]; then
+        log_info "Gerando chaves WireGuard..."
+        WG_PRIVATE_KEY=$(wg genkey)
+        WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
+        log_success "Chaves WireGuard geradas durante instalação"
+    fi
+
     # Configurar WireGuard
     local wg_conf="/etc/wireguard/wg0.conf"
     backup_file "$wg_conf"
@@ -946,9 +954,19 @@ generate_credentials() {
     # Gerar senha do Pi-hole
     PIHOLE_PASSWORD=$(openssl rand -base64 12 | tr -d '/+=' | cut -c1-12)
 
-    # Gerar chaves WireGuard
-    WG_PRIVATE_KEY=$(wg genkey)
-    WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
+    # Gerar chaves WireGuard (se wg estiver disponível)
+    if command -v wg >/dev/null 2>&1; then
+        WG_PRIVATE_KEY=$(wg genkey)
+        WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
+        log_success "Chaves WireGuard geradas com wg command"
+    else
+        # Gerar chaves WireGuard usando método alternativo (openssl)
+        WG_PRIVATE_KEY=$(openssl genpkey -algorithm X25519 | openssl base64 -A)
+        # Para WireGuard, a chave pública é derivada da privada
+        # Vamos deixar isso para a função de instalação do WireGuard
+        WG_PUBLIC_KEY="gerada_durante_instalacao"
+        log_info "Chave WireGuard privada gerada com OpenSSL, pública será gerada durante instalação"
+    fi
 
     log_success "Credenciais geradas com sucesso"
 }
