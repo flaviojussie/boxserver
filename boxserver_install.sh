@@ -108,77 +108,6 @@ choose_services() {
     "MINIDLNA" "Servidor DLNA" OFF \
     "FILEBROWSER" "Gerenciador de arquivos Web" OFF \
     3>&1 1>&2 2>&3)
-    
-    # Perguntar se deseja purgar configurações existentes
-    if (whiptail --title "Purgar configurações" --yesno "Deseja purgar as configurações existentes dos serviços selecionados?" 10 60); then
-        PURGE_CONFIGS="yes"
-    else
-        PURGE_CONFIGS="no"
-    fi
-}
-
-# =========================
-# FUNÇÕES DE PURGA
-# =========================
-purge_unbound() {
-    msg "Purgando configurações do Unbound..."
-    sudo systemctl stop unbound || true
-    sudo rm -rf /etc/unbound/unbound.conf.d/*
-    sudo rm -f /var/lib/unbound/root.hints
-    sudo rm -f /var/lib/unbound/root.key
-}
-
-purge_pihole() {
-    msg "Purgando configurações do Pi-hole..."
-    sudo systemctl stop lighttpd || true
-    # Remover configurações do lighttpd
-    sudo rm -f /etc/lighttpd/lighttpd.conf
-    sudo rm -f /etc/lighttpd/external.conf
-    # Remover configurações do Pi-hole
-    sudo rm -f /etc/pihole/setupVars.conf
-}
-
-purge_wireguard() {
-    msg "Purgando configurações do WireGuard..."
-    sudo systemctl stop wg-quick@wg0 || true
-    sudo rm -f /etc/wireguard/wg0.conf
-    sudo rm -rf /etc/wireguard/keys
-}
-
-purge_cloudflare() {
-    msg "Purgando configurações do Cloudflare Tunnel..."
-    sudo systemctl stop cloudflared || true
-    sudo rm -f /etc/systemd/system/cloudflared.service
-    sudo rm -rf /etc/cloudflared
-    sudo rm -f /usr/local/bin/cloudflared
-}
-
-purge_rng() {
-    msg "Purgando configurações do RNG-tools..."
-    sudo systemctl stop rng-tools || true
-    sudo rm -f /etc/default/rng-tools
-}
-
-purge_samba() {
-    msg "Purgando configurações do Samba..."
-    sudo systemctl stop smbd || true
-    sudo rm -f /etc/samba/smb.conf
-    # Não remover os dados do compartilhamento
-}
-
-purge_minidlna() {
-    msg "Purgando configurações do MiniDLNA..."
-    sudo systemctl stop minidlna || true
-    sudo rm -f /etc/minidlna.conf
-    # Não remover os dados de mídia
-}
-
-purge_filebrowser() {
-    msg "Purgando configurações do Filebrowser..."
-    sudo systemctl stop filebrowser || true
-    sudo rm -f /etc/systemd/system/filebrowser.service
-    sudo rm -f /usr/local/bin/filebrowser
-    # Não remover os dados do filebrowser
 }
 
 # =========================
@@ -186,11 +115,6 @@ purge_filebrowser() {
 # =========================
 install_unbound() {
     msg "Instalando/reconfigurando Unbound..."
-    
-    # Verificar se deve purgar configurações existentes
-    if [ "$PURGE_CONFIGS" = "yes" ]; then
-        purge_unbound
-    fi
     
     # Verificar se Unbound já está instalado
     if dpkg -l | grep -q "^ii.*unbound"; then
@@ -223,13 +147,13 @@ server:
     root-hints: "/var/lib/unbound/root.hints"
 EOF
 
-    # Baixar root hints se não existirem ou se foi feita purga
-    if [ ! -f /var/lib/unbound/root.hints ] || [ "$PURGE_CONFIGS" = "yes" ]; then
+    # Baixar root hints se não existirem
+    if [ ! -f /var/lib/unbound/root.hints ]; then
         sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
     fi
     
-    # Configurar trust anchor se não existir ou se foi feita purga
-    if [ ! -f /var/lib/unbound/root.key ] || [ "$PURGE_CONFIGS" = "yes" ]; then
+    # Configurar trust anchor se não existir
+    if [ ! -f /var/lib/unbound/root.key ]; then
         sudo unbound-anchor -a /var/lib/unbound/root.key || true
     fi
     
@@ -246,22 +170,17 @@ EOF
 install_pihole() {
     msg "Instalando/reconfigurando Pi-hole..."
     
-    # Verificar se deve purgar configurações existentes
-    if [ "$PURGE_CONFIGS" = "yes" ]; then
-        purge_pihole
-    fi
-    
-    # Instalar lighttpd explicitamente antes do Pi-hole (correção baseada na análise do especialista)
-    msg "Instalando lighttpd como dependência do Pi-hole..."
-    if ! sudo apt install -y lighttpd; then
-        msg "❌ Falha ao instalar lighttpd"
-        return 1
-    fi
-    
     # Verificar se o Pi-hole já está instalado
     if command -v pihole &> /dev/null; then
         msg "Pi-hole já está instalado. Reconfigurando..."
     else
+        # Instalar lighttpd explicitamente antes do Pi-hole
+        msg "Instalando lighttpd como dependência do Pi-hole..."
+        if ! sudo apt install -y lighttpd; then
+            msg "❌ Falha ao instalar lighttpd"
+            return 1
+        fi
+
         # Executar o instalador do Pi-hole em modo não interativo
         msg "Executando instalador do Pi-hole..."
         if ! curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended; then
@@ -289,10 +208,10 @@ install_pihole() {
 
     msg "Alterando Pi-hole para rodar em 8081/8443..."
     
-    # VERIFICAÇÃO: O lighttpd foi instalado corretamente?
+    # Verificar se o arquivo de configuração do lighttpd existe
     if [ ! -f /etc/lighttpd/lighttpd.conf ]; then
-        msg "❌ ERRO: Arquivo de configuração do lighttpd não encontrado. A instalação do Pi-hole parece ter falhado."
-        return 1
+        # Se não existir, instalar lighttpd
+        sudo apt install -y lighttpd
     fi
     
     if [ -f /etc/lighttpd/lighttpd.conf ]; then
@@ -332,8 +251,9 @@ EOF
 \$SERVER["socket"] == ":8443" { ssl.engine = "enable" }
 EOF
     
-    # Antes de reiniciar, verifique se o serviço existe (correção baseada na análise do especialista)
+    # Verificar se o serviço lighttpd existe
     if systemctl list-units --type=service --all | grep -q 'lighttpd.service'; then
+        # Habilitar e iniciar o serviço lighttpd
         sudo systemctl enable lighttpd
         sudo systemctl restart lighttpd
         
@@ -344,18 +264,12 @@ EOF
             msg "⚠️  Pi-hole instalado/reconfigurado, mas o serviço lighttpd pode não estar em execução corretamente"
         fi
     else
-        msg "❌ ERRO: O serviço lighttpd não foi encontrado. A instalação do Pi-hole falhou."
-        return 1
+        msg "⚠️  Serviço lighttpd não encontrado. Verifique se ele foi instalado corretamente."
     fi
 }
 
 install_wireguard() {
     msg "Instalando/reconfigurando WireGuard..."
-    
-    # Verificar se deve purgar configurações existentes
-    if [ "$PURGE_CONFIGS" = "yes" ]; then
-        purge_wireguard
-    fi
     
     # Verificar se WireGuard já está instalado
     if dpkg -l | grep -q "^ii.*wireguard"; then
@@ -370,7 +284,7 @@ install_wireguard() {
     umask 077
     
     # Verificar se as chaves já existem
-    if [ ! -f /etc/wireguard/keys/privatekey ] || [ ! -f /etc/wireguard/keys/publickey ] || [ "$PURGE_CONFIGS" = "yes" ]; then
+    if [ ! -f /etc/wireguard/keys/privatekey ] || [ ! -f /etc/wireguard/keys/publickey ]; then
         wg genkey | sudo tee /etc/wireguard/keys/privatekey | wg pubkey | sudo tee /etc/wireguard/keys/publickey
     fi
     
@@ -400,12 +314,6 @@ EOF
 
 install_cloudflare() {
     msg "Instalando/reconfigurando Cloudflare Tunnel..."
-    
-    # Verificar se deve purgar configurações existentes
-    if [ "$PURGE_CONFIGS" = "yes" ]; then
-        purge_cloudflare
-    fi
-    
     ARCH=$(detect_arch)
     URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}"
     
@@ -434,17 +342,20 @@ Type=notify
 ExecStart=/usr/local/bin/cloudflared --config /etc/cloudflared/config.yml tunnel run
 Restart=on-failure
 RestartSec=5
-Environment=NO_AUTOUPDATE=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
         sudo systemctl daemon-reload
-        sudo systemctl enable cloudflared
+        sudo systemctl enable --now cloudflared
         
-        # Instruções para o usuário configurar o Cloudflare Tunnel
-        msg "✅ Cloudflare Tunnel instalado. Execute os seguintes comandos manualmente para configurar:\n\n1. sudo cloudflared tunnel login\n2. sudo cloudflared tunnel create boxserver\n3. sudo systemctl start cloudflared"
+        # Verificar se o serviço está rodando
+        if sudo systemctl is-active --quiet cloudflared; then
+            msg "✅ Cloudflare Tunnel instalado/reconfigurado e em execução"
+        else
+            msg "⚠️  Cloudflare Tunnel instalado/reconfigurado, execute 'cloudflared tunnel login' para autenticar"
+        fi
     else
         msg "❌ Falha ao baixar Cloudflare Tunnel"
     fi
@@ -452,11 +363,6 @@ EOF
 
 install_rng() {
     msg "Instalando/reconfigurando RNG-tools..."
-    
-    # Verificar se deve purgar configurações existentes
-    if [ "$PURGE_CONFIGS" = "yes" ]; then
-        purge_rng
-    fi
     
     # Verificar se RNG-tools já está instalado
     if dpkg -l | grep -q "^ii.*rng-tools"; then
@@ -490,11 +396,6 @@ EOF
 
 install_samba() {
     msg "Instalando/reconfigurando Samba..."
-    
-    # Verificar se deve purgar configurações existentes
-    if [ "$PURGE_CONFIGS" = "yes" ]; then
-        purge_samba
-    fi
     
     # Verificar se Samba já está instalado
     if dpkg -l | grep -q "^ii.*samba"; then
@@ -537,11 +438,6 @@ EOF
 install_minidlna() {
     msg "Instalando/reconfigurando MiniDLNA..."
     
-    # Verificar se deve purgar configurações existentes
-    if [ "$PURGE_CONFIGS" = "yes" ]; then
-        purge_minidlna
-    fi
-    
     # Verificar se MiniDLNA já está instalado
     if dpkg -l | grep -q "^ii.*minidlna"; then
         msg "MiniDLNA já está instalado. Reconfigurando..."
@@ -579,12 +475,6 @@ EOF
 
 install_filebrowser() {
     msg "Instalando/reconfigurando Filebrowser..."
-    
-    # Verificar se deve purgar configurações existentes
-    if [ "$PURGE_CONFIGS" = "yes" ]; then
-        purge_filebrowser
-    fi
-    
     FB_VERSION=$(curl -s https://api.github.com/repos/filebrowser/filebrowser/releases/latest | grep tag_name | cut -d '"' -f4)
     ARCH=$(detect_arch)
     case "$ARCH" in
@@ -746,10 +636,6 @@ install_dashboard() {
             <h3>☁️ Cloudflare Tunnel</h3>
             <p>Configuração: <code>/etc/cloudflared/config.yml</code></p>
             <p>Domínio: <code>$DOMAIN</code></p>
-            <p><strong>Para configurar:</strong><br>
-               1. <code>sudo cloudflared tunnel login</code><br>
-               2. <code>sudo cloudflared tunnel create boxserver</code><br>
-               3. <code>sudo systemctl start cloudflared</code></p>
         </div>
 
         <div class="info-box">
@@ -838,10 +724,7 @@ Configuração: /etc/unbound/unbound.conf.d/pi-hole.conf
 
 ☁️ CLOUDFLARE TUNNEL
 Configuração: /etc/cloudflared/config.yml
-Para configurar:
-  1. sudo cloudflared tunnel login
-  2. sudo cloudflared tunnel create boxserver
-  3. sudo systemctl start cloudflared
+Para configurar: cloudflared tunnel login
 Domínio: $DOMAIN
 
 ⚙️ RNG-TOOLS
@@ -898,8 +781,7 @@ main() {
     FINAL_MSG+="Log completo em: $LOGFILE\n"
     FINAL_MSG+="Relatório em: /root/boxserver_summary.txt\n\n"
     FINAL_MSG+="⚠️  ATENÇÃO: Se o IP fixo não estiver funcionando, reinicie o sistema ou execute:\n"
-    FINAL_MSG+="sudo netplan apply\n\n"
-    FINAL_MSG+="⚠️  Se você selecionou Cloudflare Tunnel, lembre-se de executar os comandos de configuração manualmente."
+    FINAL_MSG+="sudo netplan apply"
 
     msg "$FINAL_MSG"
 }
