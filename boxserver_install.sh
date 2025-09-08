@@ -220,6 +220,54 @@ rollback_changes() {
 }
 
 # =========================
+# Função de purga completa
+# =========================
+purge_existing_installations() {
+  whiptail_msg "Iniciando desinstalação e purga de instalações existentes..."
+
+  # Parar e desabilitar serviços
+  local services=("unbound" "pihole-ftl" "lighttpd" "wg-quick@wg0" "cloudflared" "rng-tools" "smbd" "minidlna" "filebrowser" "nginx")
+  for service in "${services[@]}"; do
+    if systemctl list-units --type=service --all | grep -q "$service"; then
+      sudo systemctl stop "$service" 2>/dev/null || true
+      sudo systemctl disable "$service" 2>/dev/null || true
+    fi
+  done
+  echo "Serviços parados e desabilitados."
+
+  # Remover pacotes com purge
+  sudo apt-get purge -y pihole-ftl lighttpd unbound wireguard-tools rng-tools samba minidlna nginx
+  sudo apt-get autoremove -y
+  echo "Pacotes removidos."
+
+  # Remover binários e serviços manuais
+  sudo rm -f /usr/local/bin/cloudflared /usr/local/bin/filebrowser
+  sudo rm -f /etc/systemd/system/cloudflared.service /etc/systemd/system/filebrowser.service
+  sudo systemctl daemon-reload
+  echo "Binários e serviços manuais removidos."
+
+  # Remover arquivos de configuração e dados restantes
+  sudo rm -rf /etc/pihole \
+              /etc/lighttpd \
+              /etc/unbound \
+              /etc/wireguard \
+              /etc/cloudflared \
+              /etc/samba \
+              /etc/minidlna \
+              /etc/nginx/sites-available/boxserver-dashboard \
+              /etc/nginx/sites-enabled/boxserver-dashboard \
+              /srv/boxserver-dashboard \
+              /srv/filebrowser \
+              /srv/samba/share \
+              /srv/media \
+              /var/www/html/admin
+  echo "Arquivos de configuração e dados removidos."
+
+  whiptail_msg "Purga concluída. O sistema está pronto para uma instalação limpa."
+}
+
+
+# =========================
 # Configuração IP fixo
 # =========================
 ask_static_ip() {
@@ -1006,6 +1054,7 @@ show_summary() {
 usage() {
   echo "Uso: $0 [OPÇÕES]"
   echo "Opções:"
+  echo "  --clean         Remove completamente todas as instalações e dados do BoxServer antes de instalar."
   echo "  -s, --silent    Modo silencioso (sem interface whiptail)"
   echo "  -u, --update    Atualizar serviços já instalados"
   echo "  -r, --rollback  Reverter alterações"
@@ -1016,8 +1065,13 @@ usage() {
 # =========================
 # Processamento de argumentos
 # =========================
+CLEAN_INSTALL=false
 while [[ $# -gt 0 ]]; do
   case $1 in
+    --clean)
+      CLEAN_INSTALL=true
+      shift
+      ;;
     -s|--silent)
       SILENT_MODE=true
       shift
@@ -1046,6 +1100,34 @@ done
 # Fluxo principal
 # =========================
 main() {
+  if [ "$CLEAN_INSTALL" = true ]; then
+    if [ "$SILENT_MODE" = false ]; then
+      local purge_details="A opção --clean irá remover completamente os seguintes pacotes e dados do sistema:
+
+Pacotes a serem purgados (com 'apt-get purge'):
+- pihole-ftl, lighttpd, unbound, wireguard-tools, rng-tools, samba, minidlna, nginx
+
+Binários e Serviços manuais:
+- /usr/local/bin/cloudflared
+- /usr/local/bin/filebrowser
+- /etc/systemd/system/cloudflared.service
+- /etc/systemd/system/filebrowser.service
+
+Diretórios de configuração e dados:
+- /etc/pihole, /etc/lighttpd, /etc/unbound, /etc/wireguard, /etc/cloudflared, /etc/samba, /etc/minidlna
+- /srv/boxserver-dashboard, /srv/filebrowser, /srv/samba/share, /srv/media
+- E outros arquivos de configuração relacionados.
+
+ESTA AÇÃO É IRREVERSÍVEL.
+"
+      whiptail --title "Confirmação de Purga" --msgbox "$purge_details" 22 78
+      if ! whiptail --yesno "Você tem certeza que deseja continuar com a purga completa?" 10 78; then
+        exit 0
+      fi
+    fi
+    purge_existing_installations
+  fi
+
   check_system
   check_disk_space
   check_connectivity
