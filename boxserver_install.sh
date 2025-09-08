@@ -1305,23 +1305,73 @@ install_pihole() {
   echo_msg "Instalando/reconfigurando Pi-hole otimizado para RK322x..."
   SUMMARY_ENTRIES+=("Pi-hole: Portas $PIHOLE_HTTP_PORT/$PIHOLE_HTTPS_PORT (RK322x)")
 
+  # Detectar se Pi-hole já está instalado
+  local pihole_installed=false
+  local pihole_running=false
+
+  if command -v pihole &> /dev/null; then
+    echo_msg "✅ Pi-hole já instalado - procedendo com reconfiguração"
+    pihole_installed=true
+
+    if sudo systemctl is-active --quiet pihole-ftl; then
+      echo_msg "   Pi-hole FTL está rodando"
+      pihole_running=true
+    fi
+  else
+    echo_msg "🆕 Nova instalação do Pi-hole detectada"
+  fi
+
   # Verificar se as portas do Pi-hole estão livres antes de instalar
   echo_msg "Verificando disponibilidade das portas do Pi-hole..."
   if sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
-    echo_msg "❌ Porta $PIHOLE_HTTP_PORT já está em uso. Pi-hole não pode ser instalado."
-    echo_msg "   Processo usando a porta:"
-    sudo netstat -tlnp | grep ":$PIHOLE_HTTP_PORT " | sed 's/^/   /'
-    return 1
+    local http_port_process=$(sudo netstat -tlnp | grep ":$PIHOLE_HTTP_PORT " | head -1)
+
+    # Verificar se é lighttpd do Pi-hole
+    if echo "$http_port_process" | grep -q "lighttpd"; then
+      echo_msg "✅ Pi-hole web interface detectada na porta $PIHOLE_HTTP_PORT"
+      echo_msg "   Procedendo com reconfiguração da interface web..."
+
+      # Parar lighttpd temporariamente
+      sudo systemctl stop lighttpd 2>/dev/null || true
+      sleep 2
+    else
+      echo_msg "❌ Porta $PIHOLE_HTTP_PORT já está em uso por outro serviço:"
+      echo_msg "   $http_port_process"
+      echo_msg "   Pi-hole precisa desta porta para a interface web"
+      return 1
+    fi
   fi
 
-  # Verificar se porta 53 está em uso por outros serviços (não systemd-resolved)
+  # Verificar se porta 53 está em uso por outros serviços (exceto Pi-hole existente e systemd-resolved)
   local port_53_process=$(sudo netstat -tlnp | grep ":53 " | grep -v systemd-resolved | head -1)
 
   if [ -n "$port_53_process" ]; then
-    echo_msg "❌ Porta 53 (DNS) está sendo usada por outro serviço:"
-    echo_msg "   $port_53_process"
-    echo_msg "   Pi-hole precisa da porta 53 para funcionar como servidor DNS principal"
-    return 1
+    # Verificar se é o próprio Pi-hole usando a porta
+    if echo "$port_53_process" | grep -q "pihole-FTL"; then
+      echo_msg "✅ Pi-hole já instalado detectado na porta 53"
+      echo_msg "   Processo existente: $(echo "$port_53_process" | awk '{print $7}')"
+      echo_msg "   Procedendo com reconfiguração..."
+
+      # Parar temporariamente o Pi-hole para reconfiguração
+      echo_msg "   Parando Pi-hole temporariamente para reconfiguração..."
+      sudo systemctl stop pihole-ftl 2>/dev/null || true
+      sleep 3
+
+      # Verificar se a porta foi liberada
+      if sudo netstat -tln | grep -q ":53 "; then
+        echo_msg "⚠️ Porta 53 ainda ocupada, forçando liberação..."
+        sudo pkill -9 pihole-FTL 2>/dev/null || true
+        sleep 2
+      fi
+
+      echo_msg "✅ Porta 53 liberada para reconfiguração do Pi-hole"
+    else
+      echo_msg "❌ Porta 53 (DNS) está sendo usada por outro serviço (não Pi-hole):"
+      echo_msg "   $port_53_process"
+      echo_msg "   Pi-hole precisa da porta 53 para funcionar como servidor DNS principal"
+      echo_msg "   Pare o serviço conflitante antes de continuar"
+      return 1
+    fi
   fi
 
   # Se systemd-resolved estiver ativo, desabilitar para liberar porta 53
@@ -1374,16 +1424,26 @@ install_pihole() {
     fi
   fi
 
-  echo_msg "✅ Unbound funcionando como DNS upstream. Instalando Pi-hole..."
+  echo_msg "✅ Unbound funcionando como DNS upstream. Configurando Pi-hole..."
 
-  # Se o Pi-hole não estiver instalado, prepara e executa a instalação não interativa
-  if ! command -v pihole &> /dev/null; then
-    echo_msg "Preparando para instalação não interativa do Pi-hole v6 otimizada para RK322x..."
+  # Preparar diretório e configuração base
+  sudo mkdir -p /etc/pihole
 
-    sudo mkdir -p /etc/pihole
-    # Configuração otimizada para kernel 4.4.194-rk322x
-    # Pi-hole na porta 53, Unbound como upstream na porta $UNBOUND_PORT
-    cat <<EOF | sudo tee /etc/pihole/setupVars.conf
+  if [ "$pihole_installed" = true ]; then
+    echo_msg "🔄 Reconfigurando Pi-hole existente com otimizações para RK322x..."
+
+    # Fazer backup da configuração existente
+    if [ -f /etc/pihole/setupVars.conf ]; then
+      sudo cp /etc/pihole/setupVars.conf /etc/pihole/setupVars.conf.backup.$(date +%Y%m%d_%H%M%S)
+      echo_msg "   Backup da configuração atual salvo"
+    fi
+  else
+    echo_msg "🆕 Preparando nova instalação do Pi-hole v6 otimizada para RK322x..."
+  fi
+  # Configuração otimizada para kernel 4.4.194-rk322x
+  # Pi-hole na porta 53, Unbound como upstream na porta $UNBOUND_PORT
+  echo_msg "   Aplicando configuração otimizada para RK322x..."
+  cat <<EOF | sudo tee /etc/pihole/setupVars.conf
 PIHOLE_INTERFACE=$NET_IF
 IPV4_ADDRESS=$STATIC_IP/24
 PIHOLE_DNS_1=127.0.0.1#$UNBOUND_PORT
@@ -1409,30 +1469,54 @@ DNS_BOGUS_PRIV=true
 CONDITIONAL_FORWARDING=false
 EOF
 
-    echo_msg "Executando instalador do Pi-hole otimizado para ARM..."
+  # Executar instalação ou reconfiguração baseada no status
+  if [ "$pihole_installed" = true ]; then
+    echo_msg "🔄 Aplicando reconfiguração do Pi-hole existente..."
+
+    # Reconfigurar DNS upstream para usar apenas Unbound
+    echo_msg "   Configurando Unbound como DNS upstream único..."
+    pihole -a -i 127.0.0.1#$UNBOUND_PORT
+
+    # Aplicar configurações web
+    echo_msg "   Configurando interface web na porta $PIHOLE_HTTP_PORT..."
+    sudo sed -i "s/server.port.*/server.port = $PIHOLE_HTTP_PORT/" /etc/lighttpd/lighttpd.conf 2>/dev/null || true
+
+    # Desabilitar DNSSEC (compatibilidade RK322x)
+    echo_msg "   Desabilitando DNSSEC para compatibilidade RK322x..."
+    pihole -a -dnssec off
+
+    # Aplicar configurações de cache reduzido
+    echo_msg "   Aplicando configurações otimizadas para ARM..."
+    if [ -f /etc/dnsmasq.d/01-pihole.conf ]; then
+      sudo sed -i '/cache-size/d' /etc/dnsmasq.d/01-pihole.conf
+      echo "cache-size=1000" | sudo tee -a /etc/dnsmasq.d/01-pihole.conf >/dev/null
+    fi
+
+    # Reiniciar serviços
+    echo_msg "   Reiniciando serviços do Pi-hole..."
+    sudo systemctl restart pihole-ftl
+    sudo systemctl restart lighttpd 2>/dev/null || true
+
+    echo_msg "✅ Pi-hole reconfigurado com sucesso"
+  else
+    echo_msg "🆕 Executando instalação nova do Pi-hole otimizado para ARM..."
     # O instalador irá ler o setupVars.conf
     if ! curl -sSL --max-time 120 https://install.pi-hole.net | sudo bash /dev/stdin --unattended; then
       echo_msg "❌ Falha na instalação do Pi-hole."
       return 1
     fi
 
-    # Aguardar inicialização completa (mais tempo para ARM)
-    echo_msg "Aguardando inicialização completa dos serviços do Pi-hole em RK322x..."
-    sleep 15
+    echo_msg "✅ Pi-hole instalado com sucesso"
+  fi
 
-    # Verificar se a instalação foi bem-sucedida
-    if ! command -v pihole &> /dev/null; then
-      echo_msg "❌ Pi-hole não foi instalado corretamente."
-      return 1
-    fi
-  else
-    echo_msg "Pi-hole já está instalado. Reconfigurando DNS upstream para Unbound..."
-    # Para instalações existentes, configura para usar apenas o Unbound local
-    echo_msg "   Configurando Pi-hole para usar Unbound (127.0.0.1:$UNBOUND_PORT) como upstream..."
-    sudo pihole -a -i local -dns 127.0.0.1#$UNBOUND_PORT
+  # Aguardar inicialização completa (mais tempo para ARM)
+  echo_msg "Aguardando inicialização completa dos serviços do Pi-hole em RK322x..."
+  sleep 15
 
-    # Aguardar um momento para aplicar as configurações
-    sleep 5
+  # Verificar se a instalação/reconfiguração foi bem-sucedida
+  if ! command -v pihole &> /dev/null; then
+    echo_msg "❌ Pi-hole não está disponível após instalação/configuração."
+    return 1
   fi
 
   # --- Reconfiguração otimizada para RK322x ---
@@ -1562,6 +1646,108 @@ EOF
     echo_msg "   Verifique: sudo systemctl status pihole-ftl"
     echo_msg "   Logs: sudo journalctl -u pihole-ftl -n 20"
   fi
+
+  # Executar validação final da instalação
+  echo_msg "Executando validação final da instalação..."
+  if validate_pihole_installation; then
+    echo_msg "✅ Pi-hole instalado e validado com sucesso!"
+
+    # Configurar sistema para usar Pi-hole como DNS principal
+    echo_msg "Configurando sistema para usar Pi-hole como DNS..."
+    configure_system_dns_for_pihole
+  else
+    echo_msg "⚠️ Pi-hole instalado mas com problemas - execute troubleshooting manual"
+  fi
+}
+
+validate_pihole_installation() {
+  echo_msg "🔍 Executando validação completa do Pi-hole..."
+
+  local validation_passed=true
+
+  # Teste 1: Verificar se o comando pihole existe
+  if ! command -v pihole &> /dev/null; then
+    echo_msg "   ❌ Comando 'pihole' não encontrado"
+    validation_passed=false
+  else
+    echo_msg "   ✅ Comando Pi-hole disponível"
+  fi
+
+  # Teste 2: Verificar serviço pihole-ftl
+  if ! sudo systemctl is-active --quiet pihole-ftl; then
+    echo_msg "   ❌ Serviço pihole-ftl não está ativo"
+    echo_msg "      Status: $(sudo systemctl is-active pihole-ftl 2>/dev/null || echo 'erro')"
+    validation_passed=false
+  else
+    echo_msg "   ✅ Serviço pihole-ftl ativo"
+  fi
+
+  # Teste 3: Verificar porta 53
+  if ! sudo netstat -tlnp | grep ":53 " | grep -q "pihole-FTL"; then
+    echo_msg "   ❌ Pi-hole não está ouvindo na porta 53"
+    echo_msg "      Processos na porta 53:"
+    sudo netstat -tlnp | grep ":53 " | sed 's/^/         /' | head -3
+    validation_passed=false
+  else
+    echo_msg "   ✅ Pi-hole ouvindo na porta 53"
+  fi
+
+  # Teste 4: Verificar resolução DNS
+  local dns_test_attempts=0
+  local dns_working=false
+
+  while [ $dns_test_attempts -lt 3 ] && [ "$dns_working" = false ]; do
+    dns_test_attempts=$((dns_test_attempts + 1))
+    echo_msg "      Teste DNS $dns_test_attempts/3..."
+
+    if timeout 15 dig @127.0.0.1 google.com +short >/dev/null 2>&1; then
+      dns_working=true
+      echo_msg "   ✅ Resolução DNS via Pi-hole funcionando"
+    else
+      if [ $dns_test_attempts -lt 3 ]; then
+        echo_msg "      Aguardando 5s para próxima tentativa..."
+        sleep 5
+      fi
+    fi
+  done
+
+  if [ "$dns_working" = false ]; then
+    echo_msg "   ❌ Pi-hole não responde a consultas DNS"
+    validation_passed=false
+  fi
+
+  # Teste 5: Verificar integração com Unbound
+  if timeout 10 dig @127.0.0.1 -p $UNBOUND_PORT google.com +short >/dev/null 2>&1; then
+    echo_msg "   ✅ Unbound upstream funcionando na porta $UNBOUND_PORT"
+  else
+    echo_msg "   ⚠️ Unbound upstream com problemas - Pi-hole usará fallback"
+  fi
+
+  # Teste 6: Verificar interface web (opcional)
+  if sudo systemctl is-active --quiet lighttpd; then
+    if sudo netstat -tln | grep -q ":$PIHOLE_HTTP_PORT "; then
+      echo_msg "   ✅ Interface web disponível na porta $PIHOLE_HTTP_PORT"
+    else
+      echo_msg "   ⚠️ Interface web pode não estar acessível na porta $PIHOLE_HTTP_PORT"
+    fi
+  else
+    echo_msg "   ⚠️ Lighttpd não está rodando - interface web indisponível"
+  fi
+
+  # Resultado final
+  if [ "$validation_passed" = true ]; then
+    echo_msg "🎉 Pi-hole validado com sucesso!"
+    echo_msg "   ✅ DNS: Pi-hole (53) -> Unbound ($UNBOUND_PORT)"
+    echo_msg "   ✅ Web: http://$STATIC_IP:$PIHOLE_HTTP_PORT/admin/"
+    echo_msg "   ✅ Sistema otimizado para RK322x"
+  else
+    echo_msg "⚠️ Pi-hole instalado mas com problemas detectados"
+    echo_msg "   🔧 Para reparar execute: pihole -r"
+    echo_msg "   📋 Para diagnóstico: sudo pihole status"
+    echo_msg "   📝 Logs: sudo journalctl -u pihole-ftl -f"
+  fi
+
+  return $validation_passed
 }
 
 # =========================
