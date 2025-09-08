@@ -424,8 +424,10 @@ install_unbound() {
   sudo mkdir -p /etc/unbound/unbound.conf.d /var/lib/unbound
 
   backup_file /etc/unbound/unbound.conf.d/pi-hole.conf
+  # Configuração do Unbound sugerida pelo guia, com verbosity e use-caps-for-id
   cat <<EOF | sudo tee /etc/unbound/unbound.conf.d/pi-hole.conf
 server:
+    verbosity: 1
     interface: 127.0.0.1
     port: $UNBOUND_PORT
     do-ip4: yes
@@ -434,6 +436,7 @@ server:
     do-ip6: no
     harden-glue: yes
     harden-dnssec-stripped: yes
+    use-caps-for-id: no
     edns-buffer-size: 1232
     prefetch: yes
     num-threads: 1
@@ -445,20 +448,35 @@ server:
     root-hints: "/var/lib/unbound/root.hints"
 EOF
 
-  if [ ! -f /var/lib/unbound/root.hints ]; then
+  if [ ! -f /var/lib/i/root.hints ]; then
     sudo wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
   fi
 
+  # Lógica robusta para criar root.key, com fallback
   if [ ! -f /var/lib/unbound/root.key ]; then
-    sudo unbound-anchor -a /var/lib/unbound/root.key || true
+    sudo unbound-anchor -a /var/lib/unbound/root.key || {
+      echo "unbound-anchor falhou, tentando fallback com wget..."
+      sudo wget -O /tmp/root.key https://data.iana.org/root-anchors/icannbundle.pem
+      sudo mv /tmp/root.key /var/lib/unbound/root.key
+    }
   fi
 
+  # Garante permissões corretas
   sudo chown -R unbound:unbound /var/lib/unbound
+  sudo chmod 644 /var/lib/unbound/root.*
 
-  echo "Reiniciando Unbound para aplicar a configuração..."
-  sudo systemctl restart unbound
-  sleep 2 # Aguarda um momento para estabilização
+  # Verifica a configuração antes de reiniciar
+  if sudo unbound-checkconf; then
+    echo "Configuração do Unbound verificada com sucesso."
+    sudo systemctl enable unbound
+    sudo systemctl restart unbound
+    sleep 2 # Aguarda um momento para estabilização
+  else
+    echo_msg "❌ Erro na configuração do Unbound. O serviço não será iniciado."
+    return 1
+  fi
 
+  # Verificação final
   if sudo systemctl is-active --quiet unbound; then
     echo_msg "✅ Unbound instalado/reconfigurado e em execução"
   else
