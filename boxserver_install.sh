@@ -431,7 +431,7 @@ server.groupname            = "www-data"
 server.port                 = $PIHOLE_HTTP_PORT
 
 # SSL configuration
-\$SERVER["socket"] == ":$PIHOLE_HTTPS_PORT" {
+$SERVER["socket"] == ":$PIHOLE_HTTPS_PORT" {
     ssl.engine = "enable"
     ssl.pemfile = "/etc/lighttpd/server.pem"
 }
@@ -444,7 +444,7 @@ EOF
   # Criar o arquivo external.conf corretamente
   backup_file /etc/lighttpd/external.conf
   cat <<EOF | sudo tee /etc/lighttpd/external.conf
-\$SERVER["socket"] == ":$PIHOLE_HTTPS_PORT" { ssl.engine = "enable" }
+\$SERVER["socket"] == ":$PIHOLE_HTTPS_PORT" \{ ssl.engine = "enable" \}
 EOF
 
   # Verificar se o serviço lighttpd existe
@@ -513,7 +513,6 @@ EOF
 
 install_cloudflared() {
   echo_msg "Instalando/reconfigurando Cloudflare Tunnel..."
-  SUMMARY_ENTRIES+=("Cloudflared: Domínio $DOMAIN")
   SUMMARY_ENTRIES+=("Cloudflared: Domínio $DOMAIN (requer autenticação manual)")
   ARCH=$(detect_arch)
   URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}"
@@ -551,11 +550,6 @@ WantedBy=multi-user.target
 EOF
 
     sudo systemctl daemon-reload
-    sudo systemctl enable --now cloudflared
-
-    # Verificar se o serviço está rodando
-    if sudo systemctl is-active --quiet cloudflared; then
-      echo_msg "✅ Cloudflare Tunnel instalado/reconfigurado e em execução"
     sudo systemctl enable cloudflared
 
     # Verificar se já existe autenticação
@@ -567,7 +561,6 @@ EOF
         echo_msg "⚠️  Cloudflare Tunnel configurado mas falhou ao iniciar. Verifique as credenciais."
       fi
     else
-      echo_msg "⚠️  Cloudflare Tunnel instalado/reconfigurado, execute 'cloudflared tunnel login' para autenticar"
       # Modo interativo: guiar usuário através da autenticação
       if [ "$SILENT_MODE" = false ]; then
         whiptail_msg "🔐 Cloudflare Tunnel requer autenticação manual:\n\n1. Execute: sudo cloudflared tunnel login\n2. Siga as instruções no navegador\n3. Execute: sudo cloudflared tunnel create boxserver\n4. Execute: sudo systemctl start cloudflared"
@@ -953,7 +946,6 @@ show_summary() {
 
   sudo chmod 600 "$SUMMARY_FILE"
   if [ "$SILENT_MODE" = false ]; then
-    whiptail --title "Resumo da instalação" --textbox "$SUMMARY_FILE" 25 80
     whiptail --title "Resumo da instalação" --textbox "$SUMMARY_FILE" 30 80
   else
     echo "Resumo da instalação salvo em: $SUMMARY_FILE"
