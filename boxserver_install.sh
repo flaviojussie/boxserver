@@ -93,40 +93,78 @@ check_connectivity() {
   echo "✅ Conectividade de rede verificada"
 }
 
-find_free_port() {
-  local port=$1
-  while sudo netstat -tln | awk '{print $4}' | grep -q ":$port$"; do
-    port=$((port + 1))
-  done
-  echo "$port"
-}
-
 check_and_set_ports() {
   echo "Verificando e alocando portas de serviço..."
   local original_port
+  local -a used_ports=() # Array to hold ports we've assigned
+
+  # Helper to check if a port is in use by the system OR already assigned by us
+  is_port_used() {
+    local port_to_check=$1
+    # Check if listening on the system
+    if sudo netstat -tln | awk '{print $4}' | grep -q ":$port_to_check$"; then
+      return 0 # 0 means true (is used)
+    fi
+    # Check if already assigned by this script
+    for p in "${used_ports[@]}"; do
+      if [[ "$p" == "$port_to_check" ]]; then
+        return 0 # 0 means true (is used)
+      fi
+    done
+    return 1 # 1 means false (is not used)
+  }
+
+  # Helper to find the next free port
+  find_next_free_port() {
+    local port=$1
+    while is_port_used "$port"; do
+      port=$((port + 1))
+    done
+    echo "$port"
+  }
+
+  # --- Assign ports sequentially, reserving each one ---
 
   original_port=$PIHOLE_HTTP_PORT
-  PIHOLE_HTTP_PORT=$(find_free_port "$PIHOLE_HTTP_PORT")
+  PIHOLE_HTTP_PORT=$(find_next_free_port "$original_port")
+  used_ports+=("$PIHOLE_HTTP_PORT")
   if [ "$PIHOLE_HTTP_PORT" != "$original_port" ]; then
     whiptail_msg "A porta $original_port estava em uso. Pi-hole HTTP usará a porta $PIHOLE_HTTP_PORT."
   fi
 
   original_port=$PIHOLE_HTTPS_PORT
-  PIHOLE_HTTPS_PORT=$(find_free_port "$PIHOLE_HTTPS_PORT")
+  PIHOLE_HTTPS_PORT=$(find_next_free_port "$original_port")
+  used_ports+=("$PIHOLE_HTTPS_PORT")
   if [ "$PIHOLE_HTTPS_PORT" != "$original_port" ]; then
     whiptail_msg "A porta $original_port estava em uso. Pi-hole HTTPS usará a porta $PIHOLE_HTTPS_PORT."
   fi
 
   original_port=$FILEBROWSER_PORT
-  FILEBROWSER_PORT=$(find_free_port "$FILEBROWSER_PORT")
+  FILEBROWSER_PORT=$(find_next_free_port "$original_port")
+  used_ports+=("$FILEBROWSER_PORT")
   if [ "$FILEBROWSER_PORT" != "$original_port" ]; then
     whiptail_msg "A porta $original_port estava em uso. Filebrowser usará a porta $FILEBROWSER_PORT."
   fi
 
   original_port=$MINIDLNA_PORT
-  MINIDLNA_PORT=$(find_free_port "$MINIDLNA_PORT")
+  MINIDLNA_PORT=$(find_next_free_port "$original_port")
+  used_ports+=("$MINIDLNA_PORT")
   if [ "$MINIDLNA_PORT" != "$original_port" ]; then
     whiptail_msg "A porta $original_port estava em uso. MiniDLNA usará a porta $MINIDLNA_PORT."
+  fi
+
+  original_port=$UNBOUND_PORT
+  UNBOUND_PORT=$(find_next_free_port "$original_port")
+  used_ports+=("$UNBOUND_PORT")
+  if [ "$UNBOUND_PORT" != "$original_port" ]; then
+    whiptail_msg "A porta $original_port estava em uso. Unbound usará a porta $UNBOUND_PORT."
+  fi
+
+  original_port=$WG_PORT
+  WG_PORT=$(find_next_free_port "$original_port")
+  used_ports+=("$WG_PORT")
+  if [ "$WG_PORT" != "$original_port" ]; then
+    whiptail_msg "A porta $original_port estava em uso. WireGuard usará a porta $WG_PORT."
   fi
 }
 
@@ -546,28 +584,15 @@ EOF
 \$SERVER["socket"] == ":$PIHOLE_HTTPS_PORT" \{ ssl.engine = "enable" \}
 EOF
 
-  # Reinicia os serviços para aplicar todas as configurações
-  echo_msg "Reiniciando serviços do Pi-hole para aplicar configurações..."
+  # Reinicia apenas o DNS do Pi-hole para aplicar as configurações
+  echo_msg "Reiniciando DNS do Pi-hole para aplicar configurações..."
   sudo pihole restartdns
 
-  # Tenta reiniciar o lighttpd de forma robusta
-  sudo systemctl restart lighttpd || {
-    echo_msg "Falha ao reiniciar lighttpd. Tentando reinstalar..."
-    if ! sudo apt-get install --reinstall -y lighttpd; then
-        echo_msg "❌ Falha ao reinstalar lighttpd."
-        return 1
-    fi
-    sudo systemctl restart lighttpd || {
-        echo_msg "❌ Mesmo após a reinstalação, não foi possível iniciar o lighttpd."
-        return 1
-    }
-  }
-
-  # Verificação final
-  if sudo systemctl is-active --quiet lighttpd && sudo systemctl is-active --quiet pihole-ftl; then
+  # Verificação final - apenas o pihole-ftl, o lighttpd é gerenciado pelo próprio Pi-hole
+  if sudo systemctl is-active --quiet pihole-ftl; then
     echo_msg "✅ Pi-hole instalado/reconfigurado e em execução."
   else
-    echo_msg "⚠️  Pi-hole reconfigurado, mas um de seus componentes (lighttpd ou pihole-ftl) pode não estar em execução."
+    echo_msg "⚠️  Pi-hole reconfigurado, mas o pihole-ftl pode não estar em execução."
   fi
 }
 
