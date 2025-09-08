@@ -27,8 +27,6 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Redes e IPs
 readonly DEFAULT_IP="192.168.0.100"
 readonly DOMAIN_DEFAULT="pihole.local"
-readonly INTERFACE="$(detect_interface)"
-readonly ARCHITECTURE="$(detect_arch)"
 
 # Portas padrão
 readonly DEFAULT_PIHOLE_HTTP_PORT=8080
@@ -932,7 +930,7 @@ network:
         - $STATIC_IP/24
       gateway4: $gateway
       nameservers:
-          addresses: [$dns_servers]
+        addresses: [1.1.1.1, 8.8.8.8]
 EOF
 
     safe_execute "sudo netplan apply" "Falha ao aplicar configuração de rede"
@@ -1047,6 +1045,10 @@ EOF
 # =========================
 main_install() {
     log_info "Iniciando instalação do BoxServer v2.0..."
+
+    # Detectar interface e arquitetura
+    readonly INTERFACE="$(detect_interface)"
+    readonly ARCHITECTURE="$(detect_arch)"
 
     # Verificações iniciais
     check_root_privileges
