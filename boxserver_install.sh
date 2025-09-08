@@ -1384,6 +1384,9 @@ install_pihole() {
       sudo rm /etc/resolv.conf
     fi
 
+    # Garantir que o arquivo não é imutável antes de escrever
+    sudo chattr -i /etc/resolv.conf 2>/dev/null || true
+
     # Criar um resolv.conf temporário apontando para localhost (futuro Pi-hole)
     echo "# Configurado para Pi-hole + Unbound" | sudo tee /etc/resolv.conf
     echo "nameserver 127.0.0.1" | sudo tee -a /etc/resolv.conf
@@ -1760,6 +1763,9 @@ configure_system_dns_for_pihole() {
   if [ -f /etc/resolv.conf ]; then
     sudo cp /etc/resolv.conf /etc/resolv.conf.backup.$(date +%s)
   fi
+
+  # Garantir que o arquivo não é imutável antes de escrever
+  sudo chattr -i /etc/resolv.conf 2>/dev/null || true
 
   # Criar novo resolv.conf apontando para Pi-hole
   cat <<EOF | sudo tee /etc/resolv.conf
