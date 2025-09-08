@@ -553,11 +553,51 @@ LIGHTTPD_ENABLED=false
 WEBPORT=$PIHOLE_HTTP_PORT
 EOF
 
-    # Executar instalação silenciosa redirecionando toda saída para /dev/null
-    curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended >/dev/null 2>&1 || {
-        log_error "Falha crítica na instalação do Pi-hole"
+    # Executar instalação com progresso controlado
+    log_info "Iniciando instalação do Pi-hole (isso pode levar alguns minutos)..."
+
+    # Mostrar progresso com barra de loading
+    local spinner="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    local temp_log="/tmp/pihole_install_${TIMESTAMP}.log"
+
+    # Executar instalação em background enquanto mostra progresso
+    (
+        curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended > "$temp_log" 2>&1
+        echo $? > "${temp_log}.exit"
+    ) &
+
+    local install_pid=$!
+    local i=0
+
+    # Mostrar progresso enquanto instala
+    while kill -0 $install_pid 2>/dev/null; do
+        local char=${spinner:$((i % ${#spinner})):1}
+        printf "\r[INFO] Instalando Pi-hole... %s" "$char"
+        sleep 0.1
+        ((i++))
+    done
+
+    # Verificar resultado
+    wait $install_pid
+    local exit_code=$(cat "${temp_log}.exit" 2>/dev/null || echo "1")
+
+    printf "\r"
+
+    if [[ "$exit_code" -eq 0 ]]; then
+        log_success "Instalação do Pi-hole concluída"
+    else
+        log_error "Falha na instalação do Pi-hole (código: $exit_code)"
+        if [[ -f "$temp_log" ]]; then
+            log_error "Últimas linhas do log:"
+            tail -10 "$temp_log" | while read line; do
+                log_error "  $line"
+            done
+        fi
         return 1
-    }
+    fi
+
+    # Limpar arquivo temporário
+    rm -f "$temp_log" "${temp_log}.exit"
 
     # Aguardar um momento para a instalação completar
     sleep 5
@@ -786,6 +826,17 @@ install_cloudflared() {
         return 1
     fi
 
+    # Dar permissões e verificar se é executável
+    safe_execute "sudo chmod +x /usr/local/bin/cloudflared" "Falha ao dar permissões ao cloudflared"
+
+    # Verificar se o binário é executável
+    if ! /usr/local/bin/cloudflared --version >/dev/null 2>&1; then
+        log_error "Binário cloudflared não é executável ou está corrompido"
+        return 1
+    fi
+
+    log_success "Cloudflared baixado e verificado com sucesso"
+
     # Configurar cloudflared como serviço
     cat << EOF | sudo tee /etc/systemd/system/cloudflared.service > /dev/null
 [Unit]
@@ -799,16 +850,9 @@ ExecStart=/usr/local/bin/cloudflared proxy-dns --port 5053 --address 127.0.0.1
 Restart=always
 RestartSec=5
 
-# Dar permissões e verificar se é executável
-    safe_execute "sudo chmod +x /usr/local/bin/cloudflared" "Falha ao dar permissões ao cloudflared"
-
-    # Verificar se o binário é executável
-    if ! /usr/local/bin/cloudflared --version >/dev/null 2>&1; then
-        log_error "Binário cloudflared não é executável ou está corrompido"
-        return 1
-    fi
-
-    log_success "Cloudflared baixado e verificado com sucesso"
+[Install]
+WantedBy=multi-user.target
+EOF
 
     safe_execute "sudo systemctl daemon-reload" "Falha ao recarregar systemd"
     safe_execute "sudo systemctl enable cloudflared" "Falha ao habilitar cloudflared"
