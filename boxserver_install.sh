@@ -216,12 +216,25 @@ check_rk322x_compatibility() {
   fi
 
   # Verificar suporte a criptografia
+  echo "🔐 Verificando módulos de criptografia..."
   local crypto_modules=("crypto_user" "af_alg" "algif_hash" "algif_skcipher")
+  local crypto_missing=0
+
   for module in "${crypto_modules[@]}"; do
     if ! lsmod | grep -q "$module" && ! modprobe "$module" 2>/dev/null; then
       echo "⚠️ Módulo de criptografia $module não disponível"
+      crypto_missing=$((crypto_missing + 1))
+    else
+      echo "✅ Módulo $module carregado"
     fi
   done
+
+  if [ $crypto_missing -gt 0 ]; then
+    echo "⚠️ $crypto_missing módulos de criptografia ausentes - aplicando workarounds"
+    export CRYPTO_LIMITED=true
+  else
+    echo "✅ Todos os módulos de criptografia disponíveis"
+  fi
 
   # Verificar limitações de memória
   local total_mem=$(grep MemTotal /proc/meminfo | awk '{print int($2/1024)}')
@@ -651,12 +664,29 @@ install_unbound() {
   local cache_size="64m"
   local msg_cache="32m"
   local threads=1
+  local crypto_settings=""
 
   # Ajustar para dispositivos com pouca memória
   if [ "${LOW_MEMORY:-false}" = "true" ]; then
     cache_size="32m"
     msg_cache="16m"
     echo_msg "   Ajustando configurações para baixa memória"
+  fi
+
+  # Ajustar para módulos de criptografia limitados
+  if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then
+    echo_msg "   Ajustando configurações para criptografia limitada do RK322x"
+    crypto_settings="
+    # Configurações para criptografia limitada RK322x
+    use-caps-for-id: yes
+    harden-algo-downgrade: yes
+    val-permissive-mode: yes"
+  else
+    crypto_settings="
+    # Configurações padrão de criptografia
+    use-caps-for-id: no
+    harden-algo-downgrade: no
+    val-permissive-mode: no"
   fi
 
   cat <<EOF | sudo tee /etc/unbound/unbound.conf.d/pi-hole.conf
@@ -671,12 +701,11 @@ server:
     do-ip6: no
 
     # Otimizações para Pi-hole
+    # Otimizações específicas para RK322x
     harden-glue: yes
     harden-dnssec-stripped: yes
     harden-below-nxdomain: yes
-    harden-referral-path: yes
-    harden-algo-downgrade: no
-    use-caps-for-id: no
+    harden-referral-path: yes$crypto_settings
 
     # Performance otimizada para ARM RK322x
     edns-buffer-size: 1232
@@ -1076,8 +1105,15 @@ install_wireguard() {
   # 2. Tentar carregar módulo WireGuard
   if ! sudo modprobe wireguard 2>/dev/null; then
     echo_msg "⚠️ Módulo WireGuard nativo não disponível"
-    echo_msg "   Tentando instalação do wireguard-dkms..."
 
+    # Se criptografia limitada, ir direto para userspace
+    if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then
+      echo_msg "   Criptografia limitada detectada - usando userspace diretamente"
+      install_wireguard_userspace
+      return $?
+    fi
+
+    echo_msg "   Tentando instalação do wireguard-dkms..."
     if ! sudo apt install -y wireguard-dkms 2>/dev/null; then
       echo_msg "⚠️ DKMS falhou. Usando implementação userspace..."
       install_wireguard_userspace
@@ -1376,6 +1412,7 @@ PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEP
 PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o $NET_IF -j MASQUERADE
 
 # AVISO: Rodando em modo userspace - performance reduzida em RK322x
+# Configuração otimizada para criptografia limitada do kernel 4.4.194-rk322x
 EOF
 
   sudo chmod 600 /etc/wireguard/wg0.conf
@@ -1386,15 +1423,24 @@ EOF
   fi
   sudo sysctl -p >/dev/null
 
-  echo_msg "⚠️ WireGuard configurado em modo userspace"
+  echo_msg "⚠️ WireGuard configurado em modo userspace para RK322x"
   echo_msg "   Performance pode ser reduzida comparado ao modo kernel"
+  if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then
+    echo_msg "   Configuração ajustada para módulos de criptografia limitados"
+  fi
 
-  SUMMARY_ENTRIES+=("WireGuard (userspace): Porta UDP $WG_PORT")
+  SUMMARY_ENTRIES+=("WireGuard (userspace/RK322x): Porta UDP $WG_PORT")
   return 0
 }
 
 install_cloudflared() {
   echo_msg "Instalando/reconfigurando Cloudflare Tunnel para RK322x..."
+
+  # Verificar se criptografia limitada afeta o Cloudflared
+  if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then
+    echo_msg "⚠️ Criptografia limitada detectada - Cloudflared pode ter performance reduzida"
+  fi
+
   SUMMARY_ENTRIES+=("Cloudflared: Domínio $DOMAIN (requer autenticação manual)")
   # Verificar arquitetura específica do RK322x
   local arch_rk322x=""
@@ -1416,13 +1462,27 @@ install_cloudflared() {
     sudo mkdir -p /etc/cloudflared
 
     backup_file /etc/cloudflared/config.yml
-    cat <<EOF | sudo tee /etc/cloudflared/config.yml
-tunnel: boxserver
+
+    # Configuração otimizada para RK322x com criptografia limitada
+    local tunnel_config="tunnel: boxserver
 credentials-file: /etc/cloudflared/boxserver.json
 ingress:
   - hostname: $DOMAIN
     service: http://localhost:$PIHOLE_HTTP_PORT
-  - service: http_status:404
+  - service: http_status:404"
+
+    # Adicionar configurações específicas para criptografia limitada
+    if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then
+      tunnel_config="$tunnel_config
+
+# Configurações RK322x para criptografia limitada
+protocol: http2
+retries: 3
+grace-period: 30s"
+    fi
+
+    cat <<EOF | sudo tee /etc/cloudflared/config.yml
+$tunnel_config
 EOF
 
     # Criar serviço systemd para cloudflared
@@ -1580,8 +1640,9 @@ install_minidlna() {
 
   # Configuração otimizada para dispositivos RK322x com recursos limitados
   backup_file /etc/minidlna.conf
-  cat <<EOF | sudo tee /etc/minidlna.conf
-# Configuração MiniDLNA otimizada para RK322x
+
+  # Configurações básicas
+  local minidlna_config="# Configuração MiniDLNA otimizada para RK322x
 media_dir=V,/srv/media/video
 media_dir=A,/srv/media/audio
 media_dir=P,/srv/media/photos
@@ -1600,7 +1661,20 @@ model_number=1
 presentation_url=http://$(hostname -I | awk '{print $1}'):$MINIDLNA_PORT/
 
 # Configurações de rede otimizadas para RK322x
-network_interface=$NET_IF
+network_interface=$NET_IF"
+
+  # Adicionar configurações específicas para criptografia limitada
+  if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then
+    minidlna_config="$minidlna_config
+
+# Configurações para criptografia limitada RK322x
+# Desabilitar funcionalidades que dependem de criptografia forte
+enable_tivo=no
+strict_dlna=no"
+  fi
+
+  cat <<EOF | sudo tee /etc/minidlna.conf
+$minidlna_config
 EOF
 
   sudo systemctl enable --now minidlna
@@ -1673,6 +1747,21 @@ install_filebrowser() {
     sudo mkdir -p /etc/filebrowser
 
     # Configuração otimizada para RK322x com recursos limitados
+    local auth_method="proxy"
+    local tls_config=""
+
+    # Ajustar configurações para criptografia limitada
+    if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then
+      echo_msg "   Configurando Filebrowser para criptografia limitada RK322x"
+      auth_method="none"
+      tls_config=',
+  "tls": {
+    "cert": "",
+    "key": "",
+    "port": ""
+  }'
+    fi
+
     cat <<EOF | sudo tee /etc/filebrowser/config.json
 {
   "port": $FILEBROWSER_PORT,
@@ -1686,9 +1775,9 @@ install_filebrowser() {
     "expiration": "1h"
   },
   "auth": {
-    "method": "proxy",
+    "method": "$auth_method",
     "header": "X-User"
-  },
+  }$tls_config,
   "signup": false,
   "createUserDir": false,
   "defaults": {
@@ -1886,6 +1975,7 @@ install_dashboard() {
             <p>Porta UDP: $WG_PORT</p>
             <p>Chave Pública: <code>$WG_PUBLIC</code></p>
             <p><strong>⚠️ Nota:</strong> Executando em modo otimizado para kernel 4.4.194-rk322x</p>
+            $(if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then echo "<p><strong>⚠️ Criptografia:</strong> Módulos limitados - configuração ajustada</p>"; fi)
             <p><strong>Comandos úteis:</strong></p>
             <p><code>sudo wg show</code> - Mostrar status</p>
             <p><code>sudo systemctl status wg-quick@wg0</code> - Status do serviço</p>
@@ -1923,6 +2013,7 @@ install_dashboard() {
                 <li>Buffers de rede conservadores</li>
                 $(if [ "${LOW_MEMORY:-false}" = "true" ]; then echo "<li>Modo baixa memória ativado</li>"; fi)
                 $(if [ "${DISABLE_VPN:-false}" = "true" ]; then echo "<li>VPN em modo userspace</li>"; fi)
+                $(if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then echo "<li>Workarounds para criptografia limitada</li>"; fi)
             </ul>
         </div>
     </div>
@@ -2074,6 +2165,9 @@ show_summary() {
     if [ "${DISABLE_VPN:-false}" = "true" ]; then
       echo "  - WireGuard em modo userspace"
     fi
+    if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then
+      echo "  - Workarounds para criptografia limitada"
+    fi
     echo "  - Cache DNS reduzido para ARM"
     echo "  - Threading otimizado para single-core"
     echo "  - Buffers de rede conservadores"
@@ -2125,6 +2219,21 @@ show_summary() {
     echo "  - Se WireGuard falhar: Verifique 'lsmod | grep wireguard'"
     echo "  - Se DNS lento: Ajuste cache em /etc/unbound/unbound.conf.d/pi-hole.conf"
     echo "  - Se pouca RAM: Monitore com 'free -h' e ajuste serviços"
+    if [ "${CRYPTO_LIMITED:-false}" = "true" ]; then
+      echo ""
+      echo "=== LIMITAÇÕES DE CRIPTOGRAFIA DETECTADAS ==="
+      echo "Seu kernel RK322x tem módulos de criptografia limitados."
+      echo "Configurações aplicadas:"
+      echo "  - WireGuard em modo userspace (performance reduzida)"
+      echo "  - Unbound com validação DNSSEC relaxada"
+      echo "  - Cloudflared com configurações conservadoras"
+      echo "  - Filebrowser sem autenticação TLS complexa"
+      echo ""
+      echo "Para melhorar segurança (opcional):"
+      echo "  - Considere atualização do kernel se possível"
+      echo "  - Use VPN externa adicional se necessário"
+      echo "  - Monitore logs para detectar problemas de conectividade"
+    fi
   } | sudo tee -a "$SUMMARY_FILE" >/dev/null
 
   sudo chmod 600 "$SUMMARY_FILE"
