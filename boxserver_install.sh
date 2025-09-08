@@ -147,17 +147,21 @@ install_unbound() {
   echo "Instalando Unbound..."
   ensure_pkg unbound
 
+  # Pausar temporariamente o resolvconf para evitar conflitos
+  sudo systemctl stop resolvconf 2>/dev/null || true
+
   backup_file "/etc/unbound/unbound.conf"
 
+  # Configuração básica do Unbound
   sudo tee /etc/unbound/unbound.conf > /dev/null <<EOF
 server:
     verbosity: 1
-    num-threads: 4
+    num-threads: 2
     interface: 0.0.0.0
     interface: ::0
     port: $PORT_UNBOUND
     do-ip4: yes
-    do-ip6: yes
+    do-ip6: no
     do-udp: yes
     do-tcp: yes
     do-daemonize: yes
@@ -165,9 +169,6 @@ server:
     access-control: 192.168.0.0/16 allow
     access-control: 10.0.0.0/8 allow
     access-control: 172.16.0.0/12 allow
-    access-control: ::1/128 allow
-    access-control: fc00::/7 allow
-    root-hints: "/usr/share/dns/root.hints"
     hide-identity: yes
     hide-version: yes
     harden-glue: yes
@@ -183,14 +184,72 @@ server:
     so-sndbuf: 1m
     minimal-responses: yes
     qname-minimisation: yes
+    root-hints: "/usr/share/dns/root.hints"
+    # Evitar conflito com portas já em uso
+    outgoing-port-permit: 32768-65535
+    outgoing-port-avoid: 0-32767
 
 include: "/etc/unbound/unbound.conf.d/*.conf"
 EOF
 
+  # Criar diretório de configuração
   sudo mkdir -p /etc/unbound/unbound.conf.d
+
+  # Baixar root hints se necessário
+  if [ ! -f "/usr/share/dns/root.hints" ]; then
+    echo "Baixando root.hints..."
+    sudo curl -o /usr/share/dns/root.hints https://www.internic.net/domain/named.root
+  fi
+
+  # Configurar permissões
+  sudo chown -R unbound:unbound /etc/unbound
+  sudo chmod 755 /etc/unbound
+
+  # Parar serviço antes de reconfigurar
+  sudo systemctl stop unbound 2>/dev/null || true
+
+  # Testar configuração antes de iniciar
+  if sudo unbound-checkconf /etc/unbound/unbound.conf; then
+    echo "✅ Configuração do Unbound válida"
+  else
+    echo "⚠️ Erro na configuração do Unbound - usando configuração minimal"
+    # Configuração minimal fallback
+    sudo tee /etc/unbound/unbound.conf > /dev/null <<EOF
+server:
+    verbosity: 1
+    interface: 0.0.0.0
+    port: $PORT_UNBOUND
+    access-control: 127.0.0.1/32 allow
+    access-control: 192.168.0.0/16 allow
+    hide-identity: yes
+    hide-version: yes
+    use-caps-for-id: yes
+    include: "/etc/unbound/unbound.conf.d/*.conf"
+EOF
+  fi
+
+  # Desabilitar temporariamente outros serviços DNS
+  sudo systemctl stop systemd-resolved 2>/dev/null || true
+  sudo systemctl disable systemd-resolved 2>/dev/null || true
+
+  # Habilitar e iniciar Unbound
+  sudo systemctl daemon-reload
   sudo systemctl enable unbound
-  sudo systemctl restart unbound
-  echo "✅ Unbound instalado e configurado"
+  sudo systemctl start unbound
+
+  # Verificar status
+  if systemctl is-active --quiet unbound; then
+    echo "✅ Unbound instalado e configurado com sucesso"
+  else
+    echo "⚠️ Unbound instalado mas não iniciou - verifique logs com: journalctl -u unbound"
+    # Tentar iniciar com configuração minimal
+    sudo systemctl stop unbound
+    sleep 2
+    sudo systemctl start unbound
+  fi
+
+  # Reativar resolvconf se estava rodando
+  sudo systemctl start resolvconf 2>/dev/null || true
 }
 
 install_pihole() {
@@ -259,7 +318,7 @@ install_cloudflared() {
   curl -L "$cloudflared_url" -o /tmp/cloudflared
   sudo install /tmp/cloudflared /usr/local/bin/cloudflared
 
-  sudo useradd -s /bin/false -d /etc/cloudflared cloudflared
+  sudo useradd -s /bin/false -d /etc/cloudflared cloudflared 2>/dev/null || true
 
   sudo tee /etc/systemd/system/cloudflared.service > /dev/null <<EOF
 [Unit]
@@ -543,7 +602,7 @@ generate_summary() {
 
 # =========================
 # Função de limpeza
-# =================--------
+# =========================
 cleanup_installation() {
   echo "Iniciando limpeza completa do BoxServer..."
 
