@@ -903,7 +903,7 @@ EOF
 }
 
 install_rng_tools() {
-    log_info "Instalando RNG-tools..."
+    log_info "Instalando RNG-tools (opcional para melhoria de performance)..."
 
     # Verificar se o dispositivo hardware RNG existe
     if [[ ! -e "/dev/hwrng" ]]; then
@@ -948,13 +948,12 @@ EOF
         safe_execute "sudo systemctl enable rng-tools5" "Falha ao habilitar rng-tools5"
         safe_execute "sudo systemctl start rng-tools5" "Falha ao iniciar rng-tools5"
     else
-        log_error "Nenhum serviço rng-tools encontrado no sistema"
-        log_info "Serviços disponíveis:"
-        systemctl list-unit-files | grep -i rng || echo "Nenhum serviço RNG encontrado"
-        return 1
+        log_info "Nenhum serviço rng-tools encontrado no sistema - continuando sem RNG-tools"
+        log_info "Isso não afeta o funcionamento do BoxServer"
+        return 0  # Não é um erro crítico
     fi
 
-    log_success "RNG-tools instalado e configurado com sucesso"
+    log_success "RNG-tools configurado com sucesso (opcional)"
 }
 
 install_samba() {
