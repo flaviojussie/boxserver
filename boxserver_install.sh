@@ -190,7 +190,21 @@ backup_file() {
 ensure_pkg() {
     local pkg="$1"
     if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-        safe_execute "sudo apt-get install -y $pkg" "Falha ao instalar pacote: $pkg"
+        log_info "Instalando pacote: $pkg"
+
+        if [[ "$VERBOSE_MODE" = true ]]; then
+            verbose_execute "sudo apt-get install -y $pkg" "Instalando $pkg"
+        else
+            safe_execute "sudo apt-get install -y $pkg" "Falha ao instalar pacote: $pkg"
+        fi
+
+        # Verificar se a instalação foi bem sucedida
+        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            log_error "Pacote $pkg não foi instalado corretamente"
+            return 1
+        fi
+    else
+        log_info "Pacote $pkg já está instalado"
     fi
 }
 
@@ -891,19 +905,54 @@ EOF
 install_rng_tools() {
     log_info "Instalando RNG-tools..."
 
-    ensure_pkg "rng-tools"
+    # Verificar se o dispositivo hardware RNG existe
+    if [[ ! -e "/dev/hwrng" ]]; then
+        log_info "Dispositivo /dev/hwrng não encontrado, tentando alternativas..."
+
+        # Tentar usar rng-tools5 se disponível
+        if apt-cache show rng-tools5 >/dev/null 2>&1; then
+            log_info "Instalando rng-tools5 como alternativa..."
+            ensure_pkg "rng-tools5"
+        else
+            log_info "Instalando rng-tools padrão..."
+            ensure_pkg "rng-tools"
+        fi
+    else
+        ensure_pkg "rng-tools"
+    fi
 
     # Configurar rng-tools
     local rng_conf="/etc/default/rng-tools"
     backup_file "$rng_conf"
+
+    # Verificar qual arquivo de configuração usar
+    if [[ -f "/etc/default/rng-tools5" ]]; then
+        rng_conf="/etc/default/rng-tools5"
+    fi
 
     cat << EOF | sudo tee "$rng_conf" > /dev/null
 HRNGDEVICE=/dev/hwrng
 RNGDOPTIONS="-W 80% -t 20"
 EOF
 
-    safe_execute "sudo systemctl enable rng-tools" "Falha ao habilitar rng-tools"
-    safe_execute "sudo systemctl start rng-tools" "Falha ao iniciar rng-tools"
+    # Verificar se o serviço existe antes de habilitar
+    log_info "Verificando serviços RNG disponíveis..."
+    systemctl list-unit-files | grep rng
+
+    if systemctl list-unit-files | grep -q "rng-tools"; then
+        log_info "Usando serviço rng-tools"
+        safe_execute "sudo systemctl enable rng-tools" "Falha ao habilitar rng-tools"
+        safe_execute "sudo systemctl start rng-tools" "Falha ao iniciar rng-tools"
+    elif systemctl list-unit-files | grep -q "rng-tools5"; then
+        log_info "Usando serviço rng-tools5"
+        safe_execute "sudo systemctl enable rng-tools5" "Falha ao habilitar rng-tools5"
+        safe_execute "sudo systemctl start rng-tools5" "Falha ao iniciar rng-tools5"
+    else
+        log_error "Nenhum serviço rng-tools encontrado no sistema"
+        log_info "Serviços disponíveis:"
+        systemctl list-unit-files | grep -i rng || echo "Nenhum serviço RNG encontrado"
+        return 1
+    fi
 
     log_success "RNG-tools instalado e configurado com sucesso"
 }
