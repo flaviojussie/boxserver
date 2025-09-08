@@ -402,10 +402,15 @@ install_pihole() {
 
   echo_msg "Alterando Pi-hole para rodar em $PIHOLE_HTTP_PORT/$PIHOLE_HTTPS_PORT..."
 
-  # Verificar se o arquivo de configuração do lighttpd existe
-  if [ ! -f /etc/lighttpd/lighttpd.conf ]; then
-    # Se não existir, instalar lighttpd
-    sudo apt install -y lighttpd
+  # Verificar se o lighttpd está instalado, se não, instalar
+  if ! dpkg -s "lighttpd" >/dev/null 2>&1; then
+    echo_msg "lighttpd não está instalado. Instalando agora..."
+    if ! sudo apt-get install -y lighttpd; then
+        echo_msg "❌ Falha ao instalar lighttpd. A configuração do Pi-hole não pode continuar."
+        return 1
+    fi
+    # Recarregar systemd para garantir que o novo serviço seja encontrado
+    sudo systemctl daemon-reload
   fi
 
   backup_file /etc/lighttpd/lighttpd.conf
