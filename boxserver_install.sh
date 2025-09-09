@@ -348,12 +348,12 @@ check_rk322x_compatibility() {
 cleanup_nginx_configs() {
     log_info "Limpando configurações conflitantes do Nginx..."
 
-    # Remover configurações padrão que podem conflitar
-    sudo rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
-    sudo rm -f /etc/nginx/sites-available/default 2>/dev/null || true
+    # Garantir que os diretórios essenciais do Nginx existam
+    safe_execute "sudo mkdir -p /etc/nginx /etc/nginx/conf.d /etc/nginx/sites-available /etc/nginx/sites-enabled" "Criando diretórios do Nginx"
 
-    # Garantir que os diretórios existam
-    sudo mkdir -p /etc/nginx/conf.d
+    # Remover configurações padrão que podem conflitar
+    safe_execute "sudo rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true" "Removendo configuração padrão enabled"
+    safe_execute "sudo rm -f /etc/nginx/sites-available/default 2>/dev/null || true" "Removendo configuração padrão available"
 
     log_success "Configurações do Nginx limpas"
 }
@@ -364,22 +364,99 @@ cleanup_nginx_configs() {
 install_dependencies() {
     log_info "Instalando dependências básicas..."
 
+    # Pré-verificação e preparação do sistema
+    log_info "Preparando sistema para instalação de pacotes..."
+
+    # Garantir que diretórios essenciais do apt existam
+    safe_execute "sudo mkdir -p /var/lib/dpkg/info /var/lib/dpkg/updates /var/lib/dpkg/triggers" "Criando diretórios essenciais do dpkg"
+    safe_execute "sudo touch /var/lib/dpkg/status /var/lib/dpkg/available" "Garantindo arquivos de status do dpkg"
+
+    # Atualizar lista de pacotes com retry
+    local update_success=false
+    for attempt in {1..3}; do
+        log_info "Tentativa $attempt de atualizar lista de pacotes..."
+        if [[ "$VERBOSE_MODE" = true ]]; then
+            if verbose_execute "sudo apt-get update -y" "Atualizando lista de pacotes (tentativa $attempt)"; then
+                update_success=true
+                break
+            fi
+        else
+            if safe_execute "sudo apt-get update -y" "Falha ao atualizar lista de pacotes (tentativa $attempt)"; then
+                update_success=true
+                break
+            fi
+        fi
+
+        if [[ $attempt -lt 3 ]]; then
+            log_info "Aguardando 5 segundos antes da próxima tentativa..."
+            sleep 5
+        fi
+    done
+
+    if [[ "$update_success" = false ]]; then
+        log_error "Não foi possível atualizar a lista de pacotes após 3 tentativas"
+        return 1
+    fi
+
+    # Lista de pacotes essenciais
     local packages=(
         whiptail curl wget tar gnupg lsb-release ca-certificates
         net-tools iproute2 sed grep jq nginx resolvconf
     )
 
-    if [[ "$VERBOSE_MODE" = true ]]; then
-        verbose_execute "sudo apt-get update -y" "Atualizando lista de pacotes"
-    else
-        safe_execute "sudo apt-get update -y" "Falha ao atualizar lista de pacotes"
-    fi
+    # Instalar pacotes um por um com melhor tratamento de erros
+    log_info "Instalando pacotes essenciais..."
+    local failed_packages=()
 
     for package in "${packages[@]}"; do
-        ensure_pkg "$package"
+        log_info "Processando pacote: $package"
+
+        # Verificar se o pacote já está instalado
+        if dpkg -s "$package" >/dev/null 2>&1; then
+            log_info "Pacote $package já está instalado"
+            continue
+        fi
+
+        # Tentar instalar o pacote
+        local install_success=false
+        for attempt in {1..2}; do
+            if [[ "$VERBOSE_MODE" = true ]]; then
+                if verbose_execute "sudo apt-get install -y $package" "Instalando $package (tentativa $attempt)"; then
+                    install_success=true
+                    break
+                fi
+            else
+                if safe_execute "sudo apt-get install -y $package" "Falha ao instalar $package (tentativa $attempt)"; then
+                    install_success=true
+                    break
+                fi
+            fi
+
+            # Se falhou, tentar corrigir dependências antes da próxima tentativa
+            if [[ $attempt -eq 1 ]]; then
+                log_info "Tentando corrigir dependências antes da segunda tentativa..."
+                safe_execute "sudo apt-get install -f -y 2>/dev/null || true" "Corrigindo dependências para $package"
+                safe_execute "sudo dpkg --configure -a 2>/dev/null || true" "Reconfigurando pacotes"
+            fi
+        done
+
+        if [[ "$install_success" = false ]]; then
+            log_error "Não foi possível instalar o pacote: $package"
+            failed_packages+=("$package")
+        fi
     done
 
-    log_success "Dependências instaladas com sucesso"
+    # Relatar pacotes que falharam
+    if [[ ${#failed_packages[@]} -gt 0 ]]; then
+        log_error "Os seguintes pacotes não puderam ser instalados: ${failed_packages[*]}"
+        log_info "Isso pode afetar algumas funcionalidades do BoxServer"
+        log_info "Verifique os logs para mais detalhes e tente instalar manualmente com:"
+        for package in "${failed_packages[@]}"; do
+            log_info "  sudo apt-get install -y $package"
+        done
+    else
+        log_success "Todas as dependências foram instaladas com sucesso"
+    fi
 }
 
 # =========================
@@ -793,6 +870,9 @@ install_wireguard() {
     ensure_pkg "wireguard"
     ensure_pkg "wireguard-tools"
 
+    # Garantir que diretórios necessários existam
+    safe_execute "sudo mkdir -p /etc/wireguard" "Criando diretório de configuração do WireGuard"
+
     # Gerar chaves se ainda não foram geradas corretamente
     if [[ "$WG_PUBLIC_KEY" == "pendente_instalacao_wireguard" ]] || [[ -z "$WG_PRIVATE_KEY" ]] || [[ -z "$WG_PUBLIC_KEY" ]]; then
         log_info "Gerando chaves WireGuard corretamente..."
@@ -962,6 +1042,9 @@ EOF
 install_samba() {
     log_info "Instalando Samba..."
 
+    # Garantir que diretórios necessários existam
+    safe_execute "sudo mkdir -p /etc/samba /var/lib/samba /var/cache/samba" "Criando diretórios do Samba"
+
     # Limpar instalações anteriores do Samba
     log_info "Verificando e limpando instalações anteriores do Samba..."
 
@@ -1061,6 +1144,9 @@ install_minidlna() {
     log_info "Instalando MiniDLNA..."
 
     ensure_pkg "minidlna"
+
+    # Garantir que diretórios necessários existam
+    safe_execute "sudo mkdir -p /var/lib/minidlna /var/cache/minidlna" "Criando diretórios do MiniDLNA"
 
     # Configurar MiniDLNA
     local minidlna_conf="/etc/minidlna.conf"
@@ -1529,10 +1615,28 @@ cleanup_before_install() {
         fi
     done
 
-    # Corrigir dependências quebradas
+    # Corrigir dependências quebradas de forma agressiva
     log_info "Verificando e corrigindo dependências quebradas..."
-    safe_execute "sudo dpkg --configure -a 2>/dev/null || true" "Configurando pacotes pendentes"
-    safe_execute "sudo apt-get install -f -y 2>/dev/null || true" "Corrigindo dependências quebradas"
+
+    # Etapa 1: Configurar pacotes pendentes
+    safe_execute "sudo dpkg --configure -a" "Configurando pacotes pendentes"
+
+    # Etapa 2: Forçar correção de dependências
+    safe_execute "sudo apt-get install -f -y" "Corrigindo dependências quebradas"
+
+    # Etapa 3: Remover pacotes quebrados que impedem instalações
+    log_info "Verificando pacotes em estado inconsistente..."
+    local broken_packages=$(sudo dpkg -l | grep -E "^rc|^iU" | awk '{print $2}' | tr '\n' ' ')
+    if [[ -n "$broken_packages" ]]; then
+        log_info "Removendo pacotes quebrados: $broken_packages"
+        for package in $broken_packages; do
+            safe_execute "sudo dpkg --remove --force-remove-reinstreq $package 2>/dev/null || true" "Removendo pacote quebrado: $package"
+        done
+    fi
+
+    # Etapa 4: Segunda tentativa de correção
+    safe_execute "sudo dpkg --configure -a" "Reconfigurando após limpeza"
+    safe_execute "sudo apt-get install -f -y" "Segunda correção de dependências"
 
     # Limpar cache do apt
     safe_execute "sudo apt-get clean 2>/dev/null || true" "Limpando cache do apt"
