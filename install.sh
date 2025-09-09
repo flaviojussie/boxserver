@@ -1050,11 +1050,51 @@ install_filebrowser() {
 
     local arch=$(detect_arch)
     local version="latest"
-    local download_url="https://github.com/filebrowser/filebrowser/releases/latest/download/linux-$arch-filebrowser.tar.gz"
+
+    # Mapeamento de arquiteturas para o filebrowser
+    case "$arch" in
+        amd64) filebrowser_arch="amd64" ;;
+        arm64) filebrowser_arch="arm64" ;;
+        arm) filebrowser_arch="armv7" ;;
+        *)
+            log_error "Arquitetura não suportada: $arch"
+            return 1
+            ;;
+    esac
+
+    local download_url="https://github.com/filebrowser/filebrowser/releases/latest/download/linux-${filebrowser_arch}-filebrowser.tar.gz"
+    log_info "URL de download: $download_url"
 
     safe_execute "sudo mkdir -p /opt/filebrowser" "Falha ao criar diretório do Filebrowser"
-    safe_execute "sudo wget -O /tmp/filebrowser.tar.gz $download_url" "Falha ao baixar Filebrowser"
+
+    # Baixar com tratamento de erros
+    if [[ "$VERBOSE_MODE" = true ]]; then
+        if ! verbose_execute "sudo wget -O /tmp/filebrowser.tar.gz $download_url" "Download do Filebrowser"; then
+            log_error "Download falhou, tentando método alternativo..."
+            verbose_execute "sudo curl -L -o /tmp/filebrowser.tar.gz $download_url" "Download do Filebrowser com curl"
+        fi
+    else
+        if ! safe_execute "sudo wget -O /tmp/filebrowser.tar.gz $download_url" "Falha ao baixar Filebrowser"; then
+            log_error "Download falhou, tentando método alternativo..."
+            safe_execute "sudo curl -L -o /tmp/filebrowser.tar.gz $download_url" "Falha ao baixar Filebrowser com curl"
+        fi
+    fi
+
+    # Verificar se o download foi bem sucedido
+    if [[ ! -f "/tmp/filebrowser.tar.gz" ]]; then
+        log_error "Arquivo filebrowser.tar.gz não foi baixado"
+        return 1
+    fi
+
+    # Extrair arquivo
     safe_execute "sudo tar -xzf /tmp/filebrowser.tar.gz -C /opt/filebrowser" "Falha ao extrair Filebrowser"
+
+    # Verificar se o binário foi extraído
+    if [[ ! -f "/opt/filebrowser/filebrowser" ]]; then
+        log_error "Binário filebrowser não foi encontrado após extração"
+        return 1
+    fi
+
     safe_execute "sudo chmod +x /opt/filebrowser/filebrowser" "Falha ao dar permissões ao Filebrowser"
     safe_execute "sudo rm /tmp/filebrowser.tar.gz" "Falha ao remover arquivo temporário"
 
