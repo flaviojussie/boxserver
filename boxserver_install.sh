@@ -348,12 +348,12 @@ check_rk322x_compatibility() {
 cleanup_nginx_configs() {
     log_info "Limpando configurações conflitantes do Nginx..."
 
-    # Garantir que os diretórios essenciais do Nginx existam
-    safe_execute "sudo mkdir -p /etc/nginx /etc/nginx/conf.d /etc/nginx/sites-available /etc/nginx/sites-enabled" "Criando diretórios do Nginx"
-
     # Remover configurações padrão que podem conflitar
-    safe_execute "sudo rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true" "Removendo configuração padrão enabled"
-    safe_execute "sudo rm -f /etc/nginx/sites-available/default 2>/dev/null || true" "Removendo configuração padrão available"
+    sudo rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+    sudo rm -f /etc/nginx/sites-available/default 2>/dev/null || true
+
+    # Garantir que os diretórios existam
+    sudo mkdir -p /etc/nginx/conf.d
 
     log_success "Configurações do Nginx limpas"
 }
@@ -364,99 +364,22 @@ cleanup_nginx_configs() {
 install_dependencies() {
     log_info "Instalando dependências básicas..."
 
-    # Pré-verificação e preparação do sistema
-    log_info "Preparando sistema para instalação de pacotes..."
-
-    # Garantir que diretórios essenciais do apt existam
-    safe_execute "sudo mkdir -p /var/lib/dpkg/info /var/lib/dpkg/updates /var/lib/dpkg/triggers" "Criando diretórios essenciais do dpkg"
-    safe_execute "sudo touch /var/lib/dpkg/status /var/lib/dpkg/available" "Garantindo arquivos de status do dpkg"
-
-    # Atualizar lista de pacotes com retry
-    local update_success=false
-    for attempt in {1..3}; do
-        log_info "Tentativa $attempt de atualizar lista de pacotes..."
-        if [[ "$VERBOSE_MODE" = true ]]; then
-            if verbose_execute "sudo apt-get update -y" "Atualizando lista de pacotes (tentativa $attempt)"; then
-                update_success=true
-                break
-            fi
-        else
-            if safe_execute "sudo apt-get update -y" "Falha ao atualizar lista de pacotes (tentativa $attempt)"; then
-                update_success=true
-                break
-            fi
-        fi
-
-        if [[ $attempt -lt 3 ]]; then
-            log_info "Aguardando 5 segundos antes da próxima tentativa..."
-            sleep 5
-        fi
-    done
-
-    if [[ "$update_success" = false ]]; then
-        log_error "Não foi possível atualizar a lista de pacotes após 3 tentativas"
-        return 1
-    fi
-
-    # Lista de pacotes essenciais
     local packages=(
         whiptail curl wget tar gnupg lsb-release ca-certificates
         net-tools iproute2 sed grep jq nginx resolvconf
     )
 
-    # Instalar pacotes um por um com melhor tratamento de erros
-    log_info "Instalando pacotes essenciais..."
-    local failed_packages=()
+    if [[ "$VERBOSE_MODE" = true ]]; then
+        verbose_execute "sudo apt-get update -y" "Atualizando lista de pacotes"
+    else
+        safe_execute "sudo apt-get update -y" "Falha ao atualizar lista de pacotes"
+    fi
 
     for package in "${packages[@]}"; do
-        log_info "Processando pacote: $package"
-
-        # Verificar se o pacote já está instalado
-        if dpkg -s "$package" >/dev/null 2>&1; then
-            log_info "Pacote $package já está instalado"
-            continue
-        fi
-
-        # Tentar instalar o pacote
-        local install_success=false
-        for attempt in {1..2}; do
-            if [[ "$VERBOSE_MODE" = true ]]; then
-                if verbose_execute "sudo apt-get install -y $package" "Instalando $package (tentativa $attempt)"; then
-                    install_success=true
-                    break
-                fi
-            else
-                if safe_execute "sudo apt-get install -y $package" "Falha ao instalar $package (tentativa $attempt)"; then
-                    install_success=true
-                    break
-                fi
-            fi
-
-            # Se falhou, tentar corrigir dependências antes da próxima tentativa
-            if [[ $attempt -eq 1 ]]; then
-                log_info "Tentando corrigir dependências antes da segunda tentativa..."
-                safe_execute "sudo apt-get install -f -y 2>/dev/null || true" "Corrigindo dependências para $package"
-                safe_execute "sudo dpkg --configure -a 2>/dev/null || true" "Reconfigurando pacotes"
-            fi
-        done
-
-        if [[ "$install_success" = false ]]; then
-            log_error "Não foi possível instalar o pacote: $package"
-            failed_packages+=("$package")
-        fi
+        ensure_pkg "$package"
     done
 
-    # Relatar pacotes que falharam
-    if [[ ${#failed_packages[@]} -gt 0 ]]; then
-        log_error "Os seguintes pacotes não puderam ser instalados: ${failed_packages[*]}"
-        log_info "Isso pode afetar algumas funcionalidades do BoxServer"
-        log_info "Verifique os logs para mais detalhes e tente instalar manualmente com:"
-        for package in "${failed_packages[@]}"; do
-            log_info "  sudo apt-get install -y $package"
-        done
-    else
-        log_success "Todas as dependências foram instaladas com sucesso"
-    fi
+    log_success "Dependências instaladas com sucesso"
 }
 
 # =========================
@@ -593,9 +516,6 @@ install_unbound() {
 
     # Configurar Unbound
     local unbound_conf="/etc/unbound/unbound.conf.d/root.conf"
-
-    # Garantir que o diretório existe
-    safe_execute "sudo mkdir -p /etc/unbound/unbound.conf.d" "Criando diretório de configuração do Unbound"
     backup_file "$unbound_conf"
 
     cat << EOF | sudo tee "$unbound_conf" > /dev/null
@@ -870,9 +790,6 @@ install_wireguard() {
     ensure_pkg "wireguard"
     ensure_pkg "wireguard-tools"
 
-    # Garantir que diretórios necessários existam
-    safe_execute "sudo mkdir -p /etc/wireguard" "Criando diretório de configuração do WireGuard"
-
     # Gerar chaves se ainda não foram geradas corretamente
     if [[ "$WG_PUBLIC_KEY" == "pendente_instalacao_wireguard" ]] || [[ -z "$WG_PRIVATE_KEY" ]] || [[ -z "$WG_PUBLIC_KEY" ]]; then
         log_info "Gerando chaves WireGuard corretamente..."
@@ -1042,45 +959,8 @@ EOF
 install_samba() {
     log_info "Instalando Samba..."
 
-    # Garantir que diretórios necessários existam
-    safe_execute "sudo mkdir -p /etc/samba /var/lib/samba /var/cache/samba" "Criando diretórios do Samba"
-
-    # Limpar instalações anteriores do Samba
-    log_info "Verificando e limpando instalações anteriores do Samba..."
-
-    # Parar serviços se estiverem rodando
-    safe_execute "sudo systemctl stop smbd nmbd 2>/dev/null || true" "Parando serviços Samba existentes"
-    safe_execute "sudo systemctl stop samba-ad-dc 2>/dev/null || true" "Parando serviço Samba AD DC"
-
-    # Remover pacotes conflitantes
-    local conflicting_packages=("samba" "samba-common" "samba-common-bin" "samba-ad-dc")
-
-    for package in "${conflicting_packages[@]}"; do
-        if dpkg -s "$package" >/dev/null 2>&1; then
-            log_info "Removendo pacote conflitante: $package"
-            safe_execute "sudo apt-get remove --purge -y $package 2>/dev/null || true" "Removendo $package"
-        fi
-    done
-
-    # Limpar configurações residuais
-    safe_execute "sudo rm -f /etc/samba/smb.conf /etc/samba/smb.conf~* 2>/dev/null || true" "Limpando configurações antigas"
-    safe_execute "sudo rm -rf /var/lib/samba/* /var/cache/samba/* 2>/dev/null || true" "Limpando dados do Samba"
-
-    # Atualizar lista de pacotes
-    if [[ "$VERBOSE_MODE" = true ]]; then
-        verbose_execute "sudo apt-get update" "Atualizando lista de pacotes"
-    else
-        safe_execute "sudo apt-get update" "Falha ao atualizar lista de pacotes"
-    fi
-
-    # Instalar pacotes necessários
-    log_info "Instalando pacotes Samba..."
-
-    if [[ "$VERBOSE_MODE" = true ]]; then
-        verbose_execute "sudo apt-get install -y samba samba-common-bin" "Instalando Samba"
-    else
-        safe_execute "sudo apt-get install -y samba samba-common-bin" "Falha ao instalar Samba"
-    fi
+    ensure_pkg "samba"
+    ensure_pkg "samba-common-bin"
 
     # Configurar Samba
     local smb_conf="/etc/samba/smb.conf"
@@ -1126,27 +1006,16 @@ EOF
     # Criar grupo de usuários Samba
     safe_execute "sudo groupadd smbusers 2>/dev/null || true" "Falha ao criar grupo smbusers"
 
-    # Habilitar e iniciar serviços
     safe_execute "sudo systemctl enable smbd nmbd" "Falha ao habilitar serviços Samba"
     safe_execute "sudo systemctl start smbd nmbd" "Falha ao iniciar serviços Samba"
 
-    # Verificar status
-    if systemctl is-active --quiet smbd && systemctl is-active --quiet nmbd; then
-        log_success "Samba instalado e configurado com sucesso"
-    else
-        log_error "Serviços Samba não iniciaram corretamente"
-        systemctl status smbd nmbd | tail -10
-        return 1
-    fi
+    log_success "Samba instalado e configurado com sucesso"
 }
 
 install_minidlna() {
     log_info "Instalando MiniDLNA..."
 
     ensure_pkg "minidlna"
-
-    # Garantir que diretórios necessários existam
-    safe_execute "sudo mkdir -p /var/lib/minidlna /var/cache/minidlna" "Criando diretórios do MiniDLNA"
 
     # Configurar MiniDLNA
     local minidlna_conf="/etc/minidlna.conf"
@@ -1180,93 +1049,12 @@ install_filebrowser() {
     log_info "Instalando Filebrowser..."
 
     local arch=$(detect_arch)
-    log_info "Arquitetura detectada: $arch"
-
-    # Mapeamento correto de arquiteturas para o Filebrowser
-    case "$arch" in
-        amd64|x86_64)
-            filebrowser_arch="amd64"
-            ;;
-        arm64|aarch64)
-            filebrowser_arch="arm64"
-            ;;
-        arm|armv7l|armhf)
-            filebrowser_arch="armv7"
-            ;;
-        *)
-            log_error "Arquitetura não suportada: $arch"
-            return 1
-            ;;
-    esac
-
-    log_info "Arquitetura Filebrowser: $filebrowser_arch"
-
-    # Tentar diferentes URLs e métodos
-    local download_urls=(
-        "https://github.com/filebrowser/filebrowser/releases/latest/download/linux-$filebrowser_arch-filebrowser.tar.gz"
-        "https://github.com/filebrowser/filebrowser/releases/download/v2.23.0/linux-$filebrowser_arch-filebrowser.tar.gz"
-    )
+    local version="latest"
+    local download_url="https://github.com/filebrowser/filebrowser/releases/latest/download/linux-$arch-filebrowser.tar.gz"
 
     safe_execute "sudo mkdir -p /opt/filebrowser" "Falha ao criar diretório do Filebrowser"
-
-    local download_success=false
-    for url in "${download_urls[@]}"; do
-        log_info "Tentando download: $url"
-
-        # Baixar sem sudo (não é necessário para /tmp)
-        if [[ "$VERBOSE_MODE" = true ]]; then
-            if verbose_execute "wget -O /tmp/filebrowser.tar.gz $url" "Download do Filebrowser"; then
-                download_success=true
-                break
-            fi
-        else
-            if safe_execute "wget -O /tmp/filebrowser.tar.gz $url" "Falha ao baixar Filebrowser"; then
-                download_success=true
-                break
-            fi
-        fi
-
-        # Tentar com curl se wget falhar
-        log_info "Tentando com curl..."
-        if [[ "$VERBOSE_MODE" = true ]]; then
-            if verbose_execute "curl -L -o /tmp/filebrowser.tar.gz $url" "Download do Filebrowser com curl"; then
-                download_success=true
-                break
-            fi
-        else
-            if safe_execute "curl -L -o /tmp/filebrowser.tar.gz $url" "Falha ao baixar Filebrowser com curl"; then
-                download_success=true
-                break
-            fi
-        fi
-    done
-
-    if [[ "$download_success" = false ]]; then
-        log_error "Não foi possível baixar o Filebrowser de nenhuma fonte"
-        log_info "URLs tentadas:"
-        for url in "${download_urls[@]}"; do
-            log_info "  - $url"
-        done
-        return 1
-    fi
-
-    # Verificar se o download foi bem sucedido
-    if [[ ! -f "/tmp/filebrowser.tar.gz" ]]; then
-        log_error "Arquivo do Filebrowser não foi baixado"
-        return 1
-    fi
-
-    # Extrair e instalar
+    safe_execute "sudo wget -O /tmp/filebrowser.tar.gz $download_url" "Falha ao baixar Filebrowser"
     safe_execute "sudo tar -xzf /tmp/filebrowser.tar.gz -C /opt/filebrowser" "Falha ao extrair Filebrowser"
-
-    # Verificar se o binário foi extraído
-    if [[ ! -f "/opt/filebrowser/filebrowser" ]]; then
-        log_error "Binário do Filebrowser não encontrado após extração"
-        log_info "Conteúdo do diretório:"
-        ls -la /opt/filebrowser/
-        return 1
-    fi
-
     safe_execute "sudo chmod +x /opt/filebrowser/filebrowser" "Falha ao dar permissões ao Filebrowser"
     safe_execute "sudo rm /tmp/filebrowser.tar.gz" "Falha ao remover arquivo temporário"
 
@@ -1601,56 +1389,6 @@ EOF
 }
 
 # =========================
-# Função de limpeza pré-instalação
-# =========================
-cleanup_before_install() {
-    log_info "Limpando instalações anteriores..."
-
-    # Parar serviços conflitantes, mas apenas se já estiverem instalados
-    local services=("smbd" "nmbd" "samba-ad-dc" "pihole-FTL" "lighttpd" "cloudflared" "minidlna" "filebrowser")
-
-    for service in "${services[@]}"; do
-        if systemctl is-active --quiet "$service"; then
-            safe_execute "sudo systemctl stop '$service' 2>/dev/null || true" "Parando serviço $service"
-        fi
-    done
-
-    # Parar unbound apenas se já estiver instalado
-    if systemctl is-active --quiet unbound; then
-        safe_execute "sudo systemctl stop unbound 2>/dev/null || true" "Parando serviço unbound existente"
-    fi
-
-    # Corrigir dependências quebradas de forma agressiva
-    log_info "Verificando e corrigindo dependências quebradas..."
-
-    # Etapa 1: Configurar pacotes pendentes
-    safe_execute "sudo dpkg --configure -a" "Configurando pacotes pendentes"
-
-    # Etapa 2: Forçar correção de dependências
-    safe_execute "sudo apt-get install -f -y" "Corrigindo dependências quebradas"
-
-    # Etapa 3: Remover pacotes quebrados que impedem instalações
-    log_info "Verificando pacotes em estado inconsistente..."
-    local broken_packages=$(sudo dpkg -l | grep -E "^rc|^iU" | awk '{print $2}' | tr '\n' ' ')
-    if [[ -n "$broken_packages" ]]; then
-        log_info "Removendo pacotes quebrados: $broken_packages"
-        for package in $broken_packages; do
-            safe_execute "sudo dpkg --remove --force-remove-reinstreq $package 2>/dev/null || true" "Removendo pacote quebrado: $package"
-        done
-    fi
-
-    # Etapa 4: Segunda tentativa de correção
-    safe_execute "sudo dpkg --configure -a" "Reconfigurando após limpeza"
-    safe_execute "sudo apt-get install -f -y" "Segunda correção de dependências"
-
-    # Limpar cache do apt
-    safe_execute "sudo apt-get clean 2>/dev/null || true" "Limpando cache do apt"
-    safe_execute "sudo apt-get autoremove -y 2>/dev/null || true" "Removendo pacotes não necessários"
-
-    log_success "Limpeza pré-instalação concluída"
-}
-
-# =========================
 # Função principal de instalação
 # =========================
 main_install() {
@@ -1668,9 +1406,6 @@ main_install() {
 
     # Carregar configuração
     load_config
-
-    # Limpeza pré-instalação
-    cleanup_before_install
 
     # Verificar e alocar portas
     check_and_set_ports
@@ -1730,119 +1465,22 @@ main_clean() {
         fi
     done
 
-    # Remover pacotes de forma completa para cada serviço
-    log_info "Removendo pacotes instalados pelo BoxServer..."
+    # Remover pacotes
+    local packages=("pi-hole" "unbound" "wireguard" "wireguard-tools" "samba" "samba-common-bin" "minidlna" "rng-tools")
 
-    # Pi-hole (já tratado pelo uninstall_pihole_clean, mas garantir remoção completa)
-    local pihole_packages=("pi-hole" "pihole-ftl" "pihole-web")
-
-    # Unbound
-    local unbound_packages=("unbound")
-
-    # WireGuard
-    local wireguard_packages=("wireguard" "wireguard-tools")
-
-    # Samba
-    local samba_packages=("samba" "samba-common" "samba-common-bin" "samba-ad-dc")
-
-    # Cloudflared
-    local cloudflared_packages=("cloudflared")
-
-    # MiniDLNA
-    local minidlna_packages=("minidlna")
-
-    # RNG-tools
-    local rng_packages=("rng-tools" "rng-tools5")
-
-    # Filebrowser (instalado manualmente)
-    local filebrowser_packages=()
-
-    # Nginx e dependências
-    local nginx_packages=("nginx" "lighttpd")
-
-    # Outras dependências
-    local dependency_packages=("resolvconf")
-
-    # Combinar todos os pacotes
-    local all_packages=(
-        "${pihole_packages[@]}"
-        "${unbound_packages[@]}"
-        "${wireguard_packages[@]}"
-        "${samba_packages[@]}"
-        "${cloudflared_packages[@]}"
-        "${minidlna_packages[@]}"
-        "${rng_packages[@]}"
-        "${filebrowser_packages[@]}"
-        "${nginx_packages[@]}"
-        "${dependency_packages[@]}"
-    )
-
-    # Remover cada pacote se existir
-    for package in "${all_packages[@]}"; do
+    for package in "${packages[@]}"; do
         if dpkg -s "$package" >/dev/null 2>&1; then
-            log_info "Removendo pacote: $package"
-            safe_execute "sudo apt-get remove --purge -y '$package' 2>/dev/null || true" "Falha ao remover pacote $package"
+            safe_execute "sudo apt-get remove --purge -y '$package'" "Falha ao remover pacote $package"
         fi
     done
 
-    # Limpar arquivos de configuração de cada serviço
-    log_info "Removendo arquivos de configuração e dados..."
-
-    # Pi-hole
-    safe_execute "sudo rm -rf /etc/pi-hole /var/www/html/admin /var/www/html/pihole /opt/pihole 2>/dev/null || true" "Removendo arquivos Pi-hole"
-
-    # Unbound
-    safe_execute "sudo rm -rf /etc/unbound /var/lib/unbound 2>/dev/null || true" "Removendo arquivos Unbound"
-
-    # WireGuard
-    safe_execute "sudo rm -rf /etc/wireguard /var/lib/wireguard 2>/dev/null || true" "Removendo arquivos WireGuard"
-
-    # Samba
-    safe_execute "sudo rm -rf /etc/samba /var/lib/samba /var/cache/samba /etc/default/samba* 2>/dev/null || true" "Removendo arquivos Samba"
-
-    # Cloudflared
-    safe_execute "sudo rm -f /usr/local/bin/cloudflared /etc/systemd/system/cloudflared.service /etc/default/cloudflared 2>/dev/null || true" "Removendo arquivos Cloudflared"
-    safe_execute "sudo userdel cloudflared 2>/dev/null || true" "Removendo usuário cloudflared"
-
-    # MiniDLNA
-    safe_execute "sudo rm -f /etc/minidlna.conf /var/lib/minidlna /var/cache/minidlna 2>/dev/null || true" "Removendo arquivos MiniDLNA"
-
-    # RNG-tools
-    safe_execute "sudo rm -f /etc/default/rng-tools /etc/default/rng-tools5 2>/dev/null || true" "Removendo arquivos RNG-tools"
-
-    # Filebrowser
-    safe_execute "sudo rm -rf /opt/filebrowser /etc/systemd/system/filebrowser.service 2>/dev/null || true" "Removendo arquivos Filebrowser"
-
-    # Dashboard
-    safe_execute "sudo rm -rf $DASHBOARD_DIR /etc/nginx/conf.d/dashboard.conf 2>/dev/null || true" "Removendo arquivos Dashboard"
-
-    # Nginx
-    safe_execute "sudo rm -f /etc/nginx/conf.d/pihole.conf 2>/dev/null || true" "Removendo configuração Nginx do Pi-hole"
-    safe_execute "sudo rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default 2>/dev/null || true" "Removendo configuração padrão Nginx"
-
-    # Diretórios compartilhados
-    safe_execute "sudo rm -rf /srv/samba /srv/media 2>/dev/null || true" "Removendo diretórios compartilhados"
-
-    # Logs temporários
-    safe_execute "sudo rm -rf /tmp/pihole* /tmp/filebrowser* 2>/dev/null || true" "Removendo arquivos temporários"
-
-    # Remover usuários e grupos criados
-    log_info "Removendo usuários e grupos criados..."
-    safe_execute "sudo groupdel smbusers 2>/dev/null || true" "Removendo grupo smbusers"
-
-    # Limpar systemd completamente
-    safe_execute "sudo systemctl daemon-reload 2>/dev/null || true" "Recarregando systemd"
-    safe_execute "sudo systemctl reset-failed 2>/dev/null || true" "Resetando serviços falhos"
+    # Limpar arquivos de configuração
+    safe_execute "sudo rm -rf /etc/wireguard /etc/samba /etc/minidlna.conf /opt/filebrowser $DASHBOARD_DIR" \
+                "Falha ao remover arquivos de configuração"
 
     # Restaurar configuração de rede
     safe_execute "sudo rm -f /etc/netplan/01-netcfg.yaml" "Falha ao remover configuração de rede"
     safe_execute "sudo netplan apply" "Falha ao aplicar configuração de rede padrão"
-
-    # Limpeza final do sistema
-    log_info "Realizando limpeza final do sistema..."
-    safe_execute "sudo apt-get autoremove -y 2>/dev/null || true" "Removendo pacotes órfãos"
-    safe_execute "sudo apt-get autoclean 2>/dev/null || true" "Limpando cache do apt"
-    safe_execute "sudo apt-get clean 2>/dev/null || true" "Limpando arquivos de pacotes"
 
     whiptail_msg "✅ Limpeza do BoxServer concluída com sucesso!"
     log_success "Limpeza do BoxServer concluída com sucesso!"
