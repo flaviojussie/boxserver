@@ -1606,14 +1606,19 @@ EOF
 cleanup_before_install() {
     log_info "Limpando instalações anteriores..."
 
-    # Parar serviços conflitantes
-    local services=("smbd" "nmbd" "samba-ad-dc" "pihole-FTL" "lighttpd" "unbound" "cloudflared" "minidlna" "filebrowser")
+    # Parar serviços conflitantes, mas apenas se já estiverem instalados
+    local services=("smbd" "nmbd" "samba-ad-dc" "pihole-FTL" "lighttpd" "cloudflared" "minidlna" "filebrowser")
 
     for service in "${services[@]}"; do
         if systemctl is-active --quiet "$service"; then
             safe_execute "sudo systemctl stop '$service' 2>/dev/null || true" "Parando serviço $service"
         fi
     done
+
+    # Parar unbound apenas se já estiver instalado
+    if systemctl is-active --quiet unbound; then
+        safe_execute "sudo systemctl stop unbound 2>/dev/null || true" "Parando serviço unbound existente"
+    fi
 
     # Corrigir dependências quebradas de forma agressiva
     log_info "Verificando e corrigindo dependências quebradas..."
