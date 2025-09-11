@@ -1,199 +1,172 @@
 #!/bin/bash
 set -e
 
-# ===== VARIÁVEIS =====
-INTERFACE=$(ip route | awk '/default/ {print $5; exit}')
-LAN_IP="192.168.0.100"
-GATEWAY=$(ip route | awk '/default/ {print $3; exit}')
-SAMBA_USER="boxserver_user"
-FILEBROWSER_PASS="senha_forte"
+### ==========================
+### 1. Configuração de IP fixo
+### ==========================
+echo "[INFO] Configurando IP fixo em eth0 (192.168.0.100)..."
+nmcli con delete static-ip 2>/dev/null || true
+nmcli con add type ethernet ifname eth0 con-name static-ip \
+  ip4 192.168.0.100/24 gw4 192.168.0.1
+nmcli con mod static-ip ipv4.dns "127.0.0.1,8.8.8.8"
+nmcli con up static-ip
 
-# ===== 1. Atualização e pacotes base =====
+### ==========================
+### 2. Atualizações do sistema
+### ==========================
+echo "[INFO] Atualizando pacotes..."
 apt update && apt upgrade -y
-apt install -y curl wget git ufw iptables iproute2 dnsutils samba \
-               php php-fpm php-xml php-mbstring php-cli php-zip php-gd \
-               nginx unzip build-essential pkg-config avahi-daemon \
-               network-manager
 
-# ===== 2. Configurar IP fixo =====
-nmcli con mod "$INTERFACE" ipv4.addresses $LAN_IP/24
-nmcli con mod "$INTERFACE" ipv4.gateway $GATEWAY
-nmcli con mod "$INTERFACE" ipv4.method manual
-nmcli con up "$INTERFACE"
+### ==========================
+### 3. Instalação de serviços
+### ==========================
+echo "[INFO] Instalando pacotes..."
+apt install -y \
+  unbound \
+  wireguard \
+  cloudflared \
+  samba \
+  minidlna \
+  filebrowser \
+  mosquitto \
+  transmission-daemon \
+  syncthing \
+  fail2ban \
+  lighttpd \
+  curl git net-tools
 
-# ===== 3. Swapfile (caso não exista) =====
-if [ ! -f /swapfile ]; then
-  fallocate -l 1G /swapfile
-  chmod 600 /swapfile
-  mkswap /swapfile
-  swapon /swapfile
-  echo "/swapfile none swap sw 0 0" | tee -a /etc/fstab
-fi
-
-# ===== 4. WireGuard =====
-apt install -y wireguard-tools
-umask 077
-wg genkey | tee /etc/wireguard/privatekey | wg pubkey | tee /etc/wireguard/publickey
-
-cat > /etc/wireguard/wg0.conf << EOF
-[Interface]
-Address = 10.252.1.1/24
-ListenPort = 51820
-PrivateKey = $(cat /etc/wireguard/privatekey)
-MTU = 1450
-PostUp   = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -s 10.252.1.0/24 -o $INTERFACE -j MASQUERADE
-PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -s 10.252.1.0/24 -o $INTERFACE -j MASQUERADE
-EOF
-
-systemctl enable wg-quick@wg0
-systemctl start wg-quick@wg0
-
-echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-sysctl -p
-
-ufw allow 51820/udp
-ufw allow OpenSSH
-ufw --force enable
-
-# ===== 5. Pi-hole =====
+### ==========================
+### 4. Configuração do Pi-hole
+### ==========================
+echo "[INFO] Instalando Pi-hole..."
 curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
-sed -i "s/PIHOLE_INTERFACE=.*/PIHOLE_INTERFACE=$INTERFACE/" /etc/pihole/setupVars.conf
-sed -i "s/IPV4_ADDRESS=.*/IPV4_ADDRESS=$LAN_IP\/24/" /etc/pihole/setupVars.conf
-sed -i "s/DNSMASQ_LISTENING=.*/DNSMASQ_LISTENING=all/" /etc/pihole/setupVars.conf
-sed -i 's/server.port.*/server.port = 8081/' /etc/lighttpd/lighttpd.conf
+
+# Pi-hole usa lighttpd → mover painel para porta 8081
+sed -i 's/server.port\s*=\s*80/server.port = 8081/' /etc/lighttpd/lighttpd.conf
 systemctl restart lighttpd
 
-# ===== 6. Unbound =====
-apt install -y unbound
-cat > /etc/unbound/unbound.conf.d/pi-hole.conf << 'EOF'
+### ==========================
+### 5. Configuração do Unbound
+### ==========================
+echo "[INFO] Configurando Unbound..."
+cat >/etc/unbound/unbound.conf.d/pi-hole.conf <<EOF
 server:
+    verbosity: 0
     interface: 127.0.0.1
     port: 5335
     do-ip4: yes
-    do-ip6: no
     do-udp: yes
     do-tcp: yes
     root-hints: "/var/lib/unbound/root.hints"
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    use-caps-for-id: yes
+    edns-buffer-size: 1232
     prefetch: yes
-    num-threads: 1
-    so-reuseport: yes
-    private-address: 192.168.0.0/16
-    private-address: 10.0.0.0/8
-    private-address: 172.16.0.0/12
+    cache-min-ttl: 3600
 EOF
-wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.cache
-systemctl enable --now unbound
+wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
+systemctl enable unbound --now
 
-# ===== 7. Samba =====
-cat >> /etc/samba/smb.conf << 'EOF'
-[shared]
-path = /srv/samba/shared
-browsable = yes
-writable = yes
-guest ok = no
-read only = no
-valid users = boxserver_user
-create mask = 0775
-directory mask = 0775
-EOF
+### ==========================
+### 6. WireGuard
+### ==========================
+echo "[INFO] Configurando WireGuard..."
+mkdir -p /etc/wireguard
+umask 077
+wg genkey | tee /etc/wireguard/privatekey | wg pubkey > /etc/wireguard/publickey
 
-mkdir -p /srv/samba/shared
-adduser --gecos "" --disabled-password $SAMBA_USER || true
-smbpasswd -a $SAMBA_USER
-chown $SAMBA_USER:$SAMBA_USER /srv/samba/shared
-chmod 775 /srv/samba/shared
-systemctl restart smbd nmbd
-ufw allow Samba
+cat >/etc/wireguard/wg0.conf <<EOF
+[Interface]
+PrivateKey = $(cat /etc/wireguard/privatekey)
+Address = 10.252.1.1/24
+ListenPort = 51820
+SaveConfig = true
 
-# ===== 8. Filebrowser =====
-curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
-mkdir -p /etc/filebrowser
-filebrowser config init -d /etc/filebrowser/filebrowser.db
-filebrowser config set -a 0.0.0.0 -p 8082 -r /srv/samba/shared -d /etc/filebrowser/filebrowser.db
-filebrowser users add admin $FILEBROWSER_PASS --perm.admin -d /etc/filebrowser/filebrowser.db
-
-cat > /etc/systemd/system/filebrowser.service << 'EOF'
-[Unit]
-Description=File Browser
-After=network.target
-[Service]
-ExecStart=/usr/local/bin/filebrowser -d /etc/filebrowser/filebrowser.db
-WorkingDirectory=/etc/filebrowser
-Restart=always
-[Install]
-WantedBy=multi-user.target
+[Peer]
+# Exemplo de cliente (substituir pela sua chave pública)
+PublicKey = CLIENT_PUBLIC_KEY
+AllowedIPs = 10.252.1.2/32
 EOF
 
-systemctl daemon-reload
-systemctl enable --now filebrowser
-ufw allow 8082/tcp
+systemctl enable wg-quick@wg0 --now
 
-# ===== 9. Heimdall =====
-mkdir -p /var/www/heimdall
-cd /var/www/heimdall
-wget https://github.com/linuxserver/Heimdall/archive/refs/tags/v2.6.1.tar.gz
-tar -xvzf v2.6.1.tar.gz --strip-components=1
-chown -R www-data:www-data /var/www/heimdall
-
-cat > /etc/nginx/sites-available/heimdall << 'EOF'
-server {
-    listen 80;
-    server_name _;
-    root /var/www/heimdall/public;
-    index index.php;
-    location / {
-        try_files $uri $uri/ /index.php?$query_string;
-    }
-    location ~ \.php$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php7.4-fpm.sock;
-    }
-}
+### ==========================
+### 7. Cloudflared (DoH)
+### ==========================
+echo "[INFO] Configurando Cloudflared..."
+cat >/etc/default/cloudflared <<EOF
+CLOUDFLARED_OPTS="proxy-dns --port 5053 --upstream https://1.1.1.1/dns-query"
 EOF
+systemctl enable cloudflared --now
 
-ln -sf /etc/nginx/sites-available/heimdall /etc/nginx/sites-enabled/
-nginx -t && systemctl reload nginx
-systemctl enable php7.4-fpm
-systemctl restart php7.4-fpm
+### ==========================
+### 8. Samba
+### ==========================
+echo "[INFO] Configurando Samba..."
+cat >>/etc/samba/smb.conf <<EOF
 
-# ===== 10. Mosquitto (MQTT) =====
-apt install -y mosquitto mosquitto-clients
-systemctl enable --now mosquitto
-ufw allow 1883/tcp
+[Public]
+   path = /srv/samba/public
+   browseable = yes
+   read only = no
+   guest ok = yes
+EOF
+mkdir -p /srv/samba/public
+chmod 777 /srv/samba/public
+systemctl restart smbd
 
-# ===== 11. Syncthing =====
-curl -s https://syncthing.net/release-key.txt | apt-key add -
-echo "deb https://apt.syncthing.net/ syncthing stable" | tee /etc/apt/sources.list.d/syncthing.list
-apt update && apt install -y syncthing
-systemctl enable --now syncthing@$USER
-ufw allow 8384/tcp
-ufw allow 22000/tcp
-ufw allow 21027/udp
+### ==========================
+### 9. MiniDLNA
+### ==========================
+echo "[INFO] Configurando MiniDLNA..."
+mkdir -p /srv/media
+sed -i 's|#media_dir=/var/lib/minidlna|media_dir=/srv/media|' /etc/minidlna.conf
+systemctl enable minidlna --now
 
-# ===== 12. Transmission-daemon =====
-apt install -y transmission-daemon
+### ==========================
+### 10. Filebrowser
+### ==========================
+echo "[INFO] Configurando Filebrowser..."
+mkdir -p /srv/filebrowser
+filebrowser config init
+filebrowser config set -a 0.0.0.0 -p 8082
+filebrowser users add admin admin --perm.admin
+
+### ==========================
+### 11. Mosquitto (MQTT)
+### ==========================
+echo "[INFO] Configurando Mosquitto..."
+systemctl enable mosquitto --now
+
+### ==========================
+### 12. Transmission
+### ==========================
+echo "[INFO] Configurando Transmission..."
 systemctl stop transmission-daemon
-sed -i 's/"rpc-enabled":.*/"rpc-enabled": true,/' /etc/transmission-daemon/settings.json
-sed -i 's/"rpc-port":.*/"rpc-port": 9092,/' /etc/transmission-daemon/settings.json
-sed -i 's/"rpc-whitelist-enabled":.*/"rpc-whitelist-enabled": false,/' /etc/transmission-daemon/settings.json
-systemctl start transmission-daemon
-systemctl enable transmission-daemon
-ufw allow 9092/tcp
-ufw allow 51413/tcp
-ufw allow 51413/udp
+sed -i 's/"rpc-whitelist-enabled": true/"rpc-whitelist-enabled": false/' /etc/transmission-daemon/settings.json
+sed -i 's/"rpc-authentication-required": true/"rpc-authentication-required": false/' /etc/transmission-daemon/settings.json
+sed -i 's/"rpc-port": [0-9]\+/"rpc-port": 9092/' /etc/transmission-daemon/settings.json
+systemctl enable transmission-daemon --now
 
-# ===== 13. Fail2Ban =====
-apt install -y fail2ban
-systemctl enable --now fail2ban
+### ==========================
+### 13. Syncthing
+### ==========================
+echo "[INFO] Configurando Syncthing..."
+systemctl enable syncthing@root --now
 
-# ===== 14. Final =====
-echo "===== INSTALAÇÃO FINALIZADA ====="
-echo "IP Fixo:       $LAN_IP"
-echo "Pi-hole Web:   http://$LAN_IP:8081/admin"
-echo "Filebrowser:   http://$LAN_IP:8082 (admin / $FILEBROWSER_PASS)"
-echo "Heimdall:      http://$LAN_IP/"
-echo "Samba Share:   //$LAN_IP/shared"
-echo "WireGuard:     Porta 51820/UDP"
-echo "Mosquitto:     Porta 1883/TCP"
-echo "Syncthing:     http://$LAN_IP:8384"
-echo "Transmission:  http://$LAN_IP:9092"
+### ==========================
+### 14. Fail2Ban
+### ==========================
+echo "[INFO] Configurando Fail2Ban..."
+systemctl enable fail2ban --now
+
+### ==========================
+### Fim
+### ==========================
+echo "[OK] Servidor doméstico configurado com sucesso!"
+echo "Acesse:"
+echo "- Pi-hole: http://192.168.0.100:8081/admin"
+echo "- Filebrowser: http://192.168.0.100:8082 (admin/admin)"
+echo "- Transmission: http://192.168.0.100:9092"
+echo "- Syncthing: http://192.168.0.100:8384"
