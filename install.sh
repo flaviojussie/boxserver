@@ -1169,7 +1169,7 @@ class DashboardAPI(BaseHTTPRequestHandler):
             # Serve dashboard.html for root path
             if path == '/' or path == '':
                 try:
-                    with open('/var/www/html/dashboard_v2.html', 'r') as f:
+                    with open('/var/www/html/dashboard.html', 'r') as f:
                         content = f.read()
                     self.wfile.write(content.encode())
                     return
@@ -1363,9 +1363,9 @@ class DashboardAPI(BaseHTTPRequestHandler):
         return {"status": "offline", "cpu": None, "memory": None}
 
 if __name__ == '__main__':
-    server_address = ('', 8080)
+    server_address = ('', 80)
     httpd = HTTPServer(server_address, DashboardAPI)
-    print("Dashboard API running on port 8080")
+    print("Dashboard API running on port 80")
     httpd.serve_forever()
 EOF
 
@@ -1407,9 +1407,9 @@ EOF
     chmod +x /var/www/html/dashboard-api.py
 
     # Copiar dashboard HTML
-    cp "$SCRIPT_DIR/dashboard_v2.html" /var/www/html/ 2>/dev/null || {
-        log_warning "dashboard_v2.html não encontrado, usando versão padrão"
-        cat > /var/www/html/dashboard_v2.html << 'HTML'
+    cp "$SCRIPT_DIR/dashboard.html" /var/www/html/ 2>/dev/null || {
+        log_warning "dashboard.html não encontrado, usando versão padrão"
+        cat > /var/www/html/dashboard.html << 'HTML'
 <!DOCTYPE html>
 <html>
 <head>
@@ -1472,11 +1472,19 @@ EOF
 HTML
     }
 
-    chown www-data:www-data /var/www/html/dashboard_v2.html
+    chown www-data:www-data /var/www/html/dashboard.html
 
-    # Parar nginx se estiver rodando na porta 80
-    systemctl stop nginx 2>/dev/null || true
-    systemctl disable nginx 2>/dev/null || true
+    # Parar serviços conflitantes na porta 80
+    log_info "Parando serviços web conflitantes..."
+    systemctl stop nginx apache2 lighttpd httpd 2>/dev/null || true
+    systemctl disable nginx apache2 lighttpd httpd 2>/dev/null || true
+    
+    # Matar processos residuais na porta 80
+    fuser -k 80/tcp 2>/dev/null || true
+    pkill -f "nginx\|apache\|lighttpd\|httpd" 2>/dev/null || true
+    
+    # Aguardar liberação da porta
+    sleep 2
 
     systemctl daemon-reload
     systemctl enable dashboard-api.service
