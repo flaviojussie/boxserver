@@ -972,217 +972,58 @@ install_storage_services() {
     # Aguardar sistema liberar recursos
     sleep 3
     
-    # Instalar Samba com versão fresca
-    log_info "Instalando Samba (fresh install)"
-    
-    # Parar serviços Samba existentes antes da instalação
-    systemctl stop smbd nmbd 2>/dev/null || true
-    systemctl mask smbd nmbd 2>/dev/null || true
-    
-    # Atualizar pacotes
+    # Instalar Samba de forma simples
+    log_info "Instalando Samba"
     apt update
+    apt install -y samba samba-common-bin
     
-    # Instalar Samba sem iniciar serviços automaticamente
-    log_info "Instalando pacotes Samba"
-    apt install -y --no-install-recommends samba samba-common-bin
+    # Aguardar um pouco
+    sleep 2
     
-    # Aguardar instalação completar
-    sleep 3
-    
-    # Verificar se os pacotes estão instalados usando dpkg-query (método mais confiável)
-    if ! dpkg-query -W -f='${Status}' samba 2>/dev/null | grep -q "install ok installed" || \
-       ! dpkg-query -W -f='${Status}' samba-common-bin 2>/dev/null | grep -q "install ok installed"; then
-        log_error "Pacotes Samba não estão instalados corretamente"
-        systemctl unmask smbd nmbd 2>/dev/null || true
-        return 1
-    fi
-    
-    log_success "Pacotes Samba instalados com sucesso"
-    
-    # Criar estrutura de diretórios necessária
-    log_info "Criando estrutura de diretórios Samba"
+    # Criar configuração básica primeiro
+    log_info "Criando configuração básica"
     mkdir -p /etc/samba
-    mkdir -p /srv/samba/{shared,private}
-    mkdir -p /var/lib/samba/{private,lock,cache}
-    mkdir -p /var/log/samba
-    mkdir -p /run/samba
-    
-    # Configurar permissões
-    chmod 777 /srv/samba/shared
-    chmod 750 /srv/samba/private
-    chown root:users /srv/samba/{shared,private}
-    chown root:root /etc/samba /var/lib/samba/{private,lock,cache} /var/log/samba
-    chmod 755 /etc/samba /var/log/samba
-    chmod 700 /var/lib/samba/private
-    
-    # Criar grupo e usuário se necessário
-    groupadd smbusers 2>/dev/null || true
-    usermod -a -G smbusers "$(whoami)" 2>/dev/null || true
-    
-    # Criar configuração básica e compatível
-    log_info "Criando configuração do Samba"
     cat > /etc/samba/smb.conf << 'EOF'
-[global]
-   workgroup = WORKGROUP
-   server string = BoxServer Samba
-   netbios name = BOXSERVER
-   security = user
-   map to guest = Bad User
-   guest account = nobody
-   log file = /var/log/samba/log.%m
-   max log size = 1000
-   logging = file
-   syslog only = no
-   panic action = /usr/share/samba/panic-action %d
-   server role = standalone server
-   obey pam restrictions = yes
-   unix password sync = yes
-   passwd program = /usr/bin/passwd %u
-   passwd chat = *Enter\snew\s*\spassword:* %n\n *Retype\snew\s*\spassword:* %n\n *password\supdated\ssuccessfully* .
-   pam password change = yes
-   
-[shared]
-   comment = Compartilhamento Público
-   path = /srv/samba/shared
-   browseable = yes
-   writable = yes
-   guest ok = yes
-   guest only = yes
-   read only = no
-   create mask = 0777
-   directory mask = 0777
-   force create mode = 0777
-   force directory mode = 0777
-
-[private]
-   comment = Compartilhamento Privado
-   path = /srv/samba/private
-   browseable = yes
-   writable = yes
-   guest ok = no
-   valid users = @smbusers
-   create mask = 0755
-   directory mask = 0755
-EOF
-    
-    # Desmascarar serviços para permitir controle manual
-    systemctl unmask smbd nmbd 2>/dev/null || true
-    
-    # Recarregar systemd
-    systemctl daemon-reload
-
-    # Testar configuração do Samba
-    log_info "Testando configuração do Samba"
-    
-    # Capturar saída e erros do testparm
-    local testparm_output
-    testparm_output=$(testparm -s 2>&1)
-    local testparm_result=$?
-    
-    # Validar configuração com testparm
-    if [[ $testparm_result -eq 0 ]]; then
-        log_success "Configuração do Samba válida"
-        
-        # Limpar quaisquer serviços existentes
-        systemctl stop smbd nmbd 2>/dev/null || true
-        sleep 2
-        
-        # Iniciar serviços com retry
-        log_info "Iniciando serviços Samba"
-        local smbd_started=false
-        local nmbd_started=false
-        
-        # Tentar iniciar smbd com retry
-        for i in {1..3}; do
-            if systemctl start smbd; then
-                smbd_started=true
-                log_success "Serviço smbd iniciado (tentativa $i)"
-                break
-            else
-                log_warning "Falha ao iniciar smbd (tentativa $i/3)"
-                sleep 2
-            fi
-        done
-        
-        # Tentar iniciar nmbd com retry
-        for i in {1..3}; do
-            if systemctl start nmbd; then
-                nmbd_started=true
-                log_success "Serviço nmbd iniciado (tentativa $i)"
-                break
-            else
-                log_warning "Falha ao iniciar nmbd (tentativa $i/3) - netbios é opcional"
-                sleep 2
-            fi
-        done
-        
-        # Habilitar serviços para boot
-        systemctl enable smbd 2>/dev/null || true
-        systemctl enable nmbd 2>/dev/null || true
-        
-        # Verificar status final e tomar ação apropriada
-        if $smbd_started; then
-            log_success "Samba configurado e iniciado com sucesso"
-        else
-            log_error "Não foi possível iniciar o serviço smbd após várias tentativas"
-            log_info "Diagnosticando problemas..."
-            
-            # Mostrar diagnóstico detalhado
-            systemctl status smbd --no-pager -l
-            journalctl -u smbd --no-pager -n 20
-            
-            # Tentar correção automática
-            if diagnose_service_issues "samba" && fix_samba_issues; then
-                log_success "Samba corrigido automaticamente"
-            else
-                log_error "Não foi possível corrigir o Samba automaticamente"
-                log_info "Verifique manualmente com: systemctl status smbd"
-                return 1
-            fi
-        fi
-        
-        # Status final dos serviços
-        if $nmbd_started; then
-            log_info "Serviço NetBIOS (nmbd) está ativo"
-        else
-            log_info "Serviço NetBIOS (nmbd) não está ativo - isso é normal e opcional"
-        fi
-        
-    else
-        log_error "Configuração do Samba inválida (código: $testparm_result)"
-        log_info "Saída do testparm:"
-        echo "$testparm_output" | head -20
-        
-        # Tentar criar configuração mínima como fallback
-        log_info "Tentando criar configuração mínima como fallback..."
-        cat > /etc/samba/smb.conf << 'EOF'
 [global]
    workgroup = WORKGROUP
    server string = BoxServer
    security = user
    map to guest = Bad User
    log file = /var/log/samba/log.%m
+   max log size = 50
    
 [shared]
    path = /srv/samba/shared
    browseable = yes
    writable = yes
    guest ok = yes
-   read only = no
    create mask = 0777
    directory mask = 0777
 EOF
+    
+    # Criar diretórios básicos
+    mkdir -p /srv/samba/shared
+    chmod 777 /srv/samba/shared
+
+    # Testar configuração simples
+    if testparm -s >/dev/null 2>&1; then
+        log_success "Configuração do Samba válida"
         
-        # Testar configuração mínima
-        if testparm -s >/dev/null 2>&1; then
-            log_success "Configuração mínima válida, tentando iniciar serviços"
-            systemctl start smbd 2>/dev/null && systemctl enable smbd 2>/dev/null
-            systemctl start nmbd 2>/dev/null && systemctl enable nmbd 2>/dev/null
-            log_success "Samba configurado com configuração mínima"
+        # Reiniciar serviços
+        systemctl restart smbd nmbd 2>/dev/null || true
+        systemctl enable smbd nmbd 2>/dev/null || true
+        
+        # Verificar se está funcionando
+        if systemctl is-active --quiet smbd; then
+            log_success "Samba instalado e funcionando"
         else
-            log_error "Mesmo a configuração mínima falhou na validação"
-            return 1
+            log_warning "Samba instalado mas serviço não iniciado - tentando manualmente"
+            systemctl daemon-reload
+            systemctl start smbd || true
         fi
+    else
+        log_error "Configuração básica falhou na validação"
+        return 1
     fi
 
     # Configurar firewall
