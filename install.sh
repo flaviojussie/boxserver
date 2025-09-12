@@ -314,8 +314,11 @@ purge_service() {
             ;;
         "samba")
             rm -f /etc/samba/smb.conf*
+            rm -rf /etc/samba
             rm -rf /var/lib/samba
             rm -rf /var/log/samba
+            rm -rf /var/cache/samba
+            rm -rf /run/samba
             ;;
         "unbound")
             rm -rf /etc/unbound
@@ -350,11 +353,131 @@ clean_install_environment() {
     # Limpar processos órfãos
     pkill -f "lighttpd\|pihole\|samba\|unbound" 2>/dev/null || true
     
-    # Limpar sockets residuais
+    # Limpar sockets residuais e locks
     rm -f /run/lighttpd.pid 2>/dev/null || true
     rm -f /run/samba/*.pid 2>/dev/null || true
+    rm -rf /run/samba 2>/dev/null || true
+    rm -rf /var/lib/samba/private/msg.lock 2>/dev/null || true
+    
+    # Limpar arquivos temporários
+    rm -rf /tmp/smb* 2>/dev/null || true
     
     log_success "Ambiente limpo para instalação fresh"
+}
+
+diagnose_service_issues() {
+    local service_name="$1"
+    log_info "Diagnosticando problemas com $service_name"
+    
+    case "$service_name" in
+        "samba")
+            # Verificar processos Samba
+            if pgrep -f "smbd\|nmbd" > /dev/null; then
+                log_info "Processos Samba ativos:"
+                pgrep -f "smbd\|nmbd" | while read pid; do
+                    log_info "  PID $pid: $(ps -p $pid -o comm=)"
+                done
+            else
+                log_info "Nenhum processo Samba encontrado"
+            fi
+            
+            # Verificar portas
+            log_info "Verificando portas Samba:"
+            netstat -tlnp 2>/dev/null | grep -E ":(139|445|137|138)" || log_info "  Portas Samba não estão abertas"
+            
+            # Verificar configuração
+            if [[ -f /etc/samba/smb.conf ]]; then
+                log_info "Testando configuração Samba:"
+                if testparm -s 2>/dev/null; then
+                    log_success "  Configuração válida"
+                else
+                    log_error "  Configuração inválida"
+                fi
+            else
+                log_error "  Arquivo smb.conf não encontrado"
+            fi
+            
+            # Verificar logs
+            log_info "Logs recentes do Samba:"
+            if [[ -f /var/log/samba/log.smbd ]]; then
+                tail -10 /var/log/samba/log.smbd 2>/dev/null || log_info "  Não foi possível ler logs"
+            fi
+            ;;
+        "lighttpd")
+            # Verificar configuração lighttpd
+            if [[ -f /etc/lighttpd/lighttpd.conf ]]; then
+                if lighttpd -tt -f /etc/lighttpd/lighttpd.conf 2>/dev/null; then
+                    log_success "Configuração lighttpd válida"
+                else
+                    log_error "Configuração lighttpd inválida"
+                fi
+            else
+                log_error "Arquivo lighttpd.conf não encontrado"
+            fi
+            
+            # Verificar portas
+            log_info "Verificando porta lighttpd (8080):"
+            netstat -tlnp 2>/dev/null | grep ":8080" || log_info "  Porta 8080 não está aberta"
+            ;;
+    esac
+}
+
+fix_samba_issues() {
+    log_step "Tentando corrigir problemas do Samba"
+    
+    # Parar serviços forçadamente
+    systemctl stop smbd nmbd 2>/dev/null || true
+    pkill -f "smbd\|nmbd" 2>/dev/null || true
+    
+    # Remover locks
+    rm -rf /var/lib/samba/private/msg.lock 2>/dev/null || true
+    rm -rf /run/samba 2>/dev/null || true
+    
+    # Recrear diretórios necessários
+    mkdir -p /var/lib/samba/private
+    mkdir -p /var/log/samba
+    mkdir -p /run/samba
+    chown root:root /var/lib/samba/private
+    chmod 700 /var/lib/samba/private
+    
+    # Resetar configuração para básica
+    cat > /etc/samba/smb.conf << 'EOF'
+[global]
+   workgroup = WORKGROUP
+   server string = BoxServer Samba
+   server role = standalone server
+   security = user
+   map to guest = bad user
+   
+[shared]
+   comment = Compartilhamento Público
+   path = /srv/samba/shared
+   browseable = yes
+   writable = yes
+   guest ok = yes
+   guest only = yes
+   read only = no
+   create mask = 0777
+   directory mask = 0777
+EOF
+    
+    # Testar configuração
+    if testparm -s 2>/dev/null; then
+        log_success "Configuração básica do Samba válida"
+        
+        # Tentar iniciar
+        systemctl daemon-reload
+        if systemctl start smbd; then
+            log_success "Samba corrigido e iniciado"
+            return 0
+        else
+            log_error "Samba ainda não inicia - pode haver conflito de sistema"
+            return 1
+        fi
+    else
+        log_error "Não foi possível criar configuração básica válida"
+        return 1
+    fi
 }
 
 # =============================================================================
@@ -792,38 +915,49 @@ install_storage_services() {
         return 0
     fi
 
-    # Limpar instalações anteriores do Samba
+    # Limpar instalações anteriores do Samba completamente
     purge_service "samba"
+    
+    # Parar serviços residuais
+    systemctl stop smbd nmbd 2>/dev/null || true
     
     # Instalar Samba com versão fresca
     log_info "Instalando Samba (fresh install)"
+    apt update
     apt install -y samba samba-common-bin
 
-    # Criar diretórios
+    # Aguardar instalação completar
+    sleep 2
+
+    # Criar diretórios com permissões corretas
+    log_info "Criando diretórios Samba"
     mkdir -p /srv/samba/{shared,private}
     chmod 777 /srv/samba/shared
+    chmod 750 /srv/samba/private
+    chown root:users /srv/samba/shared
+    chown root:users /srv/samba/private
+    
+    # Criar grupo e usuário se necessário
     groupadd smbusers 2>/dev/null || true
-    usermod -a -G smbusers "$(whoami)"
+    usermod -a -G smbusers "$(whoami)" 2>/dev/null || true
 
-    # Configurar Samba
+    # Criar configuração básica primeiro e testar
+    log_info "Configurando Samba com configuração básica"
     cat > /etc/samba/smb.conf << 'EOF'
 [global]
    workgroup = WORKGROUP
    server string = BoxServer Samba
    netbios name = BOXSERVER
-   log file = /var/log/samba/log.%m
-   max log size = 1000
-   logging = file
-   panic action = /usr/share/samba/panic-action %d
    server role = standalone server
+   security = user
+   map to guest = bad user
    obey pam restrictions = yes
    unix password sync = yes
    passwd program = /usr/bin/passwd %u
    passwd chat = *Enter\snew\s*\spassword:* %n\n *Retype\snew\s*\spassword:* %n\n *password\supdated\ssuccessfully* .
    pam password change = yes
-   map to guest = bad user
-   usershare allow guests = yes
-
+   
+   # Performance optimizations
    socket options = TCP_NODELAY IPTOS_LOWDELAY SO_RCVBUF=131072 SO_SNDBUF=131072
    use sendfile = yes
    min receivefile size = 16384
@@ -832,6 +966,11 @@ install_storage_services() {
    max xmit = 65535
    deadtime = 15
    getwd cache = yes
+   
+   # Logging
+   log file = /var/log/samba/log.%m
+   max log size = 1000
+   logging = file
 
 [shared]
    comment = Compartilhamento Público
@@ -839,6 +978,7 @@ install_storage_services() {
    browseable = yes
    writable = yes
    guest ok = yes
+   guest only = yes
    read only = no
    create mask = 0777
    directory mask = 0777
@@ -856,25 +996,103 @@ install_storage_services() {
    directory mask = 0755
 EOF
 
-    mkdir -p /srv/samba/private
-    systemctl enable --now smbd nmbd
-    ufw allow samba
+    # Testar configuração do Samba
+    log_info "Testando configuração do Samba"
+    if testparm -s 2>/dev/null; then
+        log_success "Configuração do Samba válida"
+        
+        # Reiniciar serviços Samba com tratamento de erro
+        log_info "Iniciando serviços Samba"
+        systemctl daemon-reload
+        
+        # Parar serviços antes de iniciar
+        systemctl stop smbd nmbd 2>/dev/null || true
+        sleep 1
+        
+        # Iniciar serviços individualmente
+        if systemctl start smbd; then
+            log_success "Serviço smbd iniciado"
+        else
+            log_error "Falha ao iniciar smbd"
+            systemctl status smbd --no-pager -l
+        fi
+        
+        if systemctl start nmbd; then
+            log_success "Serviço nmbd iniciado"
+        else
+            log_warning "Falha ao iniciar nmbd (netbios name resolution - opcional)"
+        fi
+        
+        # Habilitar serviços
+        systemctl enable smbd 2>/dev/null || true
+        systemctl enable nmbd 2>/dev/null || true
+        
+        # Verificar status final
+        if systemctl is-active --quiet smbd; then
+            log_success "Samba configurado com sucesso"
+        else
+            log_warning "Samba instalado mas smbd não está ativo - tentando correção automática"
+            diagnose_service_issues "samba"
+            if fix_samba_issues; then
+                log_success "Samba corrigido com sucesso"
+            else
+                log_error "Não foi possível corrigir o Samba automaticamente"
+                log_info "Verifique manualmente com: systemctl status smbd"
+            fi
+        fi
+    else
+        log_error "Configuração do Samba inválida"
+        log_info "Tentando configuração básica..."
+        if fix_samba_issues; then
+            log_success "Samba corrigido com configuração básica"
+        else
+            return 1
+        fi
+    fi
+
+    # Configurar firewall
+    ufw allow samba 2>/dev/null || true
 
     # Instalar FileBrowser
-    curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
-    mv filebrowser /usr/local/bin/
+    install_filebrowser
 
-    useradd -r -s /bin/false filebrowser 2>/dev/null || true
+    STORAGE_CONFIGURED=true
+    save_config
 
-    cat > /etc/systemd/system/filebrowser.service << EOF
+    log_success "Serviços de armazenamento configurados"
+}
+
+install_filebrowser() {
+    log_info "Instalando FileBrowser"
+    
+    # Remover instalação anterior se existir
+    systemctl stop filebrowser 2>/dev/null || true
+    rm -f /usr/local/bin/filebrowser 2>/dev/null || true
+    
+    # Instalar FileBrowser
+    if curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash; then
+        mv filebrowser /usr/local/bin/ 2>/dev/null || true
+        chmod +x /usr/local/bin/filebrowser 2>/dev/null || true
+        
+        # Criar usuário se necessário
+        useradd -r -s /bin/false filebrowser 2>/dev/null || true
+        
+        # Criar diretório para FileBrowser
+        mkdir -p /srv/filebrowser
+        chown filebrowser:filebrowser /srv/filebrowser
+        
+        # Criar serviço systemd
+        cat > /etc/systemd/system/filebrowser.service << EOF
 [Unit]
 Description=File Browser
 After=network.target
 
 [Service]
 User=filebrowser
+Group=filebrowser
 ExecStart=/usr/local/bin/filebrowser -r /srv/filebrowser -p 8082
 Restart=on-failure
+RestartSec=5
 MemoryMax=100M
 CPUQuota=30%
 
@@ -882,13 +1100,17 @@ CPUQuota=30%
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable --now filebrowser
-
-    STORAGE_CONFIGURED=true
-    save_config
-
-    log_success "Serviços de armazenamento configurados"
+        systemctl daemon-reload
+        systemctl enable filebrowser 2>/dev/null || true
+        
+        if systemctl start filebrowser; then
+            log_success "FileBrowser instalado e iniciado"
+        else
+            log_warning "FileBrowser instalado mas falhou ao iniciar"
+        fi
+    else
+        log_warning "Falha ao instalar FileBrowser"
+    fi
 }
 
 install_dashboard() {
@@ -1612,11 +1834,12 @@ manage_services() {
         echo "2) ⏹️  Parar serviços opcionais (economia)"
         echo "3) ▶️  Iniciar serviços opcionais"
         echo "4) 📊 Verificar uso de recursos"
-        echo "5) 🔄 Atualizar sistema"
+        echo "5) 🔍 Diagnosticar problemas"
+        echo "6) 🔄 Atualizar sistema"
         echo "0) 🔙 Voltar"
         echo ""
 
-        read -p "Selecione uma opção [0-5]: " choice
+        read -p "Selecione uma opção [0-6]: " choice
 
         case $choice in
             1)
@@ -1646,6 +1869,30 @@ manage_services() {
                 systemctl status --no-pager -l | grep -A 5 "Memory:"
                 ;;
             5)
+                show_header
+                echo "🔍 Diagnóstico de Serviços"
+                echo ""
+                echo "Selecione o serviço para diagnosticar:"
+                echo "1) Samba"
+                echo "2) lighttpd"
+                echo "3) Todos"
+                echo "0) Voltar"
+                echo ""
+                read -p "Opção [0-3]: " diag_choice
+                
+                case $diag_choice in
+                    1) diagnose_service_issues "samba" ;;
+                    2) diagnose_service_issues "lighttpd" ;;
+                    3) 
+                        diagnose_service_issues "samba"
+                        echo ""
+                        diagnose_service_issues "lighttpd"
+                        ;;
+                    0) continue ;;
+                    *) log_error "Opção inválida" ;;
+                esac
+                ;;
+            6)
                 log_step "Atualizando sistema"
                 apt update && apt upgrade -y
                 log_success "Sistema atualizado"
