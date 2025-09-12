@@ -452,14 +452,14 @@ fix_samba_issues() {
     chmod 777 /srv/samba/shared
     chmod 750 /srv/samba/private
     
-    # Resetar configuração para básica
+    # Resetar configuração para básica (mínima e compatível)
     cat > /etc/samba/smb.conf << 'EOF'
 [global]
    workgroup = WORKGROUP
    server string = BoxServer Samba
-   server role = standalone server
    security = user
-   map to guest = bad user
+   map to guest = Bad User
+   guest account = nobody
    
 [shared]
    comment = Compartilhamento Público
@@ -471,23 +471,52 @@ fix_samba_issues() {
    read only = no
    create mask = 0777
    directory mask = 0777
+   force create mode = 0777
+   force directory mode = 0777
 EOF
     
-    # Testar configuração
+    # Testar configuração (mas não falhar se testparm retornar erro)
+    log_info "Testando configuração básica do Samba"
     if testparm -s 2>/dev/null; then
         log_success "Configuração básica do Samba válida"
+    else
+        log_warning "testparm reportou problemas, mas tentando iniciar mesmo assim"
+    fi
+    
+    # Tentar iniciar serviços individualmente
+    systemctl daemon-reload
+    
+    # Parar serviços completamente antes de iniciar
+    systemctl stop smbd nmbd 2>/dev/null || true
+    sleep 2
+    
+    # Tentar iniciar smbd primeiro
+    if systemctl start smbd; then
+        log_success "Serviço smbd iniciado com sucesso"
         
-        # Tentar iniciar
-        systemctl daemon-reload
-        if systemctl start smbd; then
-            log_success "Samba corrigido e iniciado"
+        # Tentar iniciar nmbd (opcional para compartilhamento básico)
+        if systemctl start nmbd; then
+            log_success "Serviço nmbd iniciado com sucesso"
+        else
+            log_warning "Serviço nmbd falhou - continuando sem resolução de nomes NetBIOS"
+        fi
+        
+        # Verificar se smbd continua ativo após alguns segundos
+        sleep 3
+        if systemctl is-active --quiet smbd; then
+            log_success "Samba corrigido e funcionando"
             return 0
         else
-            log_error "Samba ainda não inicia - pode haver conflito de sistema"
+            log_error "smbd parou após iniciar"
             return 1
         fi
     else
-        log_error "Não foi possível criar configuração básica válida"
+        log_error "Não foi possível iniciar smbd mesmo com configuração básica"
+        
+        # Última tentativa: verificar logs do sistema
+        log_info "Verificando logs do sistema para mais detalhes:"
+        journalctl -u smbd --no-pager -n 10 2>/dev/null || log_info "Não foi possível acessar logs"
+        
         return 1
     fi
 }
@@ -987,37 +1016,19 @@ install_storage_services() {
         return 1
     fi
 
-    # Criar configuração básica primeiro e testar
+    # Criar configuração básica e compatível
     log_info "Configurando Samba com configuração básica"
     cat > /etc/samba/smb.conf << 'EOF'
 [global]
    workgroup = WORKGROUP
    server string = BoxServer Samba
-   netbios name = BOXSERVER
-   server role = standalone server
    security = user
-   map to guest = bad user
-   obey pam restrictions = yes
-   unix password sync = yes
-   passwd program = /usr/bin/passwd %u
-   passwd chat = *Enter\snew\s*\spassword:* %n\n *Retype\snew\s*\spassword:* %n\n *password\supdated\ssuccessfully* .
-   pam password change = yes
-   
-   # Performance optimizations
-   socket options = TCP_NODELAY IPTOS_LOWDELAY SO_RCVBUF=131072 SO_SNDBUF=131072
-   use sendfile = yes
-   min receivefile size = 16384
-   aio read size = 16384
-   aio write size = 16384
-   max xmit = 65535
-   deadtime = 15
-   getwd cache = yes
-   
-   # Logging
+   map to guest = Bad User
+   guest account = nobody
    log file = /var/log/samba/log.%m
    max log size = 1000
    logging = file
-
+   
 [shared]
    comment = Compartilhamento Público
    path = /srv/samba/shared
@@ -1044,7 +1055,13 @@ EOF
 
     # Testar configuração do Samba
     log_info "Testando configuração do Samba"
-    if testparm -s 2>/dev/null; then
+    
+    # Capturar saída e erros do testparm
+    local testparm_output
+    testparm_output=$(testparm -s 2>&1)
+    local testparm_result=$?
+    
+    if [[ $testparm_result -eq 0 ]]; then
         log_success "Configuração do Samba válida"
         
         # Reiniciar serviços Samba com tratamento de erro
@@ -1087,11 +1104,21 @@ EOF
             fi
         fi
     else
-        log_error "Configuração do Samba inválida"
-        log_info "Tentando configuração básica..."
-        if fix_samba_issues; then
-            log_success "Samba corrigido com configuração básica"
+        log_error "Configuração do Samba inválida (código: $testparm_result)"
+        log_info "Saída do testparm:"
+        echo "$testparm_output" | head -20
+        
+        # Verificação alternativa: se o arquivo existe e tem conteúdo básico
+        if [[ -f /etc/samba/smb.conf ]] && [[ -s /etc/samba/smb.conf ]]; then
+            log_info "Arquivo smb.conf existe e tem conteúdo, tentando iniciar mesmo assim"
+            log_info "Tentando configuração básica..."
+            if fix_samba_issues; then
+                log_success "Samba corrigido com configuração básica"
+            else
+                return 1
+            fi
         else
+            log_error "Arquivo smb.conf não existe ou está vazio"
             return 1
         fi
     fi
