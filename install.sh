@@ -245,15 +245,32 @@ install_system_optimizations() {
 
     # Configurar IP fixo
     log_info "Configurando IP fixo: $SERVER_IP"
-    nmcli con mod "Wired connection 1" ipv4.addresses "$SERVER_IP/24" || \
-    nmcli con mod "eth0" ipv4.addresses "$SERVER_IP/24" || true
-    nmcli con mod "Wired connection 1" ipv4.gateway "$GATEWAY" || \
-    nmcli con mod "eth0" ipv4.gateway "$GATEWAY" || true
-    nmcli con mod "Wired connection 1" ipv4.dns "$DNS_SERVER" || \
-    nmcli con mod "eth0" ipv4.dns "$DNS_SERVER" || true
-    nmcli con mod "Wired connection 1" ipv4.method manual || \
-    nmcli con mod "eth0" ipv4.method manual || true
-    nmcli con up "Wired connection 1" || nmcli con up "eth0" || true
+    
+    # Detectar interface de rede automaticamente
+    local network_interface=$(ip route | grep default | awk '{print $5}' | head -1)
+    
+    if [[ -n "$network_interface" ]]; then
+        log_info "Interface de rede detectada: $network_interface"
+        
+        # Configurar IP estático via interfaces (compatível com sistemas legados)
+        cat > /etc/network/interfaces.d/boxserver << EOF
+auto $network_interface
+iface $network_interface inet static
+    address $SERVER_IP
+    netmask 255.255.255.0
+    gateway $GATEWAY
+    dns-nameservers $DNS_SERVER
+EOF
+        
+        # Tentar aplicar configuração
+        ifdown "$network_interface" 2>/dev/null || true
+        ifup "$network_interface" 2>/dev/null || true
+        systemctl restart networking 2>/dev/null || true
+        
+        log_info "Configuração de rede aplicada via /etc/network/interfaces/"
+    else
+        log_warning "Não foi possível detectar interface de rede. Pulando configuração de IP fixo."
+    fi
 
     # Atualizar sistema
     log_info "Atualizando sistema"
@@ -282,8 +299,8 @@ vm.laptop_mode=5
 vm.dirty_writeback_centisecs=3000
 vm.dirty_expire_centisecs=6000
 
-# TCP otimizado
-net.ipv4.tcp_congestion_control=bbr
+# TCP otimizado (BBR pode não estar disponível em kernels antigos)
+# net.ipv4.tcp_congestion_control=bbr
 net.core.rmem_max=16777216
 net.core.wmem_max=16777216
 net.ipv4.tcp_rmem=4096 87380 16777216
@@ -335,7 +352,7 @@ install_base_dependencies() {
 
     apt install -y curl wget git dialog chrony unbound rng-tools haveged \
         build-essential ca-certificates gnupg lsb-release software-properties-common \
-        logrotate ufw htop btop python3 python3-pip iotop sysstat
+        logrotate ufw htop python3 python3-pip iotop sysstat
 
     BASE_DEPS_INSTALLED=true
     save_config
