@@ -609,10 +609,15 @@ EOF
     log_info "Instalando Pi-hole (interativo)"
     curl -sSL https://install.pi-hole.net | bash
 
-    # Otimizar lighttpd
-    sed -i 's/server.port.*/server.port = 8080/' /etc/lighttpd/lighttpd.conf
-    echo "server.max-request-size = 2048" >> /etc/lighttpd/lighttpd.conf
-    systemctl restart lighttpd
+    # Verificar se o lighttpd foi instalado e configurar
+    if [[ -f /etc/lighttpd/lighttpd.conf ]]; then
+        log_info "Otimizando lighttpd"
+        sed -i 's/server.port.*/server.port = 8080/' /etc/lighttpd/lighttpd.conf
+        echo "server.max-request-size = 2048" >> /etc/lighttpd/lighttpd.conf
+        systemctl restart lighttpd
+    else
+        log_warning "Arquivo de configuração do lighttpd não encontrado"
+    fi
 
     DNS_CONFIGURED=true
     save_config
