@@ -612,9 +612,25 @@ EOF
     # Verificar se o lighttpd foi instalado e configurar
     if [[ -f /etc/lighttpd/lighttpd.conf ]]; then
         log_info "Otimizando lighttpd"
+        # Backup do arquivo original
+        cp /etc/lighttpd/lighttpd.conf /etc/lighttpd/lighttpd.conf.backup
+        
+        # Corrigir a porta e remover duplicatas
         sed -i 's/server.port.*/server.port = 8080/' /etc/lighttpd/lighttpd.conf
+        sed -i '/include_shell.*use-ipv6.pl.*= 8080/c\include_shell "/usr/share/lighttpd/use-ipv6.pl " + server.port' /etc/lighttpd/lighttpd.conf
+        
+        # Remover duplicatas de max-request-size e adicionar apenas uma vez
+        sed -i '/server.max-request-size/d' /etc/lighttpd/lighttpd.conf
         echo "server.max-request-size = 2048" >> /etc/lighttpd/lighttpd.conf
-        systemctl restart lighttpd
+        
+        # Testar configuração antes de reiniciar
+        if lighttpd -tt -f /etc/lighttpd/lighttpd.conf; then
+            systemctl restart lighttpd
+            log_success "Lighttpd configurado com sucesso"
+        else
+            log_error "Configuração do lighttpd inválida, restaurando backup"
+            cp /etc/lighttpd/lighttpd.conf.backup /etc/lighttpd/lighttpd.conf
+        fi
     else
         log_warning "Arquivo de configuração do lighttpd não encontrado"
     fi
