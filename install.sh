@@ -52,7 +52,7 @@ log() {
     shift
     local message="$*"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
+
     echo -e "${timestamp} [${level}] ${message}" | tee -a "$LOG_FILE"
 }
 
@@ -107,13 +107,13 @@ check_root() {
 
 check_requirements() {
     log_step "Verificando requisitos do sistema"
-    
+
     # Verificar sistema operacional
     if ! command -v lsb_release &> /dev/null; then
         log_error "Sistema operacional não suportado"
         exit 1
     fi
-    
+
     # Verificar arquitetura
     local arch=$(uname -m)
     case "$arch" in
@@ -125,27 +125,27 @@ check_requirements() {
             exit 1
             ;;
     esac
-    
+
     # Verificar memória RAM
     local total_mem=$(free -m | awk 'NR==2{print $2}')
     if [[ $total_mem -lt 512 ]]; then
         log_warning "Memória RAM insuficiente: ${total_mem}MB (mínimo: 512MB)"
         return 1
     fi
-    
+
     log_success "Requisitos verificados com sucesso"
 }
 
 initialize_environment() {
     log_step "Inicializando ambiente"
-    
+
     # Criar diretórios necessários
     mkdir -p "$(dirname "$CONFIG_FILE")" "$BACKUP_DIR" "/var/log/boxserver"
     mkdir -p /srv/{samba,filebrowser,downloads} /var/www/html
-    
+
     # Inicializar arquivo de log
     touch "$LOG_FILE"
-    
+
     # Carregar configuração existente se houver
     if [[ -f "$CONFIG_FILE" ]]; then
         log_info "Carregando configuração existente"
@@ -154,7 +154,7 @@ initialize_environment() {
         log_info "Criando nova configuração"
         create_default_config
     fi
-    
+
     log_success "Ambiente inicializado"
 }
 
@@ -232,17 +232,17 @@ EOF
 }
 
 # =============================================================================
- FUNÇÕES DE INSTALAÇÃO
+ # FUNÇÕES DE INSTALAÇÃO
 # =============================================================================
 
 install_system_optimizations() {
     log_step "Instalando otimizações do sistema"
-    
+
     if [[ "$SYSTEM_OPTIMIZED" == "true" ]]; then
         log_info "Otimizações já instaladas, pulando..."
         return 0
     fi
-    
+
     # Configurar IP fixo
     log_info "Configurando IP fixo: $SERVER_IP"
     nmcli con mod "Wired connection 1" ipv4.addresses "$SERVER_IP/24" || \
@@ -254,11 +254,11 @@ install_system_optimizations() {
     nmcli con mod "Wired connection 1" ipv4.method manual || \
     nmcli con mod "eth0" ipv4.method manual || true
     nmcli con up "Wired connection 1" || nmcli con up "eth0" || true
-    
+
     # Atualizar sistema
     log_info "Atualizando sistema"
     apt update && apt upgrade -y
-    
+
     # Criar swap otimizado
     if [[ ! -f /swapfile ]]; then
         log_info "Criando arquivo de swap (1GB)"
@@ -268,7 +268,7 @@ install_system_optimizations() {
         swapon /swapfile
         echo "/swapfile none swap sw 0 0" >> /etc/fstab
     fi
-    
+
     # Otimizações sysctl
     cat > /etc/sysctl.d/99-arm-optimization.conf << 'EOF'
 # Gerenciamento de memória agressivo para RAM limitada
@@ -294,63 +294,63 @@ net.ipv4.ip_forward=1
 net.ipv4.conf.all.send_redirects=0
 net.ipv4.conf.default.send_redirects=0
 EOF
-    
+
     sysctl -p /etc/sysctl.d/99-arm-optimization.conf
-    
+
     # Mover sistemas temporários para RAM
     echo "tmpfs /tmp tmpfs defaults,size=256M 0 0" >> /etc/fstab
     echo "tmpfs /var/log tmpfs defaults,size=128M 0 0" >> /etc/fstab
     echo "tmpfs /var/tmp tmpfs defaults,size=128M 0 0" >> /etc/fstab
-    
+
     mount -a
-    
+
     # Instalar ferramentas de otimização
     apt install -y cpufrequtils schedtool bc
-    
+
     # Configurar governor
     cat > /etc/default/cpufrequtils << EOF
 GOVERNOR="ondemand"
 MAX_SPEED="1200000"
 MIN_SPEED="600000"
 EOF
-    
+
     systemctl enable cpufrequtils
-    
+
     # Desativar serviços desnecessários
     systemctl disable bluetooth avahi-daemon cups 2>/dev/null || true
-    
+
     SYSTEM_OPTIMIZED=true
     save_config
-    
+
     log_success "Otimizações do sistema concluídas"
 }
 
 install_base_dependencies() {
     log_step "Instalando dependências base"
-    
+
     if [[ "$BASE_DEPS_INSTALLED" == "true" ]]; then
         log_info "Dependências base já instaladas, pulando..."
         return 0
     fi
-    
+
     apt install -y curl wget git dialog chrony unbound rng-tools haveged \
         build-essential ca-certificates gnupg lsb-release software-properties-common \
         logrotate ufw htop btop python3 python3-pip iotop sysstat
-    
+
     BASE_DEPS_INSTALLED=true
     save_config
-    
+
     log_success "Dependências base instaladas"
 }
 
 install_firewall() {
     log_step "Configurando firewall"
-    
+
     if [[ "$FIREWALL_CONFIGURED" == "true" ]]; then
         log_info "Firewall já configurado, pulando..."
         return 0
     fi
-    
+
     # Configurar UFW
     ufw default deny incoming
     ufw default allow outgoing
@@ -360,30 +360,30 @@ install_firewall() {
     ufw allow 5000/tcp comment "WireGuard-UI"
     ufw allow 51820/udp comment "WireGuard VPN"
     ufw --force enable
-    
+
     # Instalar fail2ban
     apt install -y fail2ban
     systemctl enable --now fail2ban
-    
+
     FIREWALL_CONFIGURED=true
     save_config
-    
+
     log_success "Firewall configurado"
 }
 
 install_dns_services() {
     log_step "Instalando serviços DNS (Pi-hole + Unbound)"
-    
+
     if [[ "$DNS_CONFIGURED" == "true" ]]; then
         log_info "Serviços DNS já configurados, pulando..."
         return 0
     fi
-    
+
     # Instalar Unbound
     apt install -y unbound
     mkdir -p /etc/unbound/unbound.conf.d
     wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
-    
+
     cat > /etc/unbound/unbound.conf.d/pi-hole.conf << EOF
 server:
   verbosity: 0
@@ -402,41 +402,41 @@ server:
   msg-cache-size: 50m
   rrset-cache-size: 100m
 EOF
-    
+
     systemctl enable --now unbound
-    
+
     # Instalar Pi-hole
     log_info "Instalando Pi-hole (interativo)"
     curl -sSL https://install.pi-hole.net | bash
-    
+
     # Otimizar lighttpd
     sed -i 's/server.port.*/server.port = 8080/' /etc/lighttpd/lighttpd.conf
     echo "server.max-request-size = 2048" >> /etc/lighttpd/lighttpd.conf
     systemctl restart lighttpd
-    
+
     DNS_CONFIGURED=true
     save_config
-    
+
     log_success "Serviços DNS configurados"
 }
 
 install_storage_services() {
     log_step "Instalando serviços de armazenamento"
-    
+
     if [[ "$STORAGE_CONFIGURED" == "true" ]]; then
         log_info "Serviços de armazenamento já configurados, pulando..."
         return 0
     fi
-    
+
     # Instalar Samba
     apt install -y samba samba-common-bin
-    
+
     # Criar diretórios
     mkdir -p /srv/samba/{shared,private}
     chmod 777 /srv/samba/shared
     groupadd smbusers 2>/dev/null || true
     usermod -a -G smbusers "$(whoami)"
-    
+
     # Configurar Samba
     cat > /etc/samba/smb.conf << 'EOF'
 [global]
@@ -455,7 +455,7 @@ install_storage_services() {
    pam password change = yes
    map to guest = bad user
    usershare allow guests = yes
-   
+
    socket options = TCP_NODELAY IPTOS_LOWDELAY SO_RCVBUF=131072 SO_SNDBUF=131072
    use sendfile = yes
    min receivefile size = 16384
@@ -487,17 +487,17 @@ install_storage_services() {
    create mask = 0755
    directory mask = 0755
 EOF
-    
+
     mkdir -p /srv/samba/private
     systemctl enable --now smbd nmbd
     ufw allow samba
-    
+
     # Instalar FileBrowser
     curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
     mv filebrowser /usr/local/bin/
-    
+
     useradd -r -s /bin/false filebrowser 2>/dev/null || true
-    
+
     cat > /etc/systemd/system/filebrowser.service << EOF
 [Unit]
 Description=File Browser
@@ -513,24 +513,24 @@ CPUQuota=30%
 [Install]
 WantedBy=multi-user.target
 EOF
-    
+
     systemctl daemon-reload
     systemctl enable --now filebrowser
-    
+
     STORAGE_CONFIGURED=true
     save_config
-    
+
     log_success "Serviços de armazenamento configurados"
 }
 
 install_dashboard() {
     log_step "Instalando Dashboard Inteligente"
-    
+
     if [[ "$DASHBOARD_INSTALLED" == "true" ]]; then
         log_info "Dashboard já instalado, pulando..."
         return 0
     fi
-    
+
     # Criar API Python
     cat > /var/www/html/dashboard-api.py << 'EOF'
 #!/usr/bin/env python3
@@ -546,7 +546,7 @@ class DashboardAPI(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urlparse(self.path)
         path = parsed_path.path
-        
+
         # CORS headers
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
@@ -554,7 +554,7 @@ class DashboardAPI(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
-        
+
         if path == '/health':
             response = {"status": "healthy", "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')}
         elif path == '/api/system':
@@ -573,20 +573,20 @@ class DashboardAPI(BaseHTTPRequestHandler):
                     response = {"error": "Dashboard not found"}
             else:
                 response = {"error": "Endpoint not found"}
-        
+
         self.wfile.write(json.dumps(response, indent=2).encode())
-    
+
     def get_system_info(self):
         cpu_percent = psutil.cpu_percent(interval=1)
         memory = psutil.virtual_memory()
-        
+
         temp = "N/A"
         try:
             with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
                 temp = f"{int(f.read().strip()) / 1000:.1f}°C"
         except:
             pass
-        
+
         uptime = "N/A"
         try:
             with open('/proc/uptime', 'r') as f:
@@ -596,7 +596,7 @@ class DashboardAPI(BaseHTTPRequestHandler):
                 uptime = f"{days}d {hours}h"
         except:
             pass
-        
+
         return {
             "cpu": f"{cpu_percent:.1f}%",
             "memory": {
@@ -608,7 +608,7 @@ class DashboardAPI(BaseHTTPRequestHandler):
             "uptime": uptime,
             "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
         }
-    
+
     def get_services_status(self):
         services = {
             "pihole": {
@@ -654,15 +654,15 @@ class DashboardAPI(BaseHTTPRequestHandler):
                 "port": 8384
             }
         }
-        
+
         for service_id, service in services.items():
             status = self.check_service_status(service_id, service["port"])
             services[service_id]["status"] = status["status"]
             services[service_id]["cpu"] = status["cpu"]
             services[service_id]["memory"] = status["memory"]
-        
+
         return services
-    
+
     def check_service_status(self, service_id, port):
         try:
             # Check systemd service
@@ -692,7 +692,7 @@ class DashboardAPI(BaseHTTPRequestHandler):
                     return {"status": "online", "cpu": 4.1, "memory": 35.6}
         except:
             pass
-        
+
         return {"status": "offline", "cpu": None, "memory": None}
 
 if __name__ == '__main__':
@@ -701,7 +701,7 @@ if __name__ == '__main__':
     print("Dashboard API running on port 8080")
     httpd.serve_forever()
 EOF
-    
+
     # Criar serviço systemd
     cat > /etc/systemd/system/dashboard-api.service << EOF
 [Unit]
@@ -734,11 +734,11 @@ RemoveIPC=true
 [Install]
 WantedBy=multi-user.target
 EOF
-    
+
     # Configurar permissões
     chown www-data:www-data /var/www/html/dashboard-api.py
     chmod +x /var/www/html/dashboard-api.py
-    
+
     # Copiar dashboard HTML
     cp "$SCRIPT_DIR/dashboard_v2.html" /var/www/html/ 2>/dev/null || {
         log_warning "dashboard_v2.html não encontrado, usando versão padrão"
@@ -780,7 +780,7 @@ EOF
                 const services = await response.json();
                 const container = document.getElementById('services');
                 container.innerHTML = '';
-                
+
                 for (const [id, service] of Object.entries(services)) {
                     const div = document.createElement('div');
                     div.className = 'service';
@@ -796,7 +796,7 @@ EOF
                 document.getElementById('services').innerHTML = '<div class="service"><h3>Erro</h3><p>Não foi possível carregar os serviços</p></div>';
             }
         }
-        
+
         loadServices();
         setInterval(loadServices, 30000);
     </script>
@@ -804,34 +804,34 @@ EOF
 </html>
 HTML
     }
-    
+
     chown www-data:www-data /var/www/html/dashboard_v2.html
-    
+
     # Parar nginx se estiver rodando na porta 80
     systemctl stop nginx 2>/dev/null || true
     systemctl disable nginx 2>/dev/null || true
-    
+
     systemctl daemon-reload
     systemctl enable dashboard-api.service
     systemctl start dashboard-api.service
-    
+
     DASHBOARD_INSTALLED=true
     save_config
-    
+
     log_success "Dashboard Inteligente instalado"
 }
 
 install_wireguard() {
     log_step "Instalando WireGuard-UI"
-    
+
     if [[ "$WIREGUARD_CONFIGURED" == "true" ]]; then
         log_info "WireGuard já configurado, pulando..."
         return 0
     fi
-    
+
     # Instalar WireGuard
     apt install -y wireguard resolvconf
-    
+
     # Instalar WireGuard-UI
     if [[ -f "$SCRIPT_DIR/install-wireguard-ui.sh" ]]; then
         chmod +x "$SCRIPT_DIR/install-wireguard-ui.sh"
@@ -844,25 +844,25 @@ install_wireguard() {
         mv wireguard-ui /usr/local/bin/
         rm wireguard-ui-linux-amd64.tar.gz
     fi
-    
+
     WIREGUARD_CONFIGURED=true
     save_config
-    
+
     log_success "WireGuard-UI instalado"
 }
 
 install_torrent() {
     log_step "Instalando qBittorrent"
-    
+
     if [[ "$TORRENT_INSTALLED" == "true" ]]; then
         log_info "qBittorrent já instalado, pulando..."
         return 0
     fi
-    
+
     apt install -y qbittorrent-nox
-    
+
     useradd -r -s /bin/false qbittorrent 2>/dev/null || true
-    
+
     cat > /etc/systemd/system/qbittorrent.service << EOF
 [Unit]
 Description=qBittorrent-nox
@@ -878,34 +878,34 @@ CPUQuota=50%
 [Install]
 WantedBy=multi-user.target
 EOF
-    
+
     systemctl daemon-reload
     systemctl enable --now qbittorrent
-    
+
     TORRENT_INSTALLED=true
     save_config
-    
+
     log_success "qBittorrent instalado"
 }
 
 install_sync() {
     log_step "Instalando Syncthing"
-    
+
     if [[ "$SYNC_INSTALLED" == "true" ]]; then
         log_info "Syncthing já instalado, pulando..."
         return 0
     fi
-    
+
     curl -s https://syncthing.net/release-key.txt | apt-key add -
     echo "deb https://apt.syncthing.net/ syncthing stable" | tee /etc/apt/sources.list.d/syncthing.list
     apt update
     apt install -y syncthing
-    
+
     systemctl enable --now syncthing@"$(whoami)"
-    
+
     SYNC_INSTALLED=true
     save_config
-    
+
     log_success "Syncthing instalado"
 }
 
@@ -916,7 +916,7 @@ install_sync() {
 show_main_menu() {
     while true; do
         show_header
-        
+
         echo "Selecione uma opção:"
         echo ""
         echo "1) 🚀 Instalação Rápida (Essencial)"
@@ -929,9 +929,9 @@ show_main_menu() {
         echo "8) ℹ️  Sobre"
         echo "9) 🚪 Sair"
         echo ""
-        
+
         read -p "Digite sua opção [1-9]: " choice
-        
+
         case $choice in
             1) quick_install ;;
             2) custom_install ;;
@@ -941,11 +941,11 @@ show_main_menu() {
             6) show_settings ;;
             7) show_logs ;;
             8) show_about ;;
-            9) 
+            9)
                 log_info "Saindo do instalador"
-                exit 0 
+                exit 0
                 ;;
-            *) 
+            *)
                 log_error "Opção inválida"
                 sleep 2
                 ;;
@@ -965,11 +965,11 @@ quick_install() {
     echo "✅ Armazenamento (Samba + FileBrowser)"
     echo "✅ Dashboard Inteligente"
     echo ""
-    
+
     read -p "Confirmar instalação? [S/N]: " confirm
     if [[ ${confirm^^} == "S" ]]; then
         log_step "Iniciando instalação rápida"
-        
+
         # Instalação hierárquica
         install_system_optimizations
         install_base_dependencies
@@ -977,7 +977,7 @@ quick_install() {
         install_dns_services
         install_storage_services
         install_dashboard
-        
+
         log_success "Instalação rápida concluída!"
         echo ""
         echo "🎉 BoxServer instalado com sucesso!"
@@ -987,7 +987,7 @@ quick_install() {
         echo "📁 FileBrowser: http://$SERVER_IP:8082"
         echo "🔗 Samba: \\\\$SERVER_IP\\shared"
         echo ""
-        
+
         read -p "Pressione Enter para continuar..."
     fi
 }
@@ -999,7 +999,7 @@ custom_install() {
         echo ""
         echo "Serviços disponíveis:"
         echo ""
-        
+
         # Mostrar status dos serviços
         echo "📁 Essenciais:"
         echo "   [1] Otimizações do sistema      $([[ "$SYSTEM_OPTIMIZED" == "true" ]] && echo "✅" || echo "❌")"
@@ -1018,11 +1018,11 @@ custom_install() {
         echo ""
         echo "   [0] Voltar"
         echo ""
-        
+
         read -p "Selecione um serviço para instalar/remover [0-9]: " choice
-        
+
         case $choice in
-            1) 
+            1)
                 if [[ "$SYSTEM_OPTIMIZED" == "true" ]]; then
                     log_warning "Otimizações já estão instaladas"
                 else
@@ -1086,12 +1086,12 @@ custom_install() {
                 fi
                 ;;
             0) return ;;
-            *) 
+            *)
                 log_error "Opção inválida"
                 sleep 2
                 ;;
         esac
-        
+
         read -p "Pressione Enter para continuar..."
     done
 }
@@ -1100,20 +1100,20 @@ show_status() {
     show_header
     echo "📊 Status do BoxServer"
     echo ""
-    
+
     # Verificar sistema
     echo "🔧 Sistema:"
     echo "   CPU: $(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1"%"}')%"
     echo "   RAM: $(free -h | grep Mem | awk '{print $3"/"$2}')"
     echo "   Disco: $(df -h / | awk 'NR==2{print $3"/"$2" ("$5")"}')"
-    
+
     # Temperatura
     if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
         temp=$(cat /sys/class/thermal/thermal_zone0/temp | awk '{print $1/1000}')
         echo "   Temperatura: ${temp}°C"
     fi
     echo ""
-    
+
     # Status dos serviços
     echo "🛡️  Serviços Essenciais:"
     echo "   Otimizações:           $([[ "$SYSTEM_OPTIMIZED" == "true" ]] && echo "✅" || echo "❌")"
@@ -1123,16 +1123,16 @@ show_status() {
     echo "   Armazenamento:         $([[ "$STORAGE_CONFIGURED" == "true" ]] && echo "✅" || echo "❌")"
     echo "   Dashboard:             $([[ "$DASHBOARD_INSTALLED" == "true" ]] && echo "✅" || echo "❌")"
     echo ""
-    
+
     echo "🌐 Serviços de Rede:"
     echo "   WireGuard:             $([[ "$WIREGUARD_CONFIGURED" == "true" ]] && echo "✅" || echo "❌")"
     echo ""
-    
+
     echo "📦 Serviços Opcionais:"
     echo "   qBittorrent:           $([[ "$TORRENT_INSTALLED" == "true" ]] && echo "✅" || echo "❌")"
     echo "   Syncthing:             $([[ "$SYNC_INSTALLED" == "true" ]] && echo "✅" || echo "❌")"
     echo ""
-    
+
     # Status dos serviços systemd
     echo "🔍 Status Detalhado:"
     declare -A services=(
@@ -1144,7 +1144,7 @@ show_status() {
         ["qbittorrent"]="qBittorrent"
         ["syncthing"]="Syncthing"
     )
-    
+
     for service in "${!services[@]}"; do
         if systemctl is-active --quiet "$service"; then
             echo "   ${services[$service]}: ✅ Ativo"
@@ -1152,7 +1152,7 @@ show_status() {
             echo "   ${services[$service]}: ❌ Inativo"
         fi
     done
-    
+
     echo ""
     read -p "Pressione Enter para continuar..."
 }
@@ -1169,9 +1169,9 @@ manage_services() {
         echo "5) 🔄 Atualizar sistema"
         echo "0) 🔙 Voltar"
         echo ""
-        
+
         read -p "Selecione uma opção [0-5]: " choice
-        
+
         case $choice in
             1)
                 log_step "Reiniciando todos os serviços"
@@ -1205,11 +1205,11 @@ manage_services() {
                 log_success "Sistema atualizado"
                 ;;
             0) return ;;
-            *) 
+            *)
                 log_error "Opção inválida"
                 ;;
         esac
-        
+
         read -p "Pressione Enter para continuar..."
     done
 }
@@ -1224,30 +1224,30 @@ backup_restore() {
         echo "3) 🔄 Restaurar Backup"
         echo "0) 🔙 Voltar"
         echo ""
-        
+
         read -p "Selecione uma opção [0-3]: " choice
-        
+
         case $choice in
             1)
                 log_step "Criando backup"
                 backup_name="boxserver-backup-$(date +%Y%m%d-%H%M%S)"
                 backup_path="$BACKUP_DIR/$backup_name"
-                
+
                 mkdir -p "$backup_path"
-                
+
                 # Backup das configurações
                 cp -r /etc/boxserver "$backup_path/" 2>/dev/null || true
                 cp -r /etc/pihole "$backup_path/" 2>/dev/null || true
                 cp -r /etc/wireguard "$backup_path/" 2>/dev/null || true
                 cp -r /etc/samba "$backup_path/" 2>/dev/null || true
-                
+
                 # Backup dos serviços systemd
                 cp /etc/systemd/system/dashboard-api.service "$backup_path/" 2>/dev/null || true
                 cp /etc/systemd/system/filebrowser.service "$backup_path/" 2>/dev/null || true
-                
+
                 # Backup dos dados
                 cp -r /var/www/html "$backup_path/" 2>/dev/null || true
-                
+
                 log_success "Backup criado: $backup_path"
                 ;;
             2)
@@ -1266,11 +1266,11 @@ backup_restore() {
                 echo "Função de restauração em desenvolvimento"
                 ;;
             0) return ;;
-            *) 
+            *)
                 log_error "Opção inválida"
                 ;;
         esac
-        
+
         read -p "Pressione Enter para continuar..."
     done
 }
@@ -1286,9 +1286,9 @@ show_settings() {
         echo "4) 📊 Habilitar/Desabilitar monitoramento"
         echo "0) 🔙 Voltar"
         echo ""
-        
+
         read -p "Selecione uma opção [0-4]: " choice
-        
+
         case $choice in
             1)
                 show_header
@@ -1302,11 +1302,11 @@ show_settings() {
                 read -p "Novo IP [$SERVER_IP]: " new_ip
                 read -p "Novo Gateway [$GATEWAY]: " new_gateway
                 read -p "Novo DNS [$DNS_SERVER]: " new_dns
-                
+
                 [[ -n "$new_ip" ]] && SERVER_IP="$new_ip"
                 [[ -n "$new_gateway" ]] && GATEWAY="$new_gateway"
                 [[ -n "$new_dns" ]] && DNS_SERVER="$new_dns"
-                
+
                 save_config
                 log_success "Configurações de rede atualizadas"
                 ;;
@@ -1321,14 +1321,14 @@ show_settings() {
                 echo "3) complete (todos os serviços)"
                 echo ""
                 read -p "Selecione o tipo [1-3]: " type_choice
-                
+
                 case $type_choice in
                     1) INSTALL_TYPE="essential" ;;
                     2) INSTALL_TYPE="standard" ;;
                     3) INSTALL_TYPE="complete" ;;
                     *) ;;
                 esac
-                
+
                 save_config
                 log_success "Tipo de instalação atualizado"
                 ;;
@@ -1353,11 +1353,11 @@ show_settings() {
                 save_config
                 ;;
             0) return ;;
-            *) 
+            *)
                 log_error "Opção inválida"
                 ;;
         esac
-        
+
         read -p "Pressione Enter para continuar..."
     done
 }
@@ -1372,9 +1372,9 @@ show_logs() {
     echo "4) 🗑️  Limpar logs"
     echo "0) 🔙 Voltar"
     echo ""
-    
+
     read -p "Selecione uma opção [0-4]: " choice
-    
+
     case $choice in
         1)
             if [[ -f "$LOG_FILE" ]]; then
@@ -1396,11 +1396,11 @@ show_logs() {
             log_success "Logs limpos"
             ;;
         0) return ;;
-        *) 
+        *)
             log_error "Opção inválida"
             ;;
     esac
-    
+
     read -p "Pressione Enter para continuar..."
 }
 
@@ -1445,7 +1445,7 @@ em um servidor completo e otimizado.
 © 2023 BoxServer Team
 Licença: MIT
 EOF
-    
+
     read -p "Pressione Enter para continuar..."
 }
 
@@ -1456,10 +1456,10 @@ EOF
 main() {
     # Verificar se estamos rodando como root
     check_root
-    
+
     # Inicializar ambiente
     initialize_environment
-    
+
     # Verificar requisitos
     if ! check_requirements; then
         read -p "Requisitos mínimos não atendidos. Deseja continuar? [S/N]: " confirm
@@ -1467,10 +1467,10 @@ main() {
             exit 1
         fi
     fi
-    
+
     # Carregar configuração
     load_config
-    
+
     # Mostrar menu principal
     show_main_menu
 }
