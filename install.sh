@@ -274,6 +274,90 @@ EOF
 }
 
 # =============================================================================
+# FUNÇÕES DE LIMPEZA E PURGE
+# =============================================================================
+
+purge_service() {
+    local service_name="$1"
+    local config_dirs=("${@:2}")
+    
+    log_step "Limpando instalação anterior do $service_name"
+    
+    # Parar serviços
+    systemctl stop "$service_name" 2>/dev/null || true
+    systemctl disable "$service_name" 2>/dev/null || true
+    
+    # Remover pacotes completamente
+    apt purge -y "$service_name" 2>/dev/null || true
+    apt autoremove -y
+    
+    # Remover configurações residuais
+    for dir in "${config_dirs[@]}"; do
+        if [[ -d "$dir" ]]; then
+            log_info "Removendo diretório de configuração: $dir"
+            rm -rf "$dir"
+        fi
+    done
+    
+    # Remover arquivos de configuração específicos
+    case "$service_name" in
+        "lighttpd")
+            rm -f /etc/lighttpd/lighttpd.conf*
+            rm -rf /var/cache/lighttpd
+            rm -rf /var/log/lighttpd
+            ;;
+        "pi-hole")
+            rm -rf /etc/pihole
+            rm -rf /opt/pihole
+            rm -f /etc/dnsmasq.d/01-pihole.conf
+            rm -rf /var/www/html/pihole
+            ;;
+        "samba")
+            rm -f /etc/samba/smb.conf*
+            rm -rf /var/lib/samba
+            rm -rf /var/log/samba
+            ;;
+        "unbound")
+            rm -rf /etc/unbound
+            rm -rf /var/lib/unbound
+            ;;
+    esac
+    
+    # Limpar cache do apt
+    apt clean
+    
+    log_success "Limpeza do $service_name concluída"
+}
+
+clean_install_environment() {
+    log_step "Limpando ambiente de instalação"
+    
+    # Limpar instalações problemáticas comuns
+    local services_to_purge=(
+        "lighttpd"
+        "pi-hole" 
+        "samba"
+        "unbound"
+        "dnsmasq"
+    )
+    
+    for service in "${services_to_purge[@]}"; do
+        if dpkg -l | grep -q "^ii.*$service"; then
+            purge_service "$service"
+        fi
+    done
+    
+    # Limpar processos órfãos
+    pkill -f "lighttpd\|pihole\|samba\|unbound" 2>/dev/null || true
+    
+    # Limpar sockets residuais
+    rm -f /run/lighttpd.pid 2>/dev/null || true
+    rm -f /run/samba/*.pid 2>/dev/null || true
+    
+    log_success "Ambiente limpo para instalação fresh"
+}
+
+# =============================================================================
 # FUNÇÕES DE INSTALAÇÃO
 # =============================================================================
 
@@ -579,7 +663,14 @@ install_dns_services() {
         return 0
     fi
 
-    # Instalar Unbound e lighttpd
+    # Limpar instalações problemáticas anteriores
+    purge_service "lighttpd"
+    purge_service "unbound"
+    purge_service "dnsmasq"
+
+    # Instalar Unbound e lighttpd com versões frescas
+    log_info "Instalando Unbound e lighttpd (fresh install)"
+    apt update
     apt install -y unbound lighttpd
     mkdir -p /etc/unbound/unbound.conf.d
     wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
@@ -609,31 +700,83 @@ EOF
     log_info "Instalando Pi-hole (interativo)"
     curl -sSL https://install.pi-hole.net | bash
 
-    # Verificar se o lighttpd foi instalado e configurar
-    if [[ -f /etc/lighttpd/lighttpd.conf ]]; then
-        log_info "Otimizando lighttpd"
-        # Backup do arquivo original
-        cp /etc/lighttpd/lighttpd.conf /etc/lighttpd/lighttpd.conf.backup
+    # Configurar lighttpd para trabalhar com Pi-hole na porta 8080
+    configure_lighttpd_for_pihole() {
+        log_step "Configurando lighttpd para Pi-hole"
         
-        # Corrigir a porta e remover duplicatas
-        sed -i 's/server.port.*/server.port = 8080/' /etc/lighttpd/lighttpd.conf
-        sed -i '/include_shell.*use-ipv6.pl.*= 8080/c\include_shell "/usr/share/lighttpd/use-ipv6.pl " + server.port' /etc/lighttpd/lighttpd.conf
+        # Parar lighttpd para evitar conflitos
+        systemctl stop lighttpd 2>/dev/null || true
         
-        # Remover duplicatas de max-request-size e adicionar apenas uma vez
-        sed -i '/server.max-request-size/d' /etc/lighttpd/lighttpd.conf
-        echo "server.max-request-size = 2048" >> /etc/lighttpd/lighttpd.conf
+        # Criar configuração limpa do lighttpd
+        cat > /etc/lighttpd/lighttpd.conf << 'EOF'
+server.modules = (
+    "mod_indexfile",
+    "mod_access",
+    "mod_alias",
+    "mod_redirect",
+    "mod_dirlisting",
+    "mod_staticfile"
+)
+
+server.document-root        = "/var/www/html"
+server.upload-dirs          = ( "/var/cache/lighttpd/uploads" )
+server.errorlog             = "/var/log/lighttpd/error.log"
+server.pid-file             = "/run/lighttpd.pid"
+server.username             = "www-data"
+server.groupname            = "www-data"
+server.port                 = 8080
+
+# features
+server.feature-flags       += ("server.h2proto" => "enable")
+server.feature-flags       += ("server.h2c"     => "enable")
+server.feature-flags       += ("server.graceful-shutdown-timeout" => 5)
+
+# strict parsing and normalization of URL for consistency and security
+server.http-parseopts = (
+  "header-strict"           => "enable",
+  "host-strict"             => "enable", 
+  "host-normalize"          => "enable",
+  "url-normalize-unreserved"=> "enable",
+  "url-normalize-required"  => "enable",
+  "url-ctrls-reject"        => "enable",
+  "url-path-2f-decode"      => "enable",
+  "url-path-dotseg-remove"  => "enable"
+)
+
+index-file.names            = ( "index.php", "index.html" )
+url.access-deny             = ( "~", ".inc" )
+static-file.exclude-extensions = ( ".php", ".pl", ".fcgi" )
+
+# IPv6 support
+include_shell "/usr/share/lighttpd/use-ipv6.pl " + server.port
+
+# MIME types
+include_shell "/usr/share/lighttpd/create-mime.conf.pl"
+include "/etc/lighttpd/conf-enabled/*.conf"
+
+# Increase max request size for Pi-hole
+server.max-request-size = 2048
+EOF
+
+        # Criar diretórios necessários
+        mkdir -p /var/cache/lighttpd/uploads
+        mkdir -p /var/log/lighttpd
+        chown www-data:www-data /var/cache/lighttpd/uploads
+        chown www-data:www-data /var/log/lighttpd
         
-        # Testar configuração antes de reiniciar
+        # Testar configuração
         if lighttpd -tt -f /etc/lighttpd/lighttpd.conf; then
-            systemctl restart lighttpd
-            log_success "Lighttpd configurado com sucesso"
+            systemctl enable lighttpd
+            systemctl start lighttpd
+            log_success "Lighttpd configurado e iniciado com sucesso"
         else
-            log_error "Configuração do lighttpd inválida, restaurando backup"
-            cp /etc/lighttpd/lighttpd.conf.backup /etc/lighttpd/lighttpd.conf
+            log_error "Falha na configuração do lighttpd"
+            return 1
         fi
-    else
-        log_warning "Arquivo de configuração do lighttpd não encontrado"
-    fi
+    }
+    
+    # Chamar função de configuração
+    configure_lighttpd_for_pihole
 
     DNS_CONFIGURED=true
     save_config
@@ -649,7 +792,11 @@ install_storage_services() {
         return 0
     fi
 
-    # Instalar Samba
+    # Limpar instalações anteriores do Samba
+    purge_service "samba"
+    
+    # Instalar Samba com versão fresca
+    log_info "Instalando Samba (fresh install)"
     apt install -y samba samba-common-bin
 
     # Criar diretórios
@@ -1219,12 +1366,13 @@ show_main_menu() {
         echo "4) 🔧 Gerenciar Serviços"
         echo "5) 💾 Backup/Restaurar"
         echo "6) 📝 Configurações"
-        echo "7) 📋 Logs"
-        echo "8) ℹ️  Sobre"
-        echo "9) 🚪 Sair"
+        echo "7) 🧹 Limpar Instalação"
+        echo "8) 📋 Logs"
+        echo "9) ℹ️  Sobre"
+        echo "10) 🚪 Sair"
         echo ""
 
-        read -p "Digite sua opção [1-9]: " choice
+        read -p "Digite sua opção [1-10]: " choice
 
         case $choice in
             1) quick_install ;;
@@ -1233,9 +1381,10 @@ show_main_menu() {
             4) manage_services ;;
             5) backup_restore ;;
             6) show_settings ;;
-            7) show_logs ;;
-            8) show_about ;;
-            9)
+            7) clean_installation ;;
+            8) show_logs ;;
+            9) show_about ;;
+            10)
                 log_info "Saindo do instalador"
                 exit 0
                 ;;
@@ -1263,6 +1412,9 @@ quick_install() {
     read -p "Confirmar instalação? [S/N]: " confirm
     if [[ ${confirm^^} == "S" ]]; then
         log_step "Iniciando instalação rápida"
+        
+        # Limpar ambiente antes de instalar
+        clean_install_environment
 
         # Instalação hierárquica
         install_system_optimizations
@@ -1709,6 +1861,91 @@ show_logs() {
             ;;
     esac
 
+    read -p "Pressione Enter para continuar..."
+}
+
+clean_installation() {
+    show_header
+    echo "🧹 Limpeza Completa da Instalação"
+    echo ""
+    echo "⚠️  AVISO: Esta opção removerá completamente:"
+    echo "   • Todos os serviços do BoxServer"
+    echo "   • Configurações e dados"
+    echo "   • Pacotes instalados"
+    echo "   • Arquivos de log"
+    echo ""
+    echo "Esta ação não pode ser desfeita!"
+    echo ""
+    
+    read -p "Digite 'LIMPAR' para confirmar: " confirm
+    if [[ "$confirm" != "LIMPAR" ]]; then
+        log_info "Limpeza cancelada"
+        return
+    fi
+    
+    log_step "Iniciando limpeza completa"
+    
+    # Parar todos os serviços do BoxServer
+    log_info "Parando serviços do BoxServer"
+    systemctl stop dashboard-api pihole-FTL filebrowser smbd nmbd wireguard-ui qbittorrent syncthing 2>/dev/null || true
+    systemctl disable dashboard-api pihole-FTL filebrowser smbd nmbd wireguard-ui qbittorrent syncthing 2>/dev/null || true
+    
+    # Remover serviços systemd personalizados
+    log_info "Removendo serviços systemd"
+    rm -f /etc/systemd/system/dashboard-api.service
+    rm -f /etc/systemd/system/filebrowser.service
+    rm -f /etc/systemd/system/qbittorrent.service
+    systemctl daemon-reload
+    
+    # Limpar instalações de serviços
+    log_info "Limpando instalações de serviços"
+    purge_service "lighttpd"
+    purge_service "pi-hole"
+    purge_service "samba"
+    purge_service "unbound"
+    purge_service "dnsmasq"
+    
+    # Remover pacotes opcionais
+    apt purge -y qbittorrent-nox 2>/dev/null || true
+    apt purge -y syncthing 2>/dev/null || true
+    apt purge -y fail2ban 2>/dev/null || true
+    apt purge -y wireguard 2>/dev/null || true
+    apt purge -y resolvconf openresolv 2>/dev/null || true
+    
+    # Remover arquivos e diretórios
+    log_info "Removendo arquivos de configuração"
+    rm -rf /etc/boxserver
+    rm -rf /srv/samba
+    rm -rf /srv/filebrowser
+    rm -rf /srv/qbittorrent
+    rm -rf /opt/wireguard-ui
+    rm -rf /var/www/html/dashboard*
+    rm -rf /var/www/html/pihole
+    rm -rf /backups/boxserver
+    rm -rf /var/log/boxserver
+    
+    # Remover usuários criados
+    log_info "Removendo usuários criados"
+    userdel -r filebrowser 2>/dev/null || true
+    userdel -r qbittorrent 2>/dev/null || true
+    
+    # Limpar cache do sistema
+    log_info "Limpando cache do sistema"
+    apt clean
+    apt autoremove -y
+    systemctl daemon-reload
+    
+    # Resetar configuração do BoxServer
+    if [[ -f "$CONFIG_FILE" ]]; then
+        log_info "Resetando configuração do BoxServer"
+        create_default_config
+    fi
+    
+    log_success "✅ Limpeza completa concluída!"
+    echo ""
+    echo "🔄 O sistema está pronto para uma nova instalação fresh."
+    echo ""
+    
     read -p "Pressione Enter para continuar..."
 }
 
