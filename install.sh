@@ -938,13 +938,14 @@ install_dns_services() {
     purge_service "unbound"
     purge_service "dnsmasq"
 
-    # Instalar Unbound e lighttpd com versões frescas
-    log_info "Instalando Unbound e lighttpd (fresh install)"
+    # Instalar dependências, incluindo php-cgi para a interface web do Pi-hole
+    log_info "Instalando Unbound, lighttpd e dependências PHP..."
     apt update
-    apt install -y unbound lighttpd
+    apt install -y unbound lighttpd php-cgi
+    
+    # Configurar Unbound
     mkdir -p /etc/unbound/unbound.conf.d
     wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
-
     cat > /etc/unbound/unbound.conf.d/pi-hole.conf << EOF
 server:
   verbosity: 0
@@ -963,16 +964,39 @@ server:
   msg-cache-size: 50m
   rrset-cache-size: 100m
 EOF
-
     systemctl enable --now unbound
 
-    # Instalar Pi-hole
-    log_info "Instalando Pi-hole (interativo)"
-    # Download seguro do script de instalação
+    # --- Instalação Não-Assistida do Pi-hole ---
+    log_info "Preparando instalação não-assistida do Pi-hole..."
+    
+    local network_interface=$(ip route | grep default | awk '{print $5}' | head -1)
+    if [[ -z "$network_interface" ]]; then
+        log_error "Não foi possível detectar a interface de rede para o Pi-hole. Abortando."
+        return 1
+    fi
+    
+    local pihole_password=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 12)
+    local setup_vars_file="/tmp/pihole_setup.conf"
+
+    cat > "$setup_vars_file" <<EOF
+PIHOLE_INTERFACE=${network_interface}
+IPV4_ADDRESS=${SERVER_IP}
+QUERY_LOGGING=true
+INSTALL_WEB_SERVER=true
+INSTALL_WEB_INTERFACE=true
+LIGHTTPD_ENABLED=true
+WEBPASSWORD=${pihole_password}
+DNS_SERVERS=${DNS_SERVER}
+EOF
+
+    log_info "Instalando Pi-hole de forma não-assistida..."
+    log_warning "A senha da interface web do Pi-hole foi definida para: ${pihole_password}"
+    log_warning "ANOTE ESTA SENHA! Ela será exibida apenas uma vez."
+
     curl -sSL https://install.pi-hole.net -o /tmp/pihole-install.sh
     chmod +x /tmp/pihole-install.sh
-    /tmp/pihole-install.sh
-    rm -f /tmp/pihole-install.sh
+    bash /tmp/pihole-install.sh --unattended "$setup_vars_file"
+    rm -f /tmp/pihole-install.sh "$setup_vars_file"
 
     # Adicionado para prevenir conflito na porta 80
     log_info "Configurando Pi-hole FTL para não usar a porta 80 (prevenção de conflito)"
