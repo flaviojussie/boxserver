@@ -989,8 +989,8 @@ install_storage_services() {
     # Aguardar instalação completar
     sleep 3
     
-    # Verificar se os pacotes foram instalados corretamente
-    if ! dpkg -l | grep -q "^ii  samba " || ! dpkg -l | grep -q "^ii  samba-common-bin "; then
+    # Verificar se os pacotes foram instalados corretamente (formato robusto)
+    if ! dpkg -l | grep -q "ii.*samba" || ! dpkg -l | grep -q "ii.*samba-common-bin"; then
         log_error "Pacotes Samba não foram instalados corretamente"
         systemctl unmask smbd nmbd 2>/dev/null || true
         return 1
