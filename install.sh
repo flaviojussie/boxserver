@@ -980,15 +980,13 @@ install_storage_services() {
     # Aguardar instalação completar
     sleep 2
     
-    # Verificar se a instalação criou os diretórios necessários
-    if [[ ! -d "/etc/samba" ]]; then
-        log_warning "Diretório /etc/samba não foi criado pelo pacote, criando manualmente"
-        mkdir -p /etc/samba
-        chown root:root /etc/samba
-        chmod 755 /etc/samba
+    # Verificar se o pacote foi instalado corretamente
+    if ! dpkg -l | grep -q "^ii  samba "; then
+        log_error "Pacote Samba não foi instalado corretamente"
+        return 1
     fi
-
-    # Criar diretórios com permissões corretas
+    
+    # Criar estrutura de diretórios necessária
     log_info "Criando diretórios Samba"
     mkdir -p /etc/samba
     mkdir -p /srv/samba/{shared,private}
@@ -996,25 +994,17 @@ install_storage_services() {
     mkdir -p /var/log/samba
     mkdir -p /run/samba
     
-    # Definir permissões
+    # Configurar permissões
     chmod 777 /srv/samba/shared
     chmod 750 /srv/samba/private
-    chown root:users /srv/samba/shared
-    chown root:users /srv/samba/private
-    chown root:root /etc/samba
-    chown root:root /var/lib/samba/private
+    chown root:users /srv/samba/{shared,private}
+    chown root:root /etc/samba /var/lib/samba/private
     chmod 755 /etc/samba
     chmod 700 /var/lib/samba/private
     
     # Criar grupo e usuário se necessário
     groupadd smbusers 2>/dev/null || true
     usermod -a -G smbusers "$(whoami)" 2>/dev/null || true
-
-    # Verificar se o diretório /etc/samba foi criado
-    if [[ ! -d "/etc/samba" ]]; then
-        log_error "Diretório /etc/samba não foi criado"
-        return 1
-    fi
 
     # Criar configuração básica e compatível
     log_info "Configurando Samba com configuração básica"
