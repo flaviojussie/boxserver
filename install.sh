@@ -1597,89 +1597,31 @@ EOF
 configure_lighttpd_for_pihole() {
     log_step "Configurando lighttpd para Pi-hole na porta 8090"
     
-    # Parar lighttpd para evitar conflitos
+    # Parar lighttpd para evitar conflitos durante a modificação
     systemctl stop lighttpd 2>/dev/null || true
     
-    # Remover configurações conflitantes
-    rm -f /etc/lighttpd/conf-enabled/*pihole* 2>/dev/null || true
-    rm -f /etc/lighttpd/conf-available/*pihole* 2>/dev/null || true
-    
-    # Criar diretórios necessários antes da configuração
-    mkdir -p /var/cache/lighttpd/uploads
-    mkdir -p /var/log/lighttpd
-    chown www-data:www-data /var/cache/lighttpd/uploads
-    chown www-data:www-data /var/log/lighttpd
-    chmod 755 /var/cache/lighttpd/uploads
-    chmod 755 /var/log/lighttpd
-    
-    # Criar configuração limpa do lighttpd com porta alternativa
-    cat > /etc/lighttpd/lighttpd.conf << 'EOF'
-server.modules = (
-    "mod_indexfile",
-    "mod_access",
-    "mod_alias",
-    "mod_redirect",
-    "mod_dirlisting",
-    "mod_staticfile"
-)
-
-server.document-root        = "/var/www/html"
-server.upload-dirs          = ( "/var/cache/lighttpd/uploads" )
-server.errorlog             = "/var/log/lighttpd/error.log"
-server.pid-file             = "/run/lighttpd.pid"
-server.username             = "www-data"
-server.groupname            = "www-data"
-server.port                 = 8090
-
-# features
-server.feature-flags       += ("server.h2proto" => "enable")
-server.feature-flags       += ("server.h2c"     => "enable")
-server.feature-flags       += ("server.graceful-shutdown-timeout" => 5)
-
-# strict parsing and normalization of URL for consistency and security
-server.http-parseopts = (
-  "header-strict"           => "enable",
-  "host-strict"             => "enable", 
-  "host-normalize"          => "enable",
-  "url-normalize-unreserved"=> "enable",
-  "url-normalize-required"  => "enable",
-  "url-ctrls-reject"        => "enable",
-  "url-path-2f-decode"      => "enable",
-  "url-path-dotseg-remove"  => "enable"
-)
-
-index-file.names            = ( "index.php", "index.html" )
-url.access-deny             = ( "~", ".inc" )
-static-file.exclude-extensions = ( ".php", ".pl", ".fcgi" )
-
-# IPv6 support
-include_shell "/usr/share/lighttpd/use-ipv6.pl " + server.port
-
-# MIME types
-include_shell "/usr/share/lighttpd/create-mime.conf.pl"
-include "/etc/lighttpd/conf-enabled/*.conf"
-
-# Increase max request size for Pi-hole
-server.max-request-size = 2048
-EOF
-
-    # Testar configuração
-    if lighttpd -tt -f /etc/lighttpd/lighttpd.conf; then
-        systemctl daemon-reload
-        systemctl enable lighttpd
-        systemctl start lighttpd
-        
-        # Verificar se o serviço iniciou corretamente
-        sleep 2
-        if systemctl is-active --quiet lighttpd; then
-            log_success "Lighttpd configurado e iniciado com sucesso na porta 8090"
-        else
-            log_error "Lighttpd falhou ao iniciar após configuração"
-            systemctl status lighttpd --no-pager -l
-            return 1
-        fi
+    # Em vez de sobrescrever o arquivo, apenas alteramos a porta. 
+    # Isso preserva a configuração padrão do Pi-hole e é mais robusto.
+    if [[ -f /etc/lighttpd/lighttpd.conf ]]; then
+        log_info "Modificando a porta do lighttpd de 80 para 8090..."
+        sed -i 's/^server.port                 = 80/server.port                 = 8090/g' /etc/lighttpd/lighttpd.conf
     else
-        log_error "Falha na configuração do lighttpd"
+        log_error "Arquivo /etc/lighttpd/lighttpd.conf não encontrado após a instalação do Pi-hole."
+        return 1
+    fi
+
+    # Reiniciar o serviço para aplicar a nova porta
+    log_info "Reiniciando lighttpd..."
+    systemctl restart lighttpd
+    
+    sleep 2
+    if systemctl is-active --quiet lighttpd; then
+        log_success "Lighttpd reconfigurado e iniciado com sucesso na porta 8090"
+    else
+        log_error "Lighttpd falhou ao iniciar após reconfiguração da porta."
+        log_info "Verificando status e sintaxe do lighttpd para diagnóstico:"
+        systemctl status lighttpd --no-pager -l || true
+        lighttpd -tt -f /etc/lighttpd/lighttpd.conf || true
         return 1
     fi
 }
