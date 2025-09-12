@@ -18,7 +18,7 @@ apt install -y \
     fail2ban unbound wireguard wireguard-tools
 
 # ========================
-# 3. Heimdall (porta 80)
+# 2. Heimdall (porta 80)
 # ========================
 echo "==> Instalando Heimdall Dashboard..."
 cd /var/www
@@ -55,7 +55,7 @@ rm -f /etc/nginx/sites-enabled/default
 systemctl restart php7.4-fpm nginx
 
 # ========================
-# 4. Pi-hole + Unbound
+# 3. Pi-hole + Unbound
 # ========================
 echo "==> Instalando Pi-hole..."
 curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
@@ -85,7 +85,7 @@ systemctl enable unbound
 systemctl restart unbound
 
 # ========================
-# 5. Filebrowser (porta 8082)
+# 4. Filebrowser (porta 8082)
 # ========================
 echo "==> Instalando Filebrowser..."
 cd /usr/local/bin
@@ -116,7 +116,7 @@ systemctl enable filebrowser
 systemctl start filebrowser
 
 # ========================
-# 6. Cloudflared DoH (porta 5054)
+# 5. Cloudflared DoH (porta 5054)
 # ========================
 echo "==> Instalando Cloudflared..."
 wget -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm
@@ -141,7 +141,7 @@ systemctl enable cloudflared
 systemctl start cloudflared
 
 # ========================
-# 7. WireGuard + WireGuard-UI
+# 6. WireGuard + WireGuard-UI
 # ========================
 echo "==> Instalando WireGuard-UI..."
 cd /usr/local/bin
@@ -173,9 +173,8 @@ systemctl enable wireguard-ui
 systemctl start wireguard-ui
 
 # ========================
-# 8. Configurar serviços locais
+# 7. Configurar serviços locais
 # ========================
-
 # Transmission
 sed -i 's/"rpc-enabled":.*/"rpc-enabled": true,/' /etc/transmission-daemon/settings.json
 sed -i 's/"rpc-port":.*/"rpc-port": 9091,/' /etc/transmission-daemon/settings.json
@@ -207,7 +206,7 @@ systemctl enable fail2ban
 systemctl start fail2ban
 
 # ========================
-# 9. Firewall UFW
+# 8. Firewall UFW
 # ========================
 echo "==> Configurando Firewall..."
 ufw allow 22/tcp
