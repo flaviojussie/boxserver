@@ -1,14 +1,3 @@
-Show! 🚀 Boa escolha: o **Heimdall Dashboard** vai ser sua “tela inicial” para acessar todos os serviços do mini-servidor, deixando organizado e bonito.
-
-Como seu **rk322x** não aceita Docker, precisamos instalar **Heimdall em PHP/Nginx**, rodando na porta **80**. O Pi-hole, que normalmente ocupa a porta 80, ficará apenas na porta **8080** (proxy do lighttpd).
-
----
-
-# 📜 Atualização do Script com Heimdall
-
-Adicionei a instalação do **Heimdall Dashboard** e ajuste do Pi-hole para **porta 8080**.
-
-```bash
 #!/bin/bash
 set -e
 
@@ -193,12 +182,6 @@ echo " MiniDLNA:      via DLNA (porta 8200)"
 echo " MQTT:          tcp://192.168.0.100:1883"
 echo " WireGuard:     Porta 51820/UDP"
 echo "----------------------------------"
-```
-
----
-
-✅ Agora o **Heimdall** assume a **porta 80** como seu painel inicial.
-✅ O **Pi-hole** continua funcionando, mas movido para a **porta 8080**.
 
 ---
 
