@@ -1002,6 +1002,23 @@ install_storage_services() {
     # Criar configuração básica depois que tudo estiver estabilizado
     log_info "Criando configuração básica"
     mkdir -p /etc/samba
+    
+    # Criar TODOS os diretórios necessários para o Samba funcionar
+    log_info "Criando diretórios necessários para o Samba"
+    mkdir -p /var/lib/samba
+    mkdir -p /var/cache/samba
+    mkdir -p /run/samba
+    mkdir -p /var/log/samba
+    mkdir -p /srv/samba/shared
+    
+    # Definir permissões corretas
+    chmod 755 /var/lib/samba
+    chmod 755 /var/cache/samba
+    chmod 755 /run/samba
+    chmod 755 /var/log/samba
+    chmod 777 /srv/samba/shared
+    
+    # Criar arquivo de configuração
     cat > /etc/samba/smb.conf << 'EOF'
 [global]
    workgroup = WORKGROUP
@@ -1010,6 +1027,11 @@ install_storage_services() {
    map to guest = Bad User
    log file = /var/log/samba/log.%m
    max log size = 50
+   lock directory = /var/cache/samba
+   state directory = /var/lib/samba
+   cache directory = /var/cache/samba
+   pid directory = /run/samba
+   private dir = /var/lib/samba/private
    
 [shared]
    path = /srv/samba/shared
@@ -1019,10 +1041,6 @@ install_storage_services() {
    create mask = 0777
    directory mask = 0777
 EOF
-    
-    # Criar diretórios básicos
-    mkdir -p /srv/samba/shared
-    chmod 777 /srv/samba/shared
 
     # Aguardar configuração ser completamente escrita
     sleep 2
