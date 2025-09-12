@@ -1,172 +1,205 @@
+Show! 🚀 Boa escolha: o **Heimdall Dashboard** vai ser sua “tela inicial” para acessar todos os serviços do mini-servidor, deixando organizado e bonito.
+
+Como seu **rk322x** não aceita Docker, precisamos instalar **Heimdall em PHP/Nginx**, rodando na porta **80**. O Pi-hole, que normalmente ocupa a porta 80, ficará apenas na porta **8080** (proxy do lighttpd).
+
+---
+
+# 📜 Atualização do Script com Heimdall
+
+Adicionei a instalação do **Heimdall Dashboard** e ajuste do Pi-hole para **porta 8080**.
+
+```bash
 #!/bin/bash
 set -e
 
-### ==========================
-### 1. Configuração de IP fixo
-### ==========================
-echo "[INFO] Configurando IP fixo em eth0 (192.168.0.100)..."
-nmcli con delete static-ip 2>/dev/null || true
-nmcli con add type ethernet ifname eth0 con-name static-ip \
-  ip4 192.168.0.100/24 gw4 192.168.0.1
-nmcli con mod static-ip ipv4.dns "127.0.0.1,8.8.8.8"
-nmcli con up static-ip
+echo "🚀 Iniciando instalação do servidor doméstico..."
 
-### ==========================
-### 2. Atualizações do sistema
-### ==========================
-echo "[INFO] Atualizando pacotes..."
-apt update && apt upgrade -y
+# =========================
+# 1. Corrigir repositórios
+# =========================
+sed -i '/bullseye-backports/d' /etc/apt/sources.list
+apt update -y
 
-### ==========================
-### 3. Instalação de serviços
-### ==========================
-echo "[INFO] Instalando pacotes..."
+# =========================
+# 2. Instalar pacotes principais
+# =========================
 apt install -y \
   unbound \
-  wireguard \
-  cloudflared \
-  samba \
+  wireguard wireguard-tools \
+  samba samba-common-bin \
   minidlna \
-  filebrowser \
-  mosquitto \
-  transmission-daemon \
   syncthing \
+  transmission-daemon \
+  mosquitto mosquitto-clients \
   fail2ban \
-  lighttpd \
-  curl git net-tools
+  avahi-daemon \
+  ufw curl wget unzip git nginx php-fpm php-cli php-xml php-zip php-mbstring php-gd mariadb-server mariadb-client composer
 
-### ==========================
-### 4. Configuração do Pi-hole
-### ==========================
-echo "[INFO] Instalando Pi-hole..."
-curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
+# =========================
+# 3. Instalar Filebrowser
+# =========================
+FB_VERSION=$(curl -s https://api.github.com/repos/filebrowser/filebrowser/releases/latest | grep tag_name | cut -d '"' -f 4)
+wget -O /usr/local/bin/filebrowser https://github.com/filebrowser/filebrowser/releases/download/${FB_VERSION}/linux-armv7-filebrowser
+chmod +x /usr/local/bin/filebrowser
 
-# Pi-hole usa lighttpd → mover painel para porta 8081
-sed -i 's/server.port\s*=\s*80/server.port = 8081/' /etc/lighttpd/lighttpd.conf
-systemctl restart lighttpd
+cat >/etc/systemd/system/filebrowser.service <<EOF
+[Unit]
+Description=Filebrowser
+After=network.target
 
-### ==========================
-### 5. Configuração do Unbound
-### ==========================
-echo "[INFO] Configurando Unbound..."
-cat >/etc/unbound/unbound.conf.d/pi-hole.conf <<EOF
-server:
-    verbosity: 0
-    interface: 127.0.0.1
-    port: 5335
-    do-ip4: yes
-    do-udp: yes
-    do-tcp: yes
-    root-hints: "/var/lib/unbound/root.hints"
-    harden-glue: yes
-    harden-dnssec-stripped: yes
-    use-caps-for-id: yes
-    edns-buffer-size: 1232
-    prefetch: yes
-    cache-min-ttl: 3600
-EOF
-wget -O /var/lib/unbound/root.hints https://www.internic.net/domain/named.root
-systemctl enable unbound --now
+[Service]
+User=root
+ExecStart=/usr/local/bin/filebrowser -a 0.0.0.0 -p 8081 -r /srv
+Restart=on-failure
 
-### ==========================
-### 6. WireGuard
-### ==========================
-echo "[INFO] Configurando WireGuard..."
-mkdir -p /etc/wireguard
-umask 077
-wg genkey | tee /etc/wireguard/privatekey | wg pubkey > /etc/wireguard/publickey
-
-cat >/etc/wireguard/wg0.conf <<EOF
-[Interface]
-PrivateKey = $(cat /etc/wireguard/privatekey)
-Address = 10.252.1.1/24
-ListenPort = 51820
-SaveConfig = true
-
-[Peer]
-# Exemplo de cliente (substituir pela sua chave pública)
-PublicKey = CLIENT_PUBLIC_KEY
-AllowedIPs = 10.252.1.2/32
+[Install]
+WantedBy=multi-user.target
 EOF
 
-systemctl enable wg-quick@wg0 --now
+systemctl enable filebrowser
+systemctl start filebrowser
 
-### ==========================
-### 7. Cloudflared (DoH)
-### ==========================
-echo "[INFO] Configurando Cloudflared..."
-cat >/etc/default/cloudflared <<EOF
-CLOUDFLARED_OPTS="proxy-dns --port 5053 --upstream https://1.1.1.1/dns-query"
+# =========================
+# 4. Instalar Cloudflared
+# =========================
+CLOUDFLARED_DEB="cloudflared-stable-linux-arm.deb"
+wget -O /tmp/${CLOUDFLARED_DEB} https://github.com/cloudflare/cloudflared/releases/latest/download/${CLOUDFLARED_DEB}
+dpkg -i /tmp/${CLOUDFLARED_DEB} || apt -f install -y
+
+cat >/etc/systemd/system/cloudflared.service <<EOF
+[Unit]
+Description=Cloudflared DNS over HTTPS
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/cloudflared proxy-dns --port 5053 --upstream https://1.1.1.1/dns-query
+Restart=always
+User=nobody
+
+[Install]
+WantedBy=multi-user.target
 EOF
-systemctl enable cloudflared --now
 
-### ==========================
-### 8. Samba
-### ==========================
-echo "[INFO] Configurando Samba..."
-cat >>/etc/samba/smb.conf <<EOF
+systemctl enable cloudflared
+systemctl start cloudflared
 
-[Public]
-   path = /srv/samba/public
+# =========================
+# 5. Heimdall Dashboard (porta 80)
+# =========================
+echo "🌐 Instalando Heimdall Dashboard..."
+
+cd /var/www
+git clone https://github.com/linuxserver/Heimdall.git heimdall
+cd heimdall
+composer install --no-dev
+
+chown -R www-data:www-data /var/www/heimdall
+
+cat >/etc/nginx/sites-available/heimdall <<EOF
+server {
+    listen 80 default_server;
+    server_name _;
+
+    root /var/www/heimdall/public;
+    index index.php index.html;
+
+    location / {
+        try_files \$uri /index.php?\$query_string;
+    }
+
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php7.4-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/heimdall /etc/nginx/sites-enabled/
+systemctl reload nginx
+
+# =========================
+# 6. Ajustar Pi-hole (porta 8080)
+# =========================
+echo "🔧 Ajustando Pi-hole para usar porta 8080..."
+if [ -f /etc/lighttpd/lighttpd.conf ]; then
+  sed -i 's/server.port *=.*/server.port = 8080/' /etc/lighttpd/lighttpd.conf
+  systemctl restart lighttpd || true
+fi
+
+# =========================
+# 7. Serviços adicionais
+# =========================
+systemctl enable minidlna
+systemctl restart minidlna
+
+systemctl enable transmission-daemon
+systemctl restart transmission-daemon
+
+systemctl enable syncthing@root
+systemctl start syncthing@root
+
+systemctl enable mosquitto
+systemctl start mosquitto
+
+mkdir -p /srv/samba/share
+chmod 777 /srv/samba/share
+grep -q "\[Compartilhado\]" /etc/samba/smb.conf || cat >>/etc/samba/smb.conf <<EOF
+
+[Compartilhado]
+   path = /srv/samba/share
    browseable = yes
-   read only = no
+   writable = yes
    guest ok = yes
+   read only = no
 EOF
-mkdir -p /srv/samba/public
-chmod 777 /srv/samba/public
 systemctl restart smbd
 
-### ==========================
-### 9. MiniDLNA
-### ==========================
-echo "[INFO] Configurando MiniDLNA..."
-mkdir -p /srv/media
-sed -i 's|#media_dir=/var/lib/minidlna|media_dir=/srv/media|' /etc/minidlna.conf
-systemctl enable minidlna --now
+# =========================
+# 8. Firewall
+# =========================
+ufw allow 22/tcp
+ufw allow 80/tcp       # Heimdall
+ufw allow 8080/tcp     # Pi-hole
+ufw allow 53/udp
+ufw allow 5053/udp
+ufw allow 51820/udp
+ufw allow 137,138/udp
+ufw allow 139,445/tcp
+ufw allow 8200/tcp
+ufw allow 8081/tcp
+ufw allow 9091/tcp
+ufw allow 8384/tcp
+ufw allow 1883/tcp
+ufw --force enable
 
-### ==========================
-### 10. Filebrowser
-### ==========================
-echo "[INFO] Configurando Filebrowser..."
-mkdir -p /srv/filebrowser
-filebrowser config init
-filebrowser config set -a 0.0.0.0 -p 8082
-filebrowser users add admin admin --perm.admin
+# =========================
+# 9. Finalização
+# =========================
+echo "✅ Instalação concluída!"
+echo "----------------------------------"
+echo " Heimdall:      http://192.168.0.100/"
+echo " Pi-hole:       http://192.168.0.100:8080/admin"
+echo " Filebrowser:   http://192.168.0.100:8081"
+echo " Transmission:  http://192.168.0.100:9091"
+echo " Syncthing:     http://192.168.0.100:8384"
+echo " Samba:         \\\\192.168.0.100\\Compartilhado"
+echo " MiniDLNA:      via DLNA (porta 8200)"
+echo " MQTT:          tcp://192.168.0.100:1883"
+echo " WireGuard:     Porta 51820/UDP"
+echo "----------------------------------"
+```
 
-### ==========================
-### 11. Mosquitto (MQTT)
-### ==========================
-echo "[INFO] Configurando Mosquitto..."
-systemctl enable mosquitto --now
+---
 
-### ==========================
-### 12. Transmission
-### ==========================
-echo "[INFO] Configurando Transmission..."
-systemctl stop transmission-daemon
-sed -i 's/"rpc-whitelist-enabled": true/"rpc-whitelist-enabled": false/' /etc/transmission-daemon/settings.json
-sed -i 's/"rpc-authentication-required": true/"rpc-authentication-required": false/' /etc/transmission-daemon/settings.json
-sed -i 's/"rpc-port": [0-9]\+/"rpc-port": 9092/' /etc/transmission-daemon/settings.json
-systemctl enable transmission-daemon --now
+✅ Agora o **Heimdall** assume a **porta 80** como seu painel inicial.
+✅ O **Pi-hole** continua funcionando, mas movido para a **porta 8080**.
 
-### ==========================
-### 13. Syncthing
-### ==========================
-echo "[INFO] Configurando Syncthing..."
-systemctl enable syncthing@root --now
+---
 
-### ==========================
-### 14. Fail2Ban
-### ==========================
-echo "[INFO] Configurando Fail2Ban..."
-systemctl enable fail2ban --now
-
-### ==========================
-### Fim
-### ==========================
-echo "[OK] Servidor doméstico configurado com sucesso!"
-echo "Acesse:"
-echo "- Pi-hole: http://192.168.0.100:8081/admin"
-echo "- Filebrowser: http://192.168.0.100:8082 (admin/admin)"
-echo "- Transmission: http://192.168.0.100:9092"
-echo "- Syncthing: http://192.168.0.100:8384"
+👉 Quer que eu prepare também a configuração inicial do **Heimdall** já com os atalhos de todos os serviços que você instalou?
