@@ -429,16 +429,28 @@ fix_samba_issues() {
     systemctl stop smbd nmbd 2>/dev/null || true
     pkill -f "smbd\|nmbd" 2>/dev/null || true
     
-    # Remover locks
+    # Remover locks e arquivos problemáticos
     rm -rf /var/lib/samba/private/msg.lock 2>/dev/null || true
     rm -rf /run/samba 2>/dev/null || true
+    rm -f /etc/samba/smb.conf 2>/dev/null || true
     
-    # Recrear diretórios necessários
+    # Recrear todos os diretórios necessários com permissões corretas
+    log_info "Recriando estrutura de diretórios Samba"
+    mkdir -p /etc/samba
     mkdir -p /var/lib/samba/private
     mkdir -p /var/log/samba
     mkdir -p /run/samba
+    mkdir -p /srv/samba/{shared,private}
+    
+    # Definir permissões corretas
+    chown root:root /etc/samba
     chown root:root /var/lib/samba/private
+    chown root:users /srv/samba/shared
+    chown root:users /srv/samba/private
+    chmod 755 /etc/samba
     chmod 700 /var/lib/samba/private
+    chmod 777 /srv/samba/shared
+    chmod 750 /srv/samba/private
     
     # Resetar configuração para básica
     cat > /etc/samba/smb.conf << 'EOF'
@@ -918,8 +930,18 @@ install_storage_services() {
     # Limpar instalações anteriores do Samba completamente
     purge_service "samba"
     
-    # Parar serviços residuais
+    # Parar serviços residuais e remover processos
     systemctl stop smbd nmbd 2>/dev/null || true
+    pkill -f "smbd\|nmbd" 2>/dev/null || true
+    
+    # Remover completamente diretórios residuais
+    rm -rf /etc/samba 2>/dev/null || true
+    rm -rf /var/lib/samba 2>/dev/null || true
+    rm -rf /var/cache/samba 2>/dev/null || true
+    rm -rf /run/samba 2>/dev/null || true
+    
+    # Aguardar sistema liberar recursos
+    sleep 3
     
     # Instalar Samba com versão fresca
     log_info "Instalando Samba (fresh install)"
@@ -928,18 +950,42 @@ install_storage_services() {
 
     # Aguardar instalação completar
     sleep 2
+    
+    # Verificar se a instalação criou os diretórios necessários
+    if [[ ! -d "/etc/samba" ]]; then
+        log_warning "Diretório /etc/samba não foi criado pelo pacote, criando manualmente"
+        mkdir -p /etc/samba
+        chown root:root /etc/samba
+        chmod 755 /etc/samba
+    fi
 
     # Criar diretórios com permissões corretas
     log_info "Criando diretórios Samba"
+    mkdir -p /etc/samba
     mkdir -p /srv/samba/{shared,private}
+    mkdir -p /var/lib/samba/private
+    mkdir -p /var/log/samba
+    mkdir -p /run/samba
+    
+    # Definir permissões
     chmod 777 /srv/samba/shared
     chmod 750 /srv/samba/private
     chown root:users /srv/samba/shared
     chown root:users /srv/samba/private
+    chown root:root /etc/samba
+    chown root:root /var/lib/samba/private
+    chmod 755 /etc/samba
+    chmod 700 /var/lib/samba/private
     
     # Criar grupo e usuário se necessário
     groupadd smbusers 2>/dev/null || true
     usermod -a -G smbusers "$(whoami)" 2>/dev/null || true
+
+    # Verificar se o diretório /etc/samba foi criado
+    if [[ ! -d "/etc/samba" ]]; then
+        log_error "Diretório /etc/samba não foi criado"
+        return 1
+    fi
 
     # Criar configuração básica primeiro e testar
     log_info "Configurando Samba com configuração básica"
