@@ -114,6 +114,26 @@ check_requirements() {
         exit 1
     fi
 
+    # Verificar versão do kernel para compatibilidade
+    local kernel_version=$(uname -r | cut -d. -f1-2)
+    log_info "Versão do Kernel: $kernel_version"
+    
+    case "$kernel_version" in
+        "4.4"|"4.9"|"4.14"|"4.19"|"5.4"|"5.10"|"5.15")
+            log_info "Kernel $kernel_version - boa compatibilidade"
+            ;;
+        "3."*)
+            log_warning "Kernel $kernel_version - compatibilidade limitada"
+            ;;
+        "2."*)
+            log_error "Kernel $kernel_version - não suportado"
+            exit 1
+            ;;
+        *)
+            log_info "Kernel $kernel_version - excelente compatibilidade"
+            ;;
+    esac
+
     # Verificar arquitetura
     local arch=$(uname -m)
     case "$arch" in
@@ -130,6 +150,28 @@ check_requirements() {
     local total_mem=$(free -m | awk 'NR==2{print $2}')
     if [[ $total_mem -lt 512 ]]; then
         log_warning "Memória RAM insuficiente: ${total_mem}MB (mínimo: 512MB)"
+        return 1
+    fi
+
+    # Verificar espaço em disco
+    local disk_space=$(df / | awk 'NR==2{print $4}')
+    if [[ $disk_space -lt 1048576 ]]; then  # 1GB em KB
+        log_warning "Espaço em disco insuficiente: $((disk_space/1024))MB (mínimo: 1GB)"
+        return 1
+    fi
+
+    # Verificar comandos essenciais para Kernel 4.4
+    local required_commands=("curl" "wget" "python3" "pip3" "systemctl" "ip" "iptables")
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            log_error "Comando essencial não encontrado: $cmd"
+            return 1
+        fi
+    done
+
+    # Verificar se /proc está montado (essencial para métodos legacy)
+    if [[ ! -d "/proc" ]]; then
+        log_error "/proc não está montado - necessário para compatibilidade"
         return 1
     fi
 
@@ -262,10 +304,19 @@ iface $network_interface inet static
     dns-nameservers $DNS_SERVER
 EOF
         
-        # Tentar aplicar configuração
-        ifdown "$network_interface" 2>/dev/null || true
-        ifup "$network_interface" 2>/dev/null || true
-        systemctl restart networking 2>/dev/null || true
+        # Tentar aplicar configuração (métodos alternativos)
+        if command -v ifdown &> /dev/null && command -v ifup &> /dev/null; then
+            log_info "Usando ifdown/ifup para configurar rede"
+            ifdown "$network_interface" 2>/dev/null || true
+            sleep 2
+            ifup "$network_interface" 2>/dev/null || true
+        elif command -v systemctl &> /dev/null; then
+            log_info "Usando systemctl para reiniciar rede"
+            systemctl restart networking 2>/dev/null || true
+            systemctl restart NetworkManager 2>/dev/null || true
+        else
+            log_info "Reinicialização de rede manual necessária"
+        fi
         
         log_info "Configuração de rede aplicada via /etc/network/interfaces/"
     else
@@ -367,6 +418,11 @@ install_base_dependencies() {
         "python3-pip" "iotop" "sysstat"
     )
     
+    # Pacotes adicionais para compatibilidade
+    local compat_packages=(
+        "python3-dev" "python3-setuptools" "python3-wheel"
+    )
+    
     local failed_packages=()
     for package in "${packages[@]}"; do
         if ! apt install -y "$package"; then
@@ -374,6 +430,24 @@ install_base_dependencies() {
             failed_packages+=("$package")
         fi
     done
+    
+    # Instalar pacotes de compatibilidade
+    log_info "Instalando pacotes de compatibilidade"
+    for package in "${compat_packages[@]}"; do
+        if ! apt install -y "$package"; then
+            log_warning "Pacote de compatibilidade $package não disponível, pulando..."
+            failed_packages+=("$package")
+        fi
+    done
+    
+    # Instalar psutil via pip (necessário para o dashboard)
+    log_info "Instalando psutil via pip para o dashboard"
+    if command -v pip3 &> /dev/null; then
+        pip3 install psutil || log_warning "Não foi possível instalar psutil via pip"
+    else
+        log_warning "pip3 não disponível, tentando instalar psutil via apt"
+        apt install -y python3-psutil 2>/dev/null || log_warning "psutil não disponível via apt"
+    fi
     
     if [[ ${#failed_packages[@]} -gt 0 ]]; then
         log_warning "Alguns pacotes não foram instalados: ${failed_packages[*]}"
@@ -398,17 +472,96 @@ install_firewall() {
         return 0
     fi
 
-    # Configurar UFW
-    ufw default deny incoming
-    ufw default allow outgoing
-    ufw allow 22/tcp comment "SSH"
-    ufw allow 80/tcp comment "Dashboard"
-    ufw allow 443/tcp comment "HTTPS"
-    ufw allow 5000/tcp comment "WireGuard-UI"
-    ufw allow 51820/udp comment "WireGuard VPN"
-    ufw --force enable
+    # Verificar compatibilidade do UFW com kernel antigo
+    log_info "Verificando compatibilidade do firewall"
+    local kernel_version=$(uname -r | cut -d. -f1-2)
+    
+    if [[ "$kernel_version" == "4.4" ]]; then
+        log_warning "Kernel 4.4 detectado - usando iptables legado"
+        
+        # Para kernel 4.4, usar iptables diretamente em vez de UFW
+        # Configurar regras básicas de iptables
+        iptables -F INPUT
+        iptables -F FORWARD
+        iptables -F OUTPUT
+        iptables -P INPUT DROP
+        iptables -P FORWARD DROP
+        iptables -P OUTPUT ACCEPT
+        
+        # Permitir tráfego estabelecido e relacionado
+        iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+        iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
+        
+        # Permitir loopback
+        iptables -A INPUT -i lo -j ACCEPT
+        
+        # Permitir portas essenciais
+        iptables -A INPUT -p tcp --dport 22 -j ACCEPT    # SSH
+        iptables -A INPUT -p tcp --dport 80 -j ACCEPT    # Dashboard
+        iptables -A INPUT -p tcp --dport 443 -j ACCEPT   # HTTPS
+        iptables -A INPUT -p tcp --dport 5000 -j ACCEPT  # WireGuard-UI
+        iptables -A INPUT -p udp --dport 51820 -j ACCEPT # WireGuard VPN
+        
+        # Salvar regras
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4
+        
+        # Criar serviço para persistência das regras
+        cat > /etc/systemd/system/iptables-restore.service << EOF
+[Unit]
+Description=Restore iptables rules
+Before=network.target
 
+[Service]
+Type=oneshot
+ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        
+        systemctl daemon-reload
+        systemctl enable iptables-restore.service
+        
+        log_info "Firewall configurado com iptables (compatível com kernel 4.4)"
+    else
+        # Para kernels mais recentes, usar UFW normalmente
+        log_info "Usando UFW para kernel $kernel_version"
+        
+        # Configurar UFW
+        ufw default deny incoming
+        ufw default allow outgoing
+        ufw allow 22/tcp comment "SSH"
+        ufw allow 80/tcp comment "Dashboard"
+        ufw allow 443/tcp comment "HTTPS"
+        ufw allow 5000/tcp comment "WireGuard-UI"
+        ufw allow 51820/udp comment "WireGuard VPN"
+        
+        # Tentar habilitar UFW com tratamento de erro
+        if ! ufw --force enable 2>/dev/null; then
+            log_warning "UFW falhou, usando iptables diretamente"
+            # Fallback para iptables
+            iptables -F INPUT
+            iptables -F FORWARD
+            iptables -F OUTPUT
+            iptables -P INPUT DROP
+            iptables -P FORWARD DROP
+            iptables -P OUTPUT ACCEPT
+            iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+            iptables -A INPUT -i lo -j ACCEPT
+            iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+            iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+            iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+            iptables -A INPUT -p tcp --dport 5000 -j ACCEPT
+            iptables -A INPUT -p udp --dport 51820 -j ACCEPT
+            
+            mkdir -p /etc/iptables
+            iptables-save > /etc/iptables/rules.v4
+        fi
+    fi
+    
     # Instalar fail2ban
+    log_info "Instalando fail2ban"
     apt install -y fail2ban
     systemctl enable --now fail2ban
 
@@ -585,9 +738,15 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 import subprocess
 import os
-import psutil
 import time
 from urllib.parse import urlparse, parse_qs
+
+# Tentar importar psutil com fallback
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
 
 class DashboardAPI(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -624,8 +783,28 @@ class DashboardAPI(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(response, indent=2).encode())
 
     def get_system_info(self):
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory = psutil.virtual_memory()
+        # Obter uso de CPU com ou sem psutil
+        if PSUTIL_AVAILABLE:
+            try:
+                cpu_percent = psutil.cpu_percent(interval=1)
+            except:
+                cpu_percent = self.get_cpu_usage_legacy()
+        else:
+            cpu_percent = self.get_cpu_usage_legacy()
+        
+        # Obter uso de memória com ou sem psutil
+        if PSUTIL_AVAILABLE:
+            try:
+                memory = psutil.virtual_memory()
+                memory_info = {
+                    "percent": memory.percent,
+                    "total": f"{memory.total // (1024**3):.1f}GB",
+                    "available": f"{memory.available // (1024**3):.1f}GB"
+                }
+            except:
+                memory_info = self.get_memory_usage_legacy()
+        else:
+            memory_info = self.get_memory_usage_legacy()
 
         temp = "N/A"
         try:
@@ -646,15 +825,58 @@ class DashboardAPI(BaseHTTPRequestHandler):
 
         return {
             "cpu": f"{cpu_percent:.1f}%",
-            "memory": {
-                "percent": memory.percent,
-                "total": f"{memory.total // (1024**3):.1f}GB",
-                "available": f"{memory.available // (1024**3):.1f}GB"
-            },
+            "memory": memory_info,
             "temperature": temp,
             "uptime": uptime,
-            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+            "psutil_available": PSUTIL_AVAILABLE
         }
+    
+    def get_cpu_usage_legacy(self):
+        """Método alternativo para obter uso de CPU sem psutil"""
+        try:
+            # Usar /proc/stat para calcular uso de CPU
+            with open('/proc/stat', 'r') as f:
+                lines = f.readlines()
+            
+            for line in lines:
+                if line.startswith('cpu '):
+                    values = line.split()[1:8]
+                    user, nice, system, idle, iowait, irq, softirq = map(int, values)
+                    total = user + nice + system + idle + iowait + irq + softirq
+                    used = total - idle
+                    return (used / total * 100) if total > 0 else 0.0
+        except:
+            pass
+        return 0.0
+    
+    def get_memory_usage_legacy(self):
+        """Método alternativo para obter uso de memória sem psutil"""
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                lines = f.readlines()
+            
+            meminfo = {}
+            for line in lines:
+                if line.strip():
+                    key, value = line.split(':')[:2]
+                    meminfo[key.strip()] = int(value.strip().split()[0])
+            
+            total = meminfo.get('MemTotal', 0)
+            available = meminfo.get('MemAvailable', meminfo.get('MemFree', 0))
+            used = total - available
+            
+            return {
+                "percent": (used / total * 100) if total > 0 else 0,
+                "total": f"{total // 1024:.1f}GB",
+                "available": f"{available // 1024:.1f}GB"
+            }
+        except:
+            return {
+                "percent": 0,
+                "total": "N/A",
+                "available": "N/A"
+            }
 
     def get_services_status(self):
         services = {
@@ -876,8 +1098,12 @@ install_wireguard() {
         return 0
     fi
 
-    # Instalar WireGuard
-    apt install -y wireguard resolvconf
+    # Instalar WireGuard (resolvconf pode não estar disponível em sistemas mais recentes)
+    apt install -y wireguard
+    if ! apt install -y resolvconf 2>/dev/null; then
+        log_warning "resolvconf não disponível, usando openresolv ou alternativa"
+        apt install -y openresolv 2>/dev/null || true
+    fi
 
     # Instalar WireGuard-UI
     if [[ -f "$SCRIPT_DIR/install-wireguard-ui.sh" ]]; then
@@ -1431,15 +1657,29 @@ show_logs() {
             fi
             ;;
         2)
-            journalctl -xb --no-pager | tail -50
+            if command -v journalctl &> /dev/null; then
+                if journalctl -xb --no-pager &> /dev/null; then
+                    journalctl -xb --no-pager | tail -50
+                else
+                    journalctl --no-pager | tail -50
+                fi
+            else
+                log_warning "journalctl não disponível, mostrando logs do sistema"
+                find /var/log -name "*.log" -exec tail -n 20 {} \; 2>/dev/null | head -50
+            fi
             ;;
         3)
             systemctl status --no-pager -l | tail -50
             ;;
         4)
             log_step "Limpando logs antigos"
-            journalctl --vacuum-time=7d
+            if command -v journalctl &> /dev/null; then
+                journalctl --vacuum-time=7d 2>/dev/null || log_warning "journalctl --vacuum-time falhou"
+            fi
             find /var/log -name "*.log" -mtime +30 -delete 2>/dev/null || true
+            # Limpar cache do apt
+            apt clean 2>/dev/null || true
+            apt autoremove -y 2>/dev/null || true
             log_success "Logs limpos"
             ;;
         0) return ;;
