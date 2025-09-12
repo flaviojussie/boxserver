@@ -293,23 +293,11 @@ purge_service() {
     
     log_step "Limpando instalação anterior do $service_name"
     
-    # Parar serviços
+    # Parar e desabilitar serviço
     systemctl stop "$service_name" 2>/dev/null || true
     systemctl disable "$service_name" 2>/dev/null || true
     
-    # Remover pacotes completamente
-    apt purge -y "$service_name" 2>/dev/null || true
-    apt autoremove -y
-    
-    # Remover configurações residuais
-    for dir in "${config_dirs[@]}"; do
-        if [[ -d "$dir" ]]; then
-            log_info "Removendo diretório de configuração: $dir"
-            rm -rf "$dir"
-        fi
-    done
-    
-    # Remover arquivos de configuração específicos
+    # Lógica de limpeza específica para cada serviço
     case "$service_name" in
         "lighttpd")
             rm -f /etc/lighttpd/lighttpd.conf*
@@ -323,6 +311,20 @@ purge_service() {
             rm -rf /var/www/html/pihole
             ;;
         "samba")
+            # Parada forçada e remoção de processos
+            log_info "Parando serviços Samba e processos relacionados..."
+            systemctl stop smbd nmbd 2>/dev/null || true
+            pkill -9 -f "smbd|nmbd" 2>/dev/null || true
+            
+            # Aguardar liberação de recursos
+            sleep 2
+
+            # Remover pacotes completamente
+            log_info "Removendo pacotes do Samba..."
+            apt purge -y "samba" "samba-common-bin" 2>/dev/null || true
+            
+            # Remover todos os diretórios e arquivos residuais
+            log_info "Removendo arquivos e diretórios residuais do Samba..."
             rm -f /etc/samba/smb.conf*
             rm -rf /etc/samba
             rm -rf /var/lib/samba
@@ -335,8 +337,22 @@ purge_service() {
             rm -rf /var/lib/unbound
             ;;
     esac
+
+    # Remover pacotes (se não for o Samba, que já foi tratado)
+    if [[ "$service_name" != "samba" ]]; then
+        apt purge -y "$service_name" 2>/dev/null || true
+    fi
     
-    # Limpar cache do apt
+    # Remover configurações residuais genéricas
+    for dir in "${config_dirs[@]}"; do
+        if [[ -d "$dir" ]]; then
+            log_info "Removendo diretório de configuração: $dir"
+            rm -rf "$dir"
+        fi
+    done
+    
+    # Limpeza final do sistema de pacotes
+    apt autoremove -y
     apt clean
     
     log_success "Limpeza do $service_name concluída"
@@ -448,6 +464,7 @@ fix_samba_issues() {
     log_info "Recriando estrutura de diretórios Samba"
     mkdir -p /etc/samba
     mkdir -p /var/lib/samba/private
+    mkdir -p /var/lib/samba/private/msg.sock  # FIX: Diretório do socket que estava faltando
     mkdir -p /var/log/samba
     mkdir -p /run/samba
     mkdir -p /srv/samba/{shared,private}
@@ -455,10 +472,12 @@ fix_samba_issues() {
     # Definir permissões corretas
     chown root:root /etc/samba
     chown root:root /var/lib/samba/private
+    chown root:root /var/lib/samba/private/msg.sock  # FIX: Permissões do diretório do socket
     chown root:users /srv/samba/shared
     chown root:users /srv/samba/private
     chmod 755 /etc/samba
     chmod 700 /var/lib/samba/private
+    chmod 700 /var/lib/samba/private/msg.sock  # FIX: Permissões do diretório do socket
     chmod 777 /srv/samba/shared
     chmod 750 /srv/samba/private
     
@@ -494,8 +513,6 @@ EOF
     fi
     
     # Tentar iniciar serviços individualmente
-    systemctl daemon-reload
-    
     # Parar serviços completamente antes de iniciar
     systemctl stop smbd nmbd 2>/dev/null || true
     sleep 2
@@ -815,41 +832,42 @@ install_firewall() {
         return 0
     fi
 
-    # Verificar compatibilidade do UFW com kernel antigo
+    # Definir portas e seus protocolos/comentários
+    declare -A ports_to_open=(
+        ["22/tcp"]="SSH"
+        ["80/tcp"]="Dashboard"
+        ["443/tcp"]="HTTPS"
+        ["5000/tcp"]="WireGuard-UI"
+        ["51820/udp"]="WireGuard VPN"
+        ["22000/tcp"]="Syncthing"
+        ["22000/udp"]="Syncthing"
+    )
+
     log_info "Verificando compatibilidade do firewall"
     local kernel_version=$(uname -r | cut -d. -f1-2)
 
     if [[ "$kernel_version" == "4.4" ]]; then
         log_warning "Kernel 4.4 detectado - usando iptables legado"
 
-        # Para kernel 4.4, usar iptables diretamente em vez de UFW
         # Configurar regras básicas de iptables
-        iptables -F INPUT
-        iptables -F FORWARD
-        iptables -F OUTPUT
-        iptables -P INPUT DROP
-        iptables -P FORWARD DROP
-        iptables -P OUTPUT ACCEPT
-
-        # Permitir tráfego estabelecido e relacionado
+        iptables -F INPUT; iptables -F FORWARD; iptables -F OUTPUT
+        iptables -P INPUT DROP; iptables -P FORWARD DROP; iptables -P OUTPUT ACCEPT
         iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
         iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
-
-        # Permitir loopback
         iptables -A INPUT -i lo -j ACCEPT
 
-        # Permitir portas essenciais
-        iptables -A INPUT -p tcp --dport 22 -j ACCEPT    # SSH
-        iptables -A INPUT -p tcp --dport 80 -j ACCEPT    # Dashboard
-        iptables -A INPUT -p tcp --dport 443 -j ACCEPT   # HTTPS
-        iptables -A INPUT -p tcp --dport 5000 -j ACCEPT  # WireGuard-UI
-        iptables -A INPUT -p udp --dport 51820 -j ACCEPT # WireGuard VPN
+        # Abrir portas a partir do array
+        log_info "Configurando regras do iptables..."
+        for port_spec in "${!ports_to_open[@]}"; do
+            local port_num=$(echo $port_spec | cut -d/ -f1)
+            local proto=$(echo $port_spec | cut -d/ -f2)
+            log_info "Permitindo porta ${port_num}/${proto} para ${ports_to_open[$port_spec]}"
+            iptables -A INPUT -p $proto --dport $port_num -j ACCEPT
+        done
 
-        # Salvar regras
+        # Salvar regras e criar serviço de persistência
         mkdir -p /etc/iptables
         iptables-save > /etc/iptables/rules.v4
-
-        # Criar serviço para persistência das regras
         cat > /etc/systemd/system/iptables-restore.service << EOF
 [Unit]
 Description=Restore iptables rules
@@ -862,42 +880,35 @@ ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
 [Install]
 WantedBy=multi-user.target
 EOF
-
         systemctl daemon-reload
         systemctl enable iptables-restore.service
-
         log_info "Firewall configurado com iptables (compatível com kernel 4.4)"
     else
-        # Para kernels mais recentes, usar UFW normalmente
         log_info "Usando UFW para kernel $kernel_version"
 
         # Configurar UFW
         ufw default deny incoming
         ufw default allow outgoing
-        ufw allow 22/tcp comment "SSH"
-        ufw allow 80/tcp comment "Dashboard"
-        ufw allow 443/tcp comment "HTTPS"
-        ufw allow 5000/tcp comment "WireGuard-UI"
-        ufw allow 51820/udp comment "WireGuard VPN"
 
-        # Tentar habilitar UFW com tratamento de erro
+        # Abrir portas a partir do array
+        log_info "Configurando regras do UFW..."
+        for port_spec in "${!ports_to_open[@]}"; do
+            log_info "Permitindo porta ${port_spec} para ${ports_to_open[$port_spec]}"
+            ufw allow ${port_spec} comment "${ports_to_open[$port_spec]}"
+        done
+
+        # Habilitar UFW com fallback para iptables
         if ! ufw --force enable 2>/dev/null; then
-            log_warning "UFW falhou, usando iptables diretamente"
-            # Fallback para iptables
-            iptables -F INPUT
-            iptables -F FORWARD
-            iptables -F OUTPUT
-            iptables -P INPUT DROP
-            iptables -P FORWARD DROP
-            iptables -P OUTPUT ACCEPT
+            log_warning "UFW falhou, usando iptables diretamente como fallback"
+            iptables -F INPUT; iptables -F FORWARD; iptables -F OUTPUT
+            iptables -P INPUT DROP; iptables -P FORWARD DROP; iptables -P OUTPUT ACCEPT
             iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
             iptables -A INPUT -i lo -j ACCEPT
-            iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-            iptables -A INPUT -p tcp --dport 80 -j ACCEPT
-            iptables -A INPUT -p tcp --dport 443 -j ACCEPT
-            iptables -A INPUT -p tcp --dport 5000 -j ACCEPT
-            iptables -A INPUT -p udp --dport 51820 -j ACCEPT
-
+            for port_spec in "${!ports_to_open[@]}"; do
+                local port_num=$(echo $port_spec | cut -d/ -f1)
+                local proto=$(echo $port_spec | cut -d/ -f2)
+                iptables -A INPUT -p $proto --dport $port_num -j ACCEPT
+            done
             mkdir -p /etc/iptables
             iptables-save > /etc/iptables/rules.v4
         fi
@@ -963,6 +974,13 @@ EOF
     /tmp/pihole-install.sh
     rm -f /tmp/pihole-install.sh
 
+    # Adicionado para prevenir conflito na porta 80
+    log_info "Configurando Pi-hole FTL para não usar a porta 80 (prevenção de conflito)"
+    echo "BLOCKINGMODE=NULL" > /etc/pihole/pihole-FTL.conf
+    log_info "Reiniciando pihole-FTL para aplicar a configuração..."
+    systemctl restart pihole-FTL 2>/dev/null || log_warning "Falha ao reiniciar pihole-FTL. Pode ser necessário reiniciar manualmente."
+    sleep 2 # Aguarda o serviço estabilizar
+
     # Configurar lighttpd para trabalhar com Pi-hole na porta 8090 (alternativa)
     configure_lighttpd_for_pihole
 
@@ -980,69 +998,39 @@ install_storage_services() {
         return 0
     fi
 
-    # Limpar instalações anteriores do Samba completamente
+    # Limpar completamente qualquer instalação anterior do Samba
     purge_service "samba"
     
-    # Parar serviços residuais e remover processos
-    systemctl stop smbd nmbd 2>/dev/null || true
-    pkill -f "smbd\|nmbd" 2>/dev/null || true
-    
-    # Remover completamente diretórios residuais
-    rm -rf /etc/samba 2>/dev/null || true
-    rm -rf /var/lib/samba 2>/dev/null || true
-    rm -rf /var/cache/samba 2>/dev/null || true
-    rm -rf /run/samba 2>/dev/null || true
-    
-    # Aguardar sistema liberar recursos completamente
-    log_info "Aguardando serviços pararem completamente..."
-    for i in {1..10}; do
-        if ! systemctl is-active --quiet smbd && ! systemctl is-active --quiet nmbd; then
-            log_success "Serviços parados após $i segundos"
-            break
-        fi
-        sleep 1
-        if [[ $i -eq 10 ]]; then
-            log_warning "Serviços não pararam completamente, forçando parada"
-            pkill -9 -f "smbd\|nmbd" 2>/dev/null || true
-            sleep 2
-        fi
-    done
-    
-    # Instalar Samba de forma simples
+    # Instalar Samba
     log_info "Instalando Samba"
     apt update
     apt install -y samba samba-common-bin
     
-    # Aguardar instalação completar e serviços estabilizarem
-    log_info "Aguardando instalação completar..."
+    # Aguardar instalação completar
+    log_info "Aguardando instalação do Samba completar..."
     sleep 5
     
-    # Garantir que serviços estão parados antes de criar configuração
-    log_info "Parando serviços pós-instalação..."
+    # Parar serviços pós-instalação para garantir um ambiente limpo para a configuração
     systemctl stop smbd nmbd 2>/dev/null || true
-    pkill -f "smbd\|nmbd" 2>/dev/null || true
-    sleep 3
+    pkill -f "smbd|nmbd" 2>/dev/null || true
+    sleep 2
     
-    # Criar configuração básica depois que tudo estiver estabilizado
-    log_info "Criando configuração básica"
+    # Criar diretórios e configuração básica
+    log_info "Criando diretórios e configuração do Samba"
     mkdir -p /etc/samba
-    
-    # Criar TODOS os diretórios necessários para o Samba funcionar
-    log_info "Criando diretórios necessários para o Samba"
-    mkdir -p /var/lib/samba
+    mkdir -p /var/lib/samba/private
     mkdir -p /var/cache/samba
     mkdir -p /run/samba
     mkdir -p /var/log/samba
     mkdir -p /srv/samba/shared
     
-    # Definir permissões corretas
     chmod 755 /var/lib/samba
     chmod 755 /var/cache/samba
     chmod 755 /run/samba
     chmod 755 /var/log/samba
     chmod 777 /srv/samba/shared
     
-    # Criar arquivo de configuração
+    # Criar arquivo de configuração mínimo e robusto
     cat > /etc/samba/smb.conf << 'EOF'
 [global]
    workgroup = WORKGROUP
@@ -1066,44 +1054,44 @@ install_storage_services() {
    directory mask = 0777
 EOF
 
-    # Aguardar configuração ser completamente escrita
-    sleep 2
-    
-    # Testar configuração simples com diagnóstico detalhado
+    # Validar configuração e iniciar serviços
     log_info "Validando configuração do Samba..."
-    
-    # Mostrar conteúdo do arquivo para diagnóstico
-    log_info "Conteúdo do /etc/samba/smb.conf:"
-    cat /etc/samba/smb.conf
-    
-    # Testar configuração e mostrar erros
     if testparm -s; then
         log_success "Configuração do Samba válida"
         
-        # Reiniciar serviços
+        systemctl daemon-reload
         systemctl restart smbd nmbd 2>/dev/null || true
         systemctl enable smbd nmbd 2>/dev/null || true
         
-        # Verificar se está funcionando
+        sleep 2
         if systemctl is-active --quiet smbd; then
             log_success "Samba instalado e funcionando"
         else
-            log_warning "Samba instalado mas serviço não iniciado - tentando manualmente"
-            systemctl daemon-reload
-            systemctl start smbd || true
+            log_error "Samba instalado, mas o serviço smbd não iniciou"
+            return 1
         fi
     else
-        log_error "Configuração básica falhou na validação"
+        log_error "Configuração básica do Samba falhou na validação"
         log_info "=== SAÍDA COMPLETA DO TESTPARM PARA DIAGNÓSTICO ==="
         testparm -s 2>&1 || true
         log_info "=== FIM DO DIAGNÓSTICO ==="
         return 1
     fi
 
-    # Configurar firewall
+    # Configurar firewall para Samba
     ufw allow samba 2>/dev/null || true
 
-    # Instalar FileBrowser
+    # Aplicar limites de recursos para o Samba
+    log_info "Aplicando limites de recursos para o Samba (smbd)"
+    mkdir -p /etc/systemd/system/smbd.service.d
+    cat > /etc/systemd/system/smbd.service.d/override.conf << EOF
+[Service]
+MemoryMax=250M
+CPUQuota=60%
+EOF
+    systemctl daemon-reload
+
+    # Instalar FileBrowser como parte dos serviços de armazenamento
     install_filebrowser
 
     STORAGE_CONFIGURED=true
@@ -1422,8 +1410,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=www-data
+Group=www-data
 WorkingDirectory=/var/www/html
 ExecStart=/usr/bin/python3 /var/www/html/dashboard-api.py
 Restart=always
@@ -1438,7 +1426,7 @@ CPUQuota=30%
 # Segurança
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/www/html /var/log
+ReadWritePaths=/var/www/html
 ProtectHome=true
 RemoveIPC=true
 
@@ -1588,7 +1576,18 @@ install_sync() {
     apt update
     apt install -y syncthing
 
-    systemctl enable --now syncthing@"$(whoami)"
+    # Aplicar limites de recursos para o Syncthing
+    log_info "Aplicando limites de recursos para o Syncthing"
+    local user_whoami=$(whoami)
+    mkdir -p "/etc/systemd/system/syncthing@${user_whoami}.service.d"
+    cat > "/etc/systemd/system/syncthing@${user_whoami}.service.d/override.conf" << EOF
+[Service]
+MemoryMax=300M
+CPUQuota=70%
+EOF
+    systemctl daemon-reload
+
+    systemctl enable --now syncthing@"$user_whoami"
 
     SYNC_INSTALLED=true
     save_config
@@ -1601,6 +1600,18 @@ configure_lighttpd_for_pihole() {
     
     # Parar lighttpd para evitar conflitos
     systemctl stop lighttpd 2>/dev/null || true
+    
+    # Remover configurações conflitantes
+    rm -f /etc/lighttpd/conf-enabled/*pihole* 2>/dev/null || true
+    rm -f /etc/lighttpd/conf-available/*pihole* 2>/dev/null || true
+    
+    # Criar diretórios necessários antes da configuração
+    mkdir -p /var/cache/lighttpd/uploads
+    mkdir -p /var/log/lighttpd
+    chown www-data:www-data /var/cache/lighttpd/uploads
+    chown www-data:www-data /var/log/lighttpd
+    chmod 755 /var/cache/lighttpd/uploads
+    chmod 755 /var/log/lighttpd
     
     # Criar configuração limpa do lighttpd com porta alternativa
     cat > /etc/lighttpd/lighttpd.conf << 'EOF'
@@ -1653,17 +1664,21 @@ include "/etc/lighttpd/conf-enabled/*.conf"
 server.max-request-size = 2048
 EOF
 
-    # Criar diretórios necessários
-    mkdir -p /var/cache/lighttpd/uploads
-    mkdir -p /var/log/lighttpd
-    chown www-data:www-data /var/cache/lighttpd/uploads
-    chown www-data:www-data /var/log/lighttpd
-    
     # Testar configuração
     if lighttpd -tt -f /etc/lighttpd/lighttpd.conf; then
+        systemctl daemon-reload
         systemctl enable lighttpd
         systemctl start lighttpd
-        log_success "Lighttpd configurado e iniciado com sucesso na porta 8090"
+        
+        # Verificar se o serviço iniciou corretamente
+        sleep 2
+        if systemctl is-active --quiet lighttpd; then
+            log_success "Lighttpd configurado e iniciado com sucesso na porta 8090"
+        else
+            log_error "Lighttpd falhou ao iniciar após configuração"
+            systemctl status lighttpd --no-pager -l
+            return 1
+        fi
     else
         log_error "Falha na configuração do lighttpd"
         return 1
