@@ -969,18 +969,37 @@ install_storage_services() {
     rm -rf /var/cache/samba 2>/dev/null || true
     rm -rf /run/samba 2>/dev/null || true
     
-    # Aguardar sistema liberar recursos
-    sleep 3
+    # Aguardar sistema liberar recursos completamente
+    log_info "Aguardando serviços pararem completamente..."
+    for i in {1..10}; do
+        if ! systemctl is-active --quiet smbd && ! systemctl is-active --quiet nmbd; then
+            log_success "Serviços parados após $i segundos"
+            break
+        fi
+        sleep 1
+        if [[ $i -eq 10 ]]; then
+            log_warning "Serviços não pararam completamente, forçando parada"
+            pkill -9 -f "smbd\|nmbd" 2>/dev/null || true
+            sleep 2
+        fi
+    done
     
     # Instalar Samba de forma simples
     log_info "Instalando Samba"
     apt update
     apt install -y samba samba-common-bin
     
-    # Aguardar um pouco
-    sleep 2
+    # Aguardar instalação completar e serviços estabilizarem
+    log_info "Aguardando instalação completar..."
+    sleep 5
     
-    # Criar configuração básica primeiro
+    # Garantir que serviços estão parados antes de criar configuração
+    log_info "Parando serviços pós-instalação..."
+    systemctl stop smbd nmbd 2>/dev/null || true
+    pkill -f "smbd\|nmbd" 2>/dev/null || true
+    sleep 3
+    
+    # Criar configuração básica depois que tudo estiver estabilizado
     log_info "Criando configuração básica"
     mkdir -p /etc/samba
     cat > /etc/samba/smb.conf << 'EOF'
@@ -1005,7 +1024,11 @@ EOF
     mkdir -p /srv/samba/shared
     chmod 777 /srv/samba/shared
 
+    # Aguardar configuração ser completamente escrita
+    sleep 2
+    
     # Testar configuração simples
+    log_info "Validando configuração do Samba..."
     if testparm -s >/dev/null 2>&1; then
         log_success "Configuração do Samba válida"
         
