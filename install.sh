@@ -865,81 +865,6 @@ EOF
     curl -sSL https://install.pi-hole.net | bash
 
     # Configurar lighttpd para trabalhar com Pi-hole na porta 8090 (alternativa)
-    configure_lighttpd_for_pihole() {
-        log_step "Configurando lighttpd para Pi-hole na porta 8090"
-        
-        # Parar lighttpd para evitar conflitos
-        systemctl stop lighttpd 2>/dev/null || true
-        
-        # Criar configuração limpa do lighttpd com porta alternativa
-        cat > /etc/lighttpd/lighttpd.conf << 'EOF'
-server.modules = (
-    "mod_indexfile",
-    "mod_access",
-    "mod_alias",
-    "mod_redirect",
-    "mod_dirlisting",
-    "mod_staticfile"
-)
-
-server.document-root        = "/var/www/html"
-server.upload-dirs          = ( "/var/cache/lighttpd/uploads" )
-server.errorlog             = "/var/log/lighttpd/error.log"
-server.pid-file             = "/run/lighttpd.pid"
-server.username             = "www-data"
-server.groupname            = "www-data"
-server.port                 = 8090
-
-# features
-server.feature-flags       += ("server.h2proto" => "enable")
-server.feature-flags       += ("server.h2c"     => "enable")
-server.feature-flags       += ("server.graceful-shutdown-timeout" => 5)
-
-# strict parsing and normalization of URL for consistency and security
-server.http-parseopts = (
-  "header-strict"           => "enable",
-  "host-strict"             => "enable", 
-  "host-normalize"          => "enable",
-  "url-normalize-unreserved"=> "enable",
-  "url-normalize-required"  => "enable",
-  "url-ctrls-reject"        => "enable",
-  "url-path-2f-decode"      => "enable",
-  "url-path-dotseg-remove"  => "enable"
-)
-
-index-file.names            = ( "index.php", "index.html" )
-url.access-deny             = ( "~", ".inc" )
-static-file.exclude-extensions = ( ".php", ".pl", ".fcgi" )
-
-# IPv6 support
-include_shell "/usr/share/lighttpd/use-ipv6.pl " + server.port
-
-# MIME types
-include_shell "/usr/share/lighttpd/create-mime.conf.pl"
-include "/etc/lighttpd/conf-enabled/*.conf"
-
-# Increase max request size for Pi-hole
-server.max-request-size = 2048
-EOF
-
-        # Criar diretórios necessários
-        mkdir -p /var/cache/lighttpd/uploads
-        mkdir -p /var/log/lighttpd
-        chown www-data:www-data /var/cache/lighttpd/uploads
-        chown www-data:www-data /var/log/lighttpd
-        
-        # Testar configuração
-        if lighttpd -tt -f /etc/lighttpd/lighttpd.conf; then
-            systemctl enable lighttpd
-            systemctl start lighttpd
-            log_success "Lighttpd configurado e iniciado com sucesso na porta 8090"
-        else
-            log_error "Falha na configuração do lighttpd"
-            return 1
-        fi
-    }
-    
-    # Chamar função de configuração
     configure_lighttpd_for_pihole
 
     DNS_CONFIGURED=true
@@ -1604,6 +1529,80 @@ install_sync() {
     save_config
 
     log_success "Syncthing instalado"
+}
+
+configure_lighttpd_for_pihole() {
+    log_step "Configurando lighttpd para Pi-hole na porta 8090"
+    
+    # Parar lighttpd para evitar conflitos
+    systemctl stop lighttpd 2>/dev/null || true
+    
+    # Criar configuração limpa do lighttpd com porta alternativa
+    cat > /etc/lighttpd/lighttpd.conf << 'EOF'
+server.modules = (
+    "mod_indexfile",
+    "mod_access",
+    "mod_alias",
+    "mod_redirect",
+    "mod_dirlisting",
+    "mod_staticfile"
+)
+
+server.document-root        = "/var/www/html"
+server.upload-dirs          = ( "/var/cache/lighttpd/uploads" )
+server.errorlog             = "/var/log/lighttpd/error.log"
+server.pid-file             = "/run/lighttpd.pid"
+server.username             = "www-data"
+server.groupname            = "www-data"
+server.port                 = 8090
+
+# features
+server.feature-flags       += ("server.h2proto" => "enable")
+server.feature-flags       += ("server.h2c"     => "enable")
+server.feature-flags       += ("server.graceful-shutdown-timeout" => 5)
+
+# strict parsing and normalization of URL for consistency and security
+server.http-parseopts = (
+  "header-strict"           => "enable",
+  "host-strict"             => "enable", 
+  "host-normalize"          => "enable",
+  "url-normalize-unreserved"=> "enable",
+  "url-normalize-required"  => "enable",
+  "url-ctrls-reject"        => "enable",
+  "url-path-2f-decode"      => "enable",
+  "url-path-dotseg-remove"  => "enable"
+)
+
+index-file.names            = ( "index.php", "index.html" )
+url.access-deny             = ( "~", ".inc" )
+static-file.exclude-extensions = ( ".php", ".pl", ".fcgi" )
+
+# IPv6 support
+include_shell "/usr/share/lighttpd/use-ipv6.pl " + server.port
+
+# MIME types
+include_shell "/usr/share/lighttpd/create-mime.conf.pl"
+include "/etc/lighttpd/conf-enabled/*.conf"
+
+# Increase max request size for Pi-hole
+server.max-request-size = 2048
+EOF
+
+    # Criar diretórios necessários
+    mkdir -p /var/cache/lighttpd/uploads
+    mkdir -p /var/log/lighttpd
+    chown www-data:www-data /var/cache/lighttpd/uploads
+    chown www-data:www-data /var/log/lighttpd
+    
+    # Testar configuração
+    if lighttpd -tt -f /etc/lighttpd/lighttpd.conf; then
+        systemctl enable lighttpd
+        systemctl start lighttpd
+        log_success "Lighttpd configurado e iniciado com sucesso na porta 8090"
+    else
+        log_error "Falha na configuração do lighttpd"
+        return 1
+    fi
 }
 
 # =============================================================================
