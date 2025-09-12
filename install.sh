@@ -18,23 +18,6 @@ apt install -y \
     fail2ban unbound wireguard wireguard-tools
 
 # ========================
-# 2. Configurar IP fixo (via /etc/network/interfaces)
-# ========================
-echo "==> Configurando IP fixo em 192.168.0.100..."
-IFACE="eth0"  # altere se necessário
-cat <<EOF >/etc/network/interfaces
-auto $IFACE
-iface $IFACE inet static
-    address 192.168.0.100
-    netmask 255.255.255.0
-    gateway 192.168.0.1
-    dns-nameservers 1.1.1.1 8.8.8.8
-EOF
-
-ifdown $IFACE || true
-ifup $IFACE || true
-
-# ========================
 # 3. Heimdall (porta 80)
 # ========================
 echo "==> Instalando Heimdall Dashboard..."
