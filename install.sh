@@ -769,7 +769,7 @@ install_base_dependencies() {
     # Instalar pacotes básicos (individualmente para pular pacotes não disponíveis)
     log_info "Instalando pacotes essenciais"
     local packages=(
-        "curl" "wget" "git" "dialog" "chrony" "unbound" "rng-tools" "haveged"
+        "curl" "wget" "git" "dialog" "chrony" "rng-tools" "haveged"
         "build-essential" "ca-certificates" "gnupg" "lsb-release"
         "software-properties-common" "logrotate" "ufw" "htop" "python3"
         "python3-pip" "iotop" "sysstat"
@@ -1000,37 +1000,36 @@ install_storage_services() {
 
     # Limpar completamente qualquer instalação anterior do Samba
     purge_service "samba"
+
+    # Recriar diretório e um smb.conf temporário para satisfazer o instalador do apt
+    log_info "Recriando estrutura mínima do Samba para o instalador..."
+    mkdir -p /etc/samba
+    touch /etc/samba/smb.conf
     
     # Instalar Samba
-    log_info "Instalando Samba"
-    apt update
-    apt install -y samba samba-common-bin
+    log_info "Instalando pacotes Samba..."
+    if ! apt install -y samba samba-common-bin; then
+        log_error "Falha ao instalar pacotes do Samba. Abortando instalação dos serviços de armazenamento."
+        return 1
+    fi
     
     # Aguardar instalação completar
     log_info "Aguardando instalação do Samba completar..."
-    sleep 5
+    sleep 3
     
-    # Parar serviços pós-instalação para garantir um ambiente limpo para a configuração
+    # Parar serviços pós-instalação para garantir um ambiente limpo para a configuração final
     systemctl stop smbd nmbd 2>/dev/null || true
     pkill -f "smbd|nmbd" 2>/dev/null || true
     sleep 2
     
-    # Criar diretórios e configuração básica
-    log_info "Criando diretórios e configuração do Samba"
-    mkdir -p /etc/samba
-    mkdir -p /var/lib/samba/private
-    mkdir -p /var/cache/samba
-    mkdir -p /run/samba
-    mkdir -p /var/log/samba
-    mkdir -p /srv/samba/shared
+    # Criar diretórios e configuração final
+    log_info "Criando diretórios e configuração final do Samba"
+    mkdir -p /var/lib/samba/private /var/cache/samba /run/samba /var/log/samba /srv/samba/shared
     
-    chmod 755 /var/lib/samba
-    chmod 755 /var/cache/samba
-    chmod 755 /run/samba
-    chmod 755 /var/log/samba
+    chmod 755 /var/lib/samba /var/cache/samba /run/samba /var/log/samba
     chmod 777 /srv/samba/shared
     
-    # Criar arquivo de configuração mínimo e robusto
+    # Criar arquivo de configuração final
     cat > /etc/samba/smb.conf << 'EOF'
 [global]
    workgroup = WORKGROUP
@@ -1071,7 +1070,7 @@ EOF
             return 1
         fi
     else
-        log_error "Configuração básica do Samba falhou na validação"
+        log_error "Configuração final do Samba falhou na validação"
         log_info "=== SAÍDA COMPLETA DO TESTPARM PARA DIAGNÓSTICO ==="
         testparm -s 2>&1 || true
         log_info "=== FIM DO DIAGNÓSTICO ==="
