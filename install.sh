@@ -162,10 +162,20 @@ check_requirements() {
 
     # Verificar comandos essenciais para Kernel 4.4
     local required_commands=("curl" "wget" "python3" "pip3" "systemctl" "ip" "iptables")
+    local optional_commands=("netstat" "fuser" "ss" "testparm")
+    
+    # Comandos obrigatórios
     for cmd in "${required_commands[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then
             log_error "Comando essencial não encontrado: $cmd"
             return 1
+        fi
+    done
+    
+    # Comandos opcionais (avisar se não encontrado)
+    for cmd in "${optional_commands[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            log_warning "Comando opcional não encontrado: $cmd (algumas funcionalidades podem não funcionar)"
         fi
     done
 
@@ -613,10 +623,20 @@ EOF
 
     sysctl -p /etc/sysctl.d/99-arm-optimization.conf
 
-    # Mover sistemas temporários para RAM
-    echo "tmpfs /tmp tmpfs defaults,size=256M 0 0" >> /etc/fstab
-    echo "tmpfs /var/log tmpfs defaults,size=128M 0 0" >> /etc/fstab
-    echo "tmpfs /var/tmp tmpfs defaults,size=128M 0 0" >> /etc/fstab
+    # Mover sistemas temporários para RAM (tamanho dinâmico baseado na RAM disponível)
+    local total_mem=$(free -m | awk 'NR==2{print $2}')
+    local tmp_size=$((total_mem / 8))      # Usar 1/8 da RAM para /tmp
+    local log_size=$((total_mem / 16))     # Usar 1/16 da RAM para logs
+    
+    # Limites mínimos e máximos
+    [[ $tmp_size -lt 128 ]] && tmp_size=128
+    [[ $tmp_size -gt 512 ]] && tmp_size=512
+    [[ $log_size -lt 64 ]] && log_size=64
+    [[ $log_size -gt 256 ]] && log_size=256
+    
+    echo "tmpfs /tmp tmpfs defaults,size=${tmp_size}M 0 0" >> /etc/fstab
+    echo "tmpfs /var/log tmpfs defaults,size=${log_size}M 0 0" >> /etc/fstab
+    echo "tmpfs /var/tmp tmpfs defaults,size=${log_size}M 0 0" >> /etc/fstab
 
     mount -a
 
@@ -701,13 +721,16 @@ install_base_dependencies() {
         log_warning "Alguns pacotes não foram instalados: ${failed_packages[*]}"
     fi
 
-    # Verificar instalação bem-sucedida
-    if [[ $? -eq 0 ]]; then
+    # Verificar instalação bem-sucedida (mais de 50% dos pacotes instalados)
+    local total_packages=$((${#packages[@]} + ${#compat_packages[@]}))
+    local success_count=$((total_packages - ${#failed_packages[@]}))
+    
+    if [[ $success_count -gt $((total_packages / 2)) ]]; then
         BASE_DEPS_INSTALLED=true
         save_config
-        log_success "Dependências base instaladas"
+        log_success "Dependências base instaladas ($success_count/$total_packages)"
     else
-        log_error "Falha ao instalar dependências base"
+        log_error "Muitos pacotes falharam na instalação ($success_count/$total_packages)"
         return 1
     fi
 }
@@ -862,7 +885,11 @@ EOF
 
     # Instalar Pi-hole
     log_info "Instalando Pi-hole (interativo)"
-    curl -sSL https://install.pi-hole.net | bash
+    # Download seguro do script de instalação
+    curl -sSL https://install.pi-hole.net -o /tmp/pihole-install.sh
+    chmod +x /tmp/pihole-install.sh
+    /tmp/pihole-install.sh
+    rm -f /tmp/pihole-install.sh
 
     # Configurar lighttpd para trabalhar com Pi-hole na porta 8090 (alternativa)
     configure_lighttpd_for_pihole
@@ -1225,42 +1252,42 @@ class DashboardAPI(BaseHTTPRequestHandler):
                 "name": "Pi-hole DNS",
                 "description": "DNS blocker e servidor DNS",
                 "icon": "fas fa-shield-alt",
-                "url": "http://192.168.0.100:8090/admin",
+                "url": "http://${SERVER_IP}:8090/admin",
                 "port": 8090
             },
             "filebrowser": {
                 "name": "FileBrowser",
                 "description": "Gerenciador de arquivos web",
                 "icon": "fas fa-folder-open",
-                "url": "http://192.168.0.100:8082",
+                "url": "http://${SERVER_IP}:8082",
                 "port": 8082
             },
             "samba": {
                 "name": "Samba",
                 "description": "Compartilhamento de arquivos SMB",
                 "icon": "fas fa-network-wired",
-                "url": "smb://192.168.0.100",
+                "url": "smb://${SERVER_IP}",
                 "port": None
             },
             "wireguard": {
                 "name": "WireGuard-UI",
                 "description": "Interface VPN moderna",
                 "icon": "fas fa-lock",
-                "url": "http://192.168.0.100:5000",
+                "url": "http://${SERVER_IP}:5000",
                 "port": 5000
             },
             "qbittorrent": {
                 "name": "qBittorrent",
                 "description": "Cliente de torrents",
                 "icon": "fas fa-download",
-                "url": "http://192.168.0.100:9091",
+                "url": "http://${SERVER_IP}:9091",
                 "port": 9091
             },
             "syncthing": {
                 "name": "Syncthing",
                 "description": "Sincronização de arquivos",
                 "icon": "fas fa-sync",
-                "url": "http://192.168.0.100:8384",
+                "url": "http://${SERVER_IP}:8384",
                 "port": 8384
             }
         }
@@ -1320,8 +1347,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=www-data
-Group=www-data
+User=root
+Group=root
 WorkingDirectory=/var/www/html
 ExecStart=/usr/bin/python3 /var/www/html/dashboard-api.py
 Restart=always
@@ -1334,7 +1361,6 @@ MemoryMax=100M
 CPUQuota=30%
 
 # Segurança
-NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ReadWritePaths=/var/www/html /var/log
@@ -1460,11 +1486,21 @@ install_wireguard() {
         "$SCRIPT_DIR/install-wireguard-ui.sh"
     else
         log_warning "Script do WireGuard-UI não encontrado, instalando manualmente"
-        # Instalação manual do WireGuard-UI
-        wget https://github.com/ngoduykhanh/wireguard-ui/releases/latest/download/wireguard-ui-linux-amd64.tar.gz
-        tar -xvzf wireguard-ui-linux-amd64.tar.gz
+        # Instalação manual do WireGuard-UI com detecção de arquitetura
+        ARCH=$(uname -m)
+        case $ARCH in
+            x86_64)  WIREGUARD_UI_ARCH="linux-amd64" ;;
+            aarch64) WIREGUARD_UI_ARCH="linux-arm64" ;;
+            armv7l)  WIREGUARD_UI_ARCH="linux-armv7" ;;
+            armv6l)  WIREGUARD_UI_ARCH="linux-armv6" ;;
+            *)       log_error "Arquitetura não suportada: $ARCH"; return 1 ;;
+        esac
+        
+        log_info "Baixando WireGuard-UI para arquitetura $ARCH"
+        wget "https://github.com/ngoduykhanh/wireguard-ui/releases/latest/download/wireguard-ui-${WIREGUARD_UI_ARCH}.tar.gz"
+        tar -xvzf wireguard-ui-${WIREGUARD_UI_ARCH}.tar.gz
         mv wireguard-ui /usr/local/bin/
-        rm wireguard-ui-linux-amd64.tar.gz
+        rm wireguard-ui-${WIREGUARD_UI_ARCH}.tar.gz
     fi
 
     WIREGUARD_CONFIGURED=true
