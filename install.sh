@@ -532,6 +532,78 @@ EOF
 }
 
 # =============================================================================
+# FUNÇÕES DE DOWNLOAD DE ARQUIVOS
+# =============================================================================
+
+ensure_github_files() {
+    log_step "Verificando e baixando arquivos do GitHub"
+    
+    local repo_url="https://github.com/flaviojussie/boxserver.git"
+    local required_files=("dashboard.html" "dashboard-api.py" "dashboard-api.service")
+    local missing_files=0
+    
+    # Verificar quais arquivos estão faltando
+    for file in "${required_files[@]}"; do
+        if [[ ! -f "$SCRIPT_DIR/$file" ]]; then
+            log_warning "Arquivo $file não encontrado localmente"
+            ((missing_files++))
+        fi
+    done
+    
+    if [[ $missing_files -gt 0 ]]; then
+        log_info "Baixando arquivos do repositório GitHub..."
+        
+        # Tentar clonar o repositório
+        if command -v git &> /dev/null; then
+            log_info "Usando git para clonar repositório"
+            
+            # Criar diretório temporário
+            local temp_dir="/tmp/boxserver-github-$$"
+            mkdir -p "$temp_dir"
+            
+            if git clone "$repo_url" "$temp_dir" 2>/dev/null; then
+                log_success "Repositório clonado com sucesso"
+                
+                # Copiar arquivos necessários
+                for file in "${required_files[@]}"; do
+                    if [[ -f "$temp_dir/$file" ]]; then
+                        cp "$temp_dir/$file" "$SCRIPT_DIR/"
+                        log_success "Arquivo $file copiado"
+                    else
+                        log_error "Arquivo $file não encontrado no repositório"
+                    fi
+                done
+                
+                # Limpar diretório temporário
+                rm -rf "$temp_dir"
+            else
+                log_error "Falha ao clonar repositório GitHub"
+                return 1
+            fi
+        else
+            log_error "git não encontrado. Não foi possível baixar arquivos do GitHub"
+            return 1
+        fi
+    else
+        log_success "Todos os arquivos necessários estão disponíveis localmente"
+    fi
+}
+
+download_file_direct() {
+    local file_url="$1"
+    local local_path="$2"
+    
+    if command -v curl &> /dev/null; then
+        curl -sSL "$file_url" -o "$local_path"
+    elif command -v wget &> /dev/null; then
+        wget -q "$file_url" -O "$local_path"
+    else
+        log_error "Nem curl nem wget disponíveis para download"
+        return 1
+    fi
+}
+
+# =============================================================================
 # FUNÇÕES DE INSTALAÇÃO
 # =============================================================================
 
@@ -1099,6 +1171,9 @@ install_dashboard() {
         return 0
     fi
 
+    # Garantir que todos os arquivos do GitHub estão disponíveis
+    ensure_github_files
+
     # Criar API Python
     cat > /var/www/html/dashboard-api.py << 'EOF'
 #!/usr/bin/env python3
@@ -1376,70 +1451,24 @@ EOF
     chmod +x /var/www/html/dashboard-api.py
 
     # Copiar dashboard HTML
-    cp "$SCRIPT_DIR/dashboard.html" /var/www/html/ 2>/dev/null || {
-        log_warning "dashboard.html não encontrado, usando versão padrão"
-        cat > /var/www/html/dashboard.html << 'HTML'
-<!DOCTYPE html>
-<html>
-<head>
-    <title>BoxServer Dashboard</title>
-    <style>
-        body { font-family: Arial, sans-serif; background: #1a1a1a; color: #fff; margin: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header { text-align: center; margin-bottom: 30px; }
-        .services { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-        .service { background: #2d2d3a; padding: 20px; border-radius: 10px; }
-        .service h3 { color: #4cc9f0; margin-bottom: 10px; }
-        .status { padding: 5px 10px; border-radius: 5px; display: inline-block; }
-        .online { background: #4cc9f0; color: #000; }
-        .offline { background: #dc3545; }
-        .access-btn { background: #4361ee; color: white; padding: 10px; text-decoration: none; border-radius: 5px; display: block; text-align: center; margin-top: 10px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>BoxServer Dashboard</h1>
-            <p>Monitoramento em tempo real</p>
-        </div>
-        <div class="services" id="services">
-            <div class="service">
-                <h3>Carregando...</h3>
-                <p>Aguarde enquanto os serviços são verificados</p>
-            </div>
-        </div>
-    </div>
-    <script>
-        async function loadServices() {
-            try {
-                const response = await fetch('/api/services');
-                const services = await response.json();
-                const container = document.getElementById('services');
-                container.innerHTML = '';
-
-                for (const [id, service] of Object.entries(services)) {
-                    const div = document.createElement('div');
-                    div.className = 'service';
-                    div.innerHTML = `
-                        <h3>${service.name}</h3>
-                        <p>${service.description}</p>
-                        <span class="status ${service.status}">${service.status}</span>
-                        ${service.url ? `<a href="${service.url}" class="access-btn">Acessar</a>` : ''}
-                    `;
-                    container.appendChild(div);
-                }
-            } catch (error) {
-                document.getElementById('services').innerHTML = '<div class="service"><h3>Erro</h3><p>Não foi possível carregar os serviços</p></div>';
-            }
-        }
-
-        loadServices();
-        setInterval(loadServices, 30000);
-    </script>
-</body>
-</html>
-HTML
-    }
+    if [[ -f "$SCRIPT_DIR/dashboard.html" ]]; then
+        log_info "Copiando dashboard.html completo"
+        cp "$SCRIPT_DIR/dashboard.html" /var/www/html/
+        chown www-data:www-data /var/www/html/dashboard.html
+        chmod 644 /var/www/html/dashboard.html
+        
+        # Verificar se a cópia foi bem-sucedida
+        if [[ -f /var/www/html/dashboard.html ]]; then
+            log_success "Dashboard HTML copiado com sucesso"
+        else
+            log_error "Falha ao copiar dashboard.html"
+            # Criar versão básica como fallback
+            create_basic_dashboard
+        fi
+    else
+        log_warning "dashboard.html não encontrado no diretório do script"
+        create_basic_dashboard
+    fi
 
     chown www-data:www-data /var/www/html/dashboard.html
 
@@ -1641,6 +1670,639 @@ EOF
     fi
 }
 
+# Função para criar dashboard básico como fallback
+create_basic_dashboard() {
+    log_info "Criando dashboard básico como fallback"
+    cat > /var/www/html/dashboard.html << 'HTML'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>BoxServer Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #1a1a1a; color: #fff; margin: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .services { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        .service { background: #2d2d3a; padding: 20px; border-radius: 10px; }
+        .service h3 { color: #4cc9f0; margin-bottom: 10px; }
+        .status { padding: 5px 10px; border-radius: 5px; display: inline-block; }
+        .online { background: #4cc9f0; color: #000; }
+        .offline { background: #dc3545; }
+        .access-btn { background: #4361ee; color: white; padding: 10px; text-decoration: none; border-radius: 5px; display: block; text-align: center; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>BoxServer Dashboard</h1>
+            <p>Monitoramento em tempo real</p>
+        </div>
+        <div class="services" id="services">
+            <div class="service">
+                <h3>Carregando...</h3>
+                <p>Aguarde enquanto os serviços são verificados</p>
+            </div>
+        </div>
+    </div>
+    <script>
+        async function loadServices() {
+            try {
+                const response = await fetch('/api/services');
+                const services = await response.json();
+                const container = document.getElementById('services');
+                container.innerHTML = '';
+
+                for (const [id, service] of Object.entries(services)) {
+                    const div = document.createElement('div');
+                    div.className = 'service';
+                    div.innerHTML = `
+                        <h3>${service.name}</h3>
+                        <p>${service.description}</p>
+                        <span class="status ${service.status}">${service.status}</span>
+                        ${service.url ? `<a href="${service.url}" class="access-btn">Acessar</a>` : ''}
+                    `;
+                    container.appendChild(div);
+                }
+            } catch (error) {
+                document.getElementById('services').innerHTML = '<div class="service"><h3>Erro</h3><p>Não foi possível carregar os serviços</p></div>';
+            }
+        }
+
+        loadServices();
+        setInterval(loadServices, 30000);
+    </script>
+</body>
+</html>
+HTML
+    chown www-data:www-data /var/www/html/dashboard.html
+    log_success "Dashboard básico criado como fallback"
+}
+
+# Função para corrigir manualmente o dashboard
+fix_dashboard_html() {
+    log_step "Corrigindo arquivo dashboard.html manualmente"
+    
+    if [[ -f "$SCRIPT_DIR/dashboard.html" ]]; then
+        log_info "Arquivo dashboard.html encontrado no diretório do script"
+        
+        # Parar o serviço temporariamente
+        systemctl stop dashboard-api 2>/dev/null || true
+        
+        # Copiar o arquivo completo
+        cp "$SCRIPT_DIR/dashboard.html" /var/www/html/
+        chown www-data:www-data /var/www/html/dashboard.html
+        chmod 644 /var/www/html/dashboard.html
+        
+        # Verificar tamanho do arquivo para confirmar cópia
+        local original_size=$(wc -l < "$SCRIPT_DIR/dashboard.html")
+        local copied_size=$(wc -l < /var/www/html/dashboard.html 2>/dev/null || echo "0")
+        
+        if [[ "$copied_size" -gt 100 && "$copied_size" -eq "$original_size" ]]; then
+            log_success "Dashboard HTML copiado com sucesso ($copied_size linhas)"
+            
+            # Reiniciar o serviço
+            systemctl start dashboard-api 2>/dev/null || true
+            
+            # Testar acesso
+            sleep 2
+            if curl -s http://localhost:80 | grep -q "BoxServer Dashboard"; then
+                log_success "Dashboard agora está acessível com o template completo"
+                return 0
+            else
+                log_warning "Dashboard copiado mas serviço pode não estar respondendo"
+                return 1
+            fi
+        else
+            log_error "Falha na cópia do dashboard.html (tamanho: $copied_size vs $original_size)"
+            return 1
+        fi
+    else
+        log_error "Arquivo dashboard.html não encontrado em $SCRIPT_DIR"
+        return 1
+    fi
+}
+
+# =============================================================================
+# FUNÇÕES DE VALIDAÇÃO PÓS-INSTALAÇÃO
+# =============================================================================
+
+post_install_verification() {
+    log_step "Executando verificação pós-instalação completa"
+    
+    local issues_found=0
+    local fixes_applied=0
+    
+    echo ""
+    echo "🔍 Iniciando validação pós-instalação..."
+    echo ""
+    
+    # 1. Verificar configuração de portas
+    if ! verify_port_configuration; then
+        ((issues_found++))
+    fi
+    
+    # 2. Verificar serviços essenciais
+    if ! verify_essential_services; then
+        ((issues_found++))
+    fi
+    
+    # 3. Verificar acessibilidade dos serviços
+    if ! verify_service_accessibility; then
+        ((issues_found++))
+    fi
+    
+    # 4. Verificar e corrigir conflitos residuais
+    if ! resolve_residual_conflicts; then
+        ((issues_found++))
+    fi
+    
+    # 5. Verificar configurações específicas do Pi-hole
+    if ! verify_pihole_configuration; then
+        ((issues_found++))
+    fi
+    
+    # 6. Testar integração do dashboard
+    if ! test_dashboard_integration; then
+        ((issues_found++))
+    fi
+    
+    echo ""
+    if [[ $issues_found -eq 0 ]]; then
+        log_success "✅ Validação pós-instalação concluída - Todos os sistemas estão operacionais"
+        echo "🎉 BoxServer está 100% funcional e configurado corretamente!"
+        return 0
+    else
+        log_warning "⚠️  Foram encontrados $issues_found problemas durante a validação"
+        echo "🔧 Foram aplicadas $fixes_applied correções automáticas"
+        echo ""
+        echo "📊 Resumo:"
+        echo "   • Serviços verificados: 6"
+        echo "   • Problemas encontrados: $issues_found"
+        echo "   • Correções aplicadas: $fixes_applied"
+        echo ""
+        echo "💡 Alguns problemas podem requerer intervenção manual"
+        echo "   Use a opção '🔧 Gerenciar Serviços' no menu principal"
+        return 1
+    fi
+}
+
+verify_port_configuration() {
+    log_info "Verificando configuração de portas..."
+    
+    local port_issues=0
+    
+    # Verificar porta 80 (Dashboard)
+    if ! check_port_availability 80; then
+        log_error "Porta 80 está ocupada - Dashboard não conseguirá iniciar"
+        ((port_issues++))
+    else
+        log_success "Porta 80 disponível para Dashboard"
+    fi
+    
+    # Verificar porta 8090 (Pi-hole via lighttpd)
+    if ! check_port_usage 8090 "lighttpd"; then
+        log_warning "Porta 8090 não está sendo usada pelo lighttpd"
+        ((port_issues++))
+    else
+        log_success "Porta 8090 configurada para Pi-hole"
+    fi
+    
+    # Verificar outras portas essenciais
+    declare -A essential_ports=(
+        [8082]="FileBrowser"
+        [5000]="WireGuard-UI"
+        [9091]="qBittorrent"
+        [8384]="Syncthing"
+        [445]="Samba"
+    )
+    
+    for port in "${!essential_ports[@]}"; do
+        if systemctl is-active "${essential_ports[$port],,}" &>/dev/null; then
+            if ! check_port_usage "$port" "${essential_ports[$port],,}"; then
+                log_warning "Serviço ${essential_ports[$port]} está ativo mas porta $port não responde"
+                ((port_issues++))
+            else
+                log_success "Porta $port ativa para ${essential_ports[$port]}"
+            fi
+        fi
+    done
+    
+    if [[ $port_issues -eq 0 ]]; then
+        log_success "Todas as portas estão configuradas corretamente"
+        return 0
+    else
+        log_error "Foram encontrados $port_issues problemas de configuração de portas"
+        return 1
+    fi
+}
+
+verify_essential_services() {
+    log_info "Verificando serviços essenciais..."
+    
+    local service_issues=0
+    declare -A essential_services=(
+        ["dashboard-api"]="Dashboard API"
+        ["pihole-FTL"]="Pi-hole FTL"
+        ["lighttpd"]="Lighttpd Web Server"
+        ["smbd"]="Samba"
+    )
+    
+    for service in "${!essential_services[@]}"; do
+        if systemctl is-active --quiet "$service"; then
+            log_success "✅ ${essential_services[$service]} está ativo"
+        else
+            log_error "❌ ${essential_services[$service]} está inativo"
+            ((service_issues++))
+            
+            # Tentar reiniciar o serviço
+            log_info "Tentando reiniciar $service..."
+            if systemctl restart "$service" 2>/dev/null; then
+                sleep 3
+                if systemctl is-active --quiet "$service"; then
+                    log_success "✅ ${essential_services[$service]} recuperado com sucesso"
+                    ((service_issues--))
+                fi
+            fi
+        fi
+    done
+    
+    # Verificar serviços opcionais
+    declare -A optional_services=(
+        ["filebrowser"]="FileBrowser"
+        ["wireguard-ui"]="WireGuard-UI"
+        ["qbittorrent"]="qBittorrent"
+        ["syncthing"]="Syncthing"
+    )
+    
+    for service in "${!optional_services[@]}"; do
+        if systemctl is-active --quiet "$service"; then
+            log_success "✅ ${optional_services[$service]} está ativo (opcional)"
+        else
+            log_info "ℹ️  ${optional_services[$service]} está inativo (opcional)"
+        fi
+    done
+    
+    if [[ $service_issues -eq 0 ]]; then
+        log_success "Todos os serviços essenciais estão operacionais"
+        return 0
+    else
+        log_error "$service_issues serviços essenciais estão com problemas"
+        return 1
+    fi
+}
+
+verify_service_accessibility() {
+    log_info "Verificando acessibilidade dos serviços..."
+    
+    local access_issues=0
+    
+    # Testar Dashboard (porta 80)
+    if test_http_endpoint "http://localhost:80/health" 5; then
+        log_success "✅ Dashboard acessível na porta 80"
+    else
+        log_error "❌ Dashboard não responde na porta 80"
+        ((access_issues++))
+    fi
+    
+    # Testar API do Dashboard
+    if test_http_endpoint "http://localhost:80/api/services" 5; then
+        log_success "✅ API do Dashboard funcionando"
+    else
+        log_error "❌ API do Dashboard não responde"
+        ((access_issues++))
+    fi
+    
+    # Testar Pi-hole na porta 8090
+    if test_http_endpoint "http://localhost:8090/admin/" 10; then
+        log_success "✅ Pi-hole acessível na porta 8090"
+    else
+        log_warning "⚠️  Pi-hole não responde na porta 8090 (pode estar inicializando)"
+    fi
+    
+    # Testar FileBrowser se estiver ativo
+    if systemctl is-active --quiet filebrowser; then
+        if test_http_endpoint "http://localhost:8082/" 5; then
+            log_success "✅ FileBrowser acessível na porta 8082"
+        else
+            log_error "❌ FileBrowser não responde na porta 8082"
+            ((access_issues++))
+        fi
+    fi
+    
+    if [[ $access_issues -eq 0 ]]; then
+        log_success "Todos os serviços estão acessíveis"
+        return 0
+    else
+        log_error "$access_issues serviços estão inacessíveis"
+        return 1
+    fi
+}
+
+resolve_residual_conflicts() {
+    log_info "Resolvendo conflitos residuais..."
+    
+    local conflicts_resolved=0
+    
+    # Verificar processos usando portas essenciais
+    local conflicting_ports=(80 8090 8082)
+    
+    for port in "${conflicting_ports[@]}"; do
+        local conflicting_process=$(find_port_process "$port")
+        if [[ -n "$conflicting_process" ]]; then
+            log_warning "Processo conflitante encontrado na porta $port: $conflicting_process"
+            
+            # Tentar resolver conflito
+            case "$port" in
+                80)
+                    # Matar processo na porta 80 (exceto nosso dashboard)
+                    if [[ "$conflicting_process" != *"dashboard-api"* ]]; then
+                        kill_process_on_port "$port"
+                        ((conflicts_resolved++))
+                        log_success "Conflito na porta 80 resolvido"
+                    fi
+                    ;;
+                8090)
+                    # Garantir que lighttpd está usando a porta 8090
+                    if systemctl is-active --quiet lighttpd; then
+                        log_success "lighttpd já está gerenciando a porta 8090"
+                    else
+                        systemctl restart lighttpd 2>/dev/null || true
+                        ((conflicts_resolved++))
+                    fi
+                    ;;
+            esac
+        fi
+    done
+    
+    # Verificar serviços duplicados
+    check_duplicate_services
+    
+    if [[ $conflicts_resolved -gt 0 ]]; then
+        log_success "$conflicts_resolved conflitos residuais resolvidos"
+        return 0
+    else
+        log_info "Nenhum conflito residual encontrado"
+        return 0
+    fi
+}
+
+verify_pihole_configuration() {
+    log_info "Verificando configuração específica do Pi-hole..."
+    
+    local pihole_issues=0
+    
+    # Verificar se lighttpd está configurado para Pi-hole
+    if [[ -f /etc/lighttpd/lighttpd.conf ]]; then
+        if grep -q "server.port = 8090" /etc/lighttpd/lighttpd.conf; then
+            log_success "✅ lighttpd configurado para porta 8090"
+        else
+            log_error "❌ lighttpd não está configurado para porta 8090"
+            ((pihole_issues++))
+            
+            # Corrigir configuração
+            log_info "Reconfigurando lighttpd para porta 8090..."
+            configure_lighttpd_for_pihole
+            if [[ $? -eq 0 ]]; then
+                log_success "✅ lighttpd reconfigurado com sucesso"
+                ((pihole_issues--))
+            fi
+        fi
+    else
+        log_error "❌ Arquivo de configuração lighttpd.conf não encontrado"
+        ((pihole_issues++))
+    fi
+    
+    # Verificar se Pi-hole FTL está rodando
+    if systemctl is-active --quiet pihole-FTL; then
+        log_success "✅ Pi-hole FTL está ativo"
+    else
+        log_error "❌ Pi-hole FTL está inativo"
+        ((pihole_issues++))
+        
+        # Tentar reiniciar
+        systemctl restart pihole-FTL 2>/dev/null || true
+        sleep 3
+        if systemctl is-active --quiet pihole-FTL; then
+            log_success "✅ Pi-hole FTL recuperado"
+            ((pihole_issues--))
+        fi
+    fi
+    
+    # Verificar se o diretório admin do Pi-hole existe
+    if [[ -d /var/www/html/admin ]]; then
+        log_success "✅ Diretório admin do Pi-hole encontrado"
+    else
+        log_warning "⚠️  Diretório admin do Pi-hole não encontrado"
+        # Isso pode ser normal se o Pi-hole estiver em outro local
+    fi
+    
+    if [[ $pihole_issues -eq 0 ]]; then
+        log_success "Configuração do Pi-hole verificada com sucesso"
+        return 0
+    else
+        log_error "$pihole_issues problemas encontrados na configuração do Pi-hole"
+        return 1
+    fi
+}
+
+test_dashboard_integration() {
+    log_info "Testando integração do Dashboard..."
+    
+    local integration_issues=0
+    
+    # Verificar se o serviço dashboard-api está rodando
+    if systemctl is-active --quiet dashboard-api; then
+        log_success "✅ Serviço dashboard-api está ativo"
+        
+        # Testar API endpoints
+        local endpoints=("/health" "/api/system" "/api/services")
+        
+        for endpoint in "${endpoints[@]}"; do
+            if test_http_endpoint "http://localhost:80$endpoint" 3; then
+                log_success "✅ Endpoint $endpoint respondendo"
+            else
+                log_error "❌ Endpoint $endpoint não responde"
+                ((integration_issues++))
+            fi
+        done
+        
+        # Verificar se o dashboard.html existe
+        if [[ -f /var/www/html/dashboard.html ]]; then
+            log_success "✅ Arquivo dashboard.html encontrado"
+        else
+            log_error "❌ Arquivo dashboard.html não encontrado"
+            ((integration_issues++))
+        fi
+        
+    else
+        log_error "❌ Serviço dashboard-api está inativo"
+        ((integration_issues++))
+        
+        # Tentar reiniciar
+        systemctl restart dashboard-api 2>/dev/null || true
+        sleep 3
+        if systemctl is-active --quiet dashboard-api; then
+            log_success "✅ Dashboard API recuperado"
+            ((integration_issues--))
+        fi
+    fi
+    
+    if [[ $integration_issues -eq 0 ]]; then
+        log_success "Integração do Dashboard testada com sucesso"
+        return 0
+    else
+        log_error "$integration_issues problemas de integração encontrados"
+        return 1
+    fi
+}
+
+# Funções utilitárias para validação
+check_port_availability() {
+    local port="$1"
+    
+    # Verificar se a porta está em uso
+    if command -v netstat &> /dev/null; then
+        if netstat -tlnp 2>/dev/null | grep -q ":$port "; then
+            return 1
+        fi
+    elif command -v ss &> /dev/null; then
+        if ss -tlnp 2>/dev/null | grep -q ":$port "; then
+            return 1
+        fi
+    else
+        # Fallback: tentar conectar na porta
+        timeout 1 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/$port" 2>/dev/null
+        if [[ $? -eq 0 ]]; then
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+check_port_usage() {
+    local port="$1"
+    local expected_service="$2"
+    
+    if command -v netstat &> /dev/null; then
+        netstat -tlnp 2>/dev/null | grep -q ":$port .*${expected_service}"
+        return $?
+    elif command -v ss &> /dev/null; then
+        ss -tlnp 2>/dev/null | grep -q ":$port .*${expected_service}"
+        return $?
+    else
+        # Verificar se o serviço esperado está ativo
+        systemctl is-active --quiet "$expected_service"
+        return $?
+    fi
+}
+
+test_http_endpoint() {
+    local url="$1"
+    local timeout="${2:-5}"
+    
+    if command -v curl &> /dev/null; then
+        curl -s -f --max-time "$timeout" "$url" > /dev/null 2>&1
+        return $?
+    elif command -v wget &> /dev/null; then
+        wget -q --timeout="$timeout" -O /dev/null "$url" 2>/dev/null
+        return $?
+    else
+        # Fallback básico com netcat
+        local domain_port="${url#http://}"
+        local domain="${domain_port%%/*}"
+        timeout "$timeout" bash -c "echo GET | nc ${domain%%:*} ${domain##*:}" > /dev/null 2>&1
+        return $?
+    fi
+}
+
+find_port_process() {
+    local port="$1"
+    
+    if command -v fuser &> /dev/null; then
+        fuser "$port/tcp" 2>/dev/null
+    elif command -v lsof &> /dev/null; then
+        lsof -ti :"$port" 2>/dev/null
+    elif command -v netstat &> /dev/null; then
+        netstat -tlnp 2>/dev/null | grep ":$port " | awk '{print $7}' | cut -d/ -f1
+    fi
+}
+
+kill_process_on_port() {
+    local port="$1"
+    local pid=$(find_port_process "$port")
+    
+    if [[ -n "$pid" ]]; then
+        kill -15 "$pid" 2>/dev/null || true
+        sleep 2
+        kill -9 "$pid" 2>/dev/null || true
+        return 0
+    fi
+    
+    return 1
+}
+
+check_duplicate_services() {
+    # Verificar serviços duplicados que possam causar conflitos
+    local services=("nginx" "apache2" "httpd")
+    
+    for service in "${services[@]}"; do
+        if systemctl is-active --quiet "$service"; then
+            log_warning "Serviço $service está ativo e pode conflitar com o Dashboard"
+            systemctl stop "$service" 2>/dev/null || true
+            systemctl disable "$service" 2>/dev/null || true
+            log_success "Serviço $service parado para evitar conflitos"
+        fi
+    done
+}
+
+# Função de validação rápida (atalho)
+quick_validation() {
+    echo ""
+    echo "🔍 Validação Rápida do Sistema"
+    echo "================================"
+    
+    local issues=0
+    
+    # Verificar serviços essenciais
+    echo "Verificando serviços essenciais..."
+    systemctl is-active --quiet dashboard-api || { echo "❌ Dashboard API inativo"; ((issues++)); }
+    systemctl is-active --quiet pihole-FTL || { echo "❌ Pi-hole FTL inativo"; ((issues++)); }
+    systemctl is-active --quiet lighttpd || { echo "❌ Lighttpd inativo"; ((issues++)); }
+    systemctl is-active --quiet smbd || { echo "❌ Samba inativo"; ((issues++)); }
+    
+    # Verificar portas
+    echo "Verificando portas essenciais..."
+    if ! check_port_availability 80; then
+        echo "❌ Porta 80 ocupada (Dashboard)"
+        ((issues++))
+    fi
+    
+    # Testar acesso rápido
+    echo "Testando acessibilidade..."
+    if test_http_endpoint "http://localhost:80/health" 2; then
+        echo "✅ Dashboard acessível"
+    else
+        echo "❌ Dashboard inacessível"
+        ((issues++))
+    fi
+    
+    if test_http_endpoint "http://localhost:8090/admin/" 3; then
+        echo "✅ Pi-hole acessível"
+    else
+        echo "⚠️  Pi-hole pode estar inicializando"
+    fi
+    
+    echo ""
+    if [[ $issues -eq 0 ]]; then
+        echo "🎉 Sistema está funcional!"
+        return 0
+    else
+        echo "⚠️  Encontrados $issues problemas - execute validação completa"
+        return 1
+    fi
+}
+
 # =============================================================================
 # FUNÇÕES DE MENU INTERATIVO
 # =============================================================================
@@ -1658,12 +2320,14 @@ show_main_menu() {
         echo "5) 💾 Backup/Restaurar"
         echo "6) 📝 Configurações"
         echo "7) 🧹 Limpar Instalação"
-        echo "8) 📋 Logs"
-        echo "9) ℹ️  Sobre"
-        echo "10) 🚪 Sair"
+        echo "8) ⚡ Validação Rápida"
+        echo "9) 🔍 Validação Pós-Instalação (Completa)"
+        echo "10) 📋 Logs"
+        echo "11) ℹ️  Sobre"
+        echo "12) 🚪 Sair"
         echo ""
 
-        read -p "Digite sua opção [1-10]: " choice
+        read -p "Digite sua opção [1-12]: " choice
 
         case $choice in
             1) quick_install ;;
@@ -1673,9 +2337,11 @@ show_main_menu() {
             5) backup_restore ;;
             6) show_settings ;;
             7) clean_installation ;;
-            8) show_logs ;;
-            9) show_about ;;
-            10)
+            8) quick_validation ;;
+            9) post_install_verification ;;
+            10) show_logs ;;
+            11) show_about ;;
+            12)
                 log_info "Saindo do instalador"
                 exit 0
                 ;;
@@ -1714,6 +2380,11 @@ quick_install() {
         install_dns_services
         install_storage_services
         install_dashboard
+
+        # Executar validação pós-instalação
+        echo ""
+        echo "🔍 Executando validação pós-instalação..."
+        post_install_verification
 
         log_success "Instalação rápida concluída!"
         echo ""
@@ -1904,11 +2575,13 @@ manage_services() {
         echo "3) ▶️  Iniciar serviços opcionais"
         echo "4) 📊 Verificar uso de recursos"
         echo "5) 🔍 Diagnosticar problemas"
-        echo "6) 🔄 Atualizar sistema"
+        echo "6) 🛠️  Corrigir Dashboard HTML"
+        echo "7) 🔍 Validação Completa do Sistema"
+        echo "8) 🔄 Atualizar sistema"
         echo "0) 🔙 Voltar"
         echo ""
 
-        read -p "Selecione uma opção [0-6]: " choice
+        read -p "Selecione uma opção [0-8]: " choice
 
         case $choice in
             1)
@@ -1962,6 +2635,12 @@ manage_services() {
                 esac
                 ;;
             6)
+                fix_dashboard_html
+                ;;
+            7)
+                post_install_verification
+                ;;
+            8)
                 log_step "Atualizando sistema"
                 apt update && apt upgrade -y
                 log_success "Sistema atualizado"
@@ -2347,6 +3026,14 @@ main() {
 
     # Inicializar ambiente
     initialize_environment
+
+    # Verificar e baixar arquivos necessários do GitHub
+    log_info "Verificando arquivos necessários..."
+    if ! ensure_github_files; then
+        log_error "Não foi possível baixar arquivos necessários do GitHub"
+        log_info "Verifique sua conexão com a internet e tente novamente"
+        exit 1
+    fi
 
     # Verificar requisitos
     if ! check_requirements; then
