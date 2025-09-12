@@ -416,8 +416,8 @@ diagnose_service_issues() {
             fi
             
             # Verificar portas
-            log_info "Verificando porta lighttpd (8080):"
-            netstat -tlnp 2>/dev/null | grep ":8080" || log_info "  Porta 8080 não está aberta"
+            log_info "Verificando porta lighttpd (8090):"
+            netstat -tlnp 2>/dev/null | grep ":8090" || log_info "  Porta 8090 não está aberta"
             ;;
     esac
 }
@@ -864,14 +864,14 @@ EOF
     log_info "Instalando Pi-hole (interativo)"
     curl -sSL https://install.pi-hole.net | bash
 
-    # Configurar lighttpd para trabalhar com Pi-hole na porta 8080
+    # Configurar lighttpd para trabalhar com Pi-hole na porta 8090 (alternativa)
     configure_lighttpd_for_pihole() {
-        log_step "Configurando lighttpd para Pi-hole"
+        log_step "Configurando lighttpd para Pi-hole na porta 8090"
         
         # Parar lighttpd para evitar conflitos
         systemctl stop lighttpd 2>/dev/null || true
         
-        # Criar configuração limpa do lighttpd
+        # Criar configuração limpa do lighttpd com porta alternativa
         cat > /etc/lighttpd/lighttpd.conf << 'EOF'
 server.modules = (
     "mod_indexfile",
@@ -888,7 +888,7 @@ server.errorlog             = "/var/log/lighttpd/error.log"
 server.pid-file             = "/run/lighttpd.pid"
 server.username             = "www-data"
 server.groupname            = "www-data"
-server.port                 = 8080
+server.port                 = 8090
 
 # features
 server.feature-flags       += ("server.h2proto" => "enable")
@@ -932,7 +932,7 @@ EOF
         if lighttpd -tt -f /etc/lighttpd/lighttpd.conf; then
             systemctl enable lighttpd
             systemctl start lighttpd
-            log_success "Lighttpd configurado e iniciado com sucesso"
+            log_success "Lighttpd configurado e iniciado com sucesso na porta 8090"
         else
             log_error "Falha na configuração do lighttpd"
             return 1
@@ -1282,8 +1282,8 @@ class DashboardAPI(BaseHTTPRequestHandler):
                 "name": "Pi-hole DNS",
                 "description": "DNS blocker e servidor DNS",
                 "icon": "fas fa-shield-alt",
-                "url": "http://192.168.0.100:8080/admin",
-                "port": 8080
+                "url": "http://192.168.0.100:8090/admin",
+                "port": 8090
             },
             "filebrowser": {
                 "name": "FileBrowser",
@@ -1667,7 +1667,7 @@ quick_install() {
         echo "🎉 BoxServer instalado com sucesso!"
         echo ""
         echo "📊 Dashboard: http://$SERVER_IP"
-        echo "🛡️  Pi-hole: http://$SERVER_IP:8080/admin"
+        echo "🛡️  Pi-hole: http://$SERVER_IP:8090/admin"
         echo "📁 FileBrowser: http://$SERVER_IP:8082"
         echo "🔗 Samba: \\\\$SERVER_IP\\shared"
         echo ""
@@ -2136,6 +2136,7 @@ clean_installation() {
     echo "   • Configurações e dados"
     echo "   • Pacotes instalados"
     echo "   • Arquivos de log"
+    echo "   • Regras de firewall e portas"
     echo ""
     echo "Esta ação não pode ser desfeita!"
     echo ""
@@ -2150,8 +2151,12 @@ clean_installation() {
     
     # Parar todos os serviços do BoxServer
     log_info "Parando serviços do BoxServer"
-    systemctl stop dashboard-api pihole-FTL filebrowser smbd nmbd wireguard-ui qbittorrent syncthing 2>/dev/null || true
-    systemctl disable dashboard-api pihole-FTL filebrowser smbd nmbd wireguard-ui qbittorrent syncthing 2>/dev/null || true
+    systemctl stop dashboard-api pihole-FTL filebrowser smbd nmbd wireguard-ui qbittorrent-nox syncthing unbound 2>/dev/null || true
+    systemctl disable dashboard-api pihole-FTL filebrowser smbd nmbd wireguard-ui qbittorrent-nox syncthing unbound 2>/dev/null || true
+    
+    # Matar processos pendentes
+    log_info "Finalizando processos pendentes"
+    pkill -f "lighttpd\|pihole\|samba\|unbound\|dashboard-api\|filebrowser\|qbittorrent\|syncthing" 2>/dev/null || true
     
     # Remover serviços systemd personalizados
     log_info "Removendo serviços systemd"
@@ -2172,20 +2177,40 @@ clean_installation() {
     apt purge -y qbittorrent-nox 2>/dev/null || true
     apt purge -y syncthing 2>/dev/null || true
     apt purge -y fail2ban 2>/dev/null || true
-    apt purge -y wireguard 2>/dev/null || true
+    apt purge -y wireguard wireguard-tools 2>/dev/null || true
     apt purge -y resolvconf openresolv 2>/dev/null || true
+    apt purge -y rng-tools haveged 2>/dev/null || true
+    
+    # Remover regras de firewall
+    log_info "Removendo regras de firewall"
+    if command -v ufw &> /dev/null; then
+        ufw --force reset 2>/dev/null || true
+        ufw --force delete 8090 2>/dev/null || true
+        ufw --force delete 8082 2>/dev/null || true
+        ufw --force delete 9091 2>/dev/null || true
+        ufw --force delete 8384 2>/dev/null || true
+        ufw --force delete 5000 2>/dev/null || true
+        ufw --force delete 445 2>/dev/null || true
+        ufw --force delete 139 2>/dev/null || true
+    fi
     
     # Remover arquivos e diretórios
     log_info "Removendo arquivos de configuração"
     rm -rf /etc/boxserver
+    rm -rf /etc/lighttpd
+    rm -rf /etc/pihole
+    rm -rf /etc/samba
+    rm -rf /etc/unbound
     rm -rf /srv/samba
     rm -rf /srv/filebrowser
     rm -rf /srv/qbittorrent
     rm -rf /opt/wireguard-ui
     rm -rf /var/www/html/dashboard*
     rm -rf /var/www/html/pihole
+    rm -rf /var/lib/unbound
     rm -rf /backups/boxserver
     rm -rf /var/log/boxserver
+    rm -f /var/log/dashboard-api.log
     
     # Remover usuários criados
     log_info "Removendo usuários criados"
@@ -2207,6 +2232,8 @@ clean_installation() {
     log_success "✅ Limpeza completa concluída!"
     echo ""
     echo "🔄 O sistema está pronto para uma nova instalação fresh."
+    echo "📊 Todas as portas foram liberadas"
+    echo "🛡️  Regras de firewall removidas"
     echo ""
     
     read -p "Pressione Enter para continuar..."
