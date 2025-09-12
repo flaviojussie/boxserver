@@ -350,14 +350,44 @@ install_base_dependencies() {
         return 0
     fi
 
-    apt install -y curl wget git dialog chrony unbound rng-tools haveged \
-        build-essential ca-certificates gnupg lsb-release software-properties-common \
-        logrotate ufw htop python3 python3-pip iotop sysstat
+    # Limpar e atualizar cache do apt antes de instalar
+    log_info "Limpando cache do apt"
+    apt clean
+    apt autoremove -y
+    
+    log_info "Atualizando cache do apt"
+    apt update
+    
+    # Instalar pacotes básicos (individualmente para pular pacotes não disponíveis)
+    log_info "Instalando pacotes essenciais"
+    local packages=(
+        "curl" "wget" "git" "dialog" "chrony" "unbound" "rng-tools" "haveged"
+        "build-essential" "ca-certificates" "gnupg" "lsb-release" 
+        "software-properties-common" "logrotate" "ufw" "htop" "python3" 
+        "python3-pip" "iotop" "sysstat"
+    )
+    
+    local failed_packages=()
+    for package in "${packages[@]}"; do
+        if ! apt install -y "$package"; then
+            log_warning "Pacote $package não disponível, pulando..."
+            failed_packages+=("$package")
+        fi
+    done
+    
+    if [[ ${#failed_packages[@]} -gt 0 ]]; then
+        log_warning "Alguns pacotes não foram instalados: ${failed_packages[*]}"
+    fi
 
-    BASE_DEPS_INSTALLED=true
-    save_config
-
-    log_success "Dependências base instaladas"
+    # Verificar instalação bem-sucedida
+    if [[ $? -eq 0 ]]; then
+        BASE_DEPS_INSTALLED=true
+        save_config
+        log_success "Dependências base instaladas"
+    else
+        log_error "Falha ao instalar dependências base"
+        return 1
+    fi
 }
 
 install_firewall() {
