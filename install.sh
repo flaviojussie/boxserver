@@ -1027,9 +1027,15 @@ EOF
     # Aguardar configuração ser completamente escrita
     sleep 2
     
-    # Testar configuração simples
+    # Testar configuração simples com diagnóstico detalhado
     log_info "Validando configuração do Samba..."
-    if testparm -s >/dev/null 2>&1; then
+    
+    # Mostrar conteúdo do arquivo para diagnóstico
+    log_info "Conteúdo do /etc/samba/smb.conf:"
+    cat /etc/samba/smb.conf
+    
+    # Testar configuração e mostrar erros
+    if testparm -s; then
         log_success "Configuração do Samba válida"
         
         # Reiniciar serviços
@@ -1046,6 +1052,9 @@ EOF
         fi
     else
         log_error "Configuração básica falhou na validação"
+        log_info "=== SAÍDA COMPLETA DO TESTPARM PARA DIAGNÓSTICO ==="
+        testparm -s 2>&1 || true
+        log_info "=== FIM DO DIAGNÓSTICO ==="
         return 1
     fi
 
