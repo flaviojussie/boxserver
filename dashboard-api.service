@@ -1,0 +1,29 @@
+[Unit]
+Description=BoxServer Dashboard API
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/html
+ExecStart=/usr/bin/python3 /var/www/html/dashboard-api.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Limites de recursos para TV Box
+MemoryMax=100M
+CPUQuota=30%
+
+# Configurações de segurança
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/www/html /var/log
+ProtectHome=true
+RemoveIPC=true
+
+[Install]
+WantedBy=multi-user.target
