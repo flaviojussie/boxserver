@@ -8,7 +8,7 @@ echo "🚀 Iniciando instalação do servidor doméstico..."
 # ========================
 apt update && apt upgrade -y
 apt install -y \
-    build-essential iproute2 iptables network-manager \
+    build-essential iproute2 iptables \
     curl wget git unzip ufw dnsutils avahi-daemon \
     php php-cli php-fpm php-gd php-mbstring php-xml php-zip composer \
     nginx mariadb-server mariadb-client \
@@ -18,20 +18,28 @@ apt install -y \
     fail2ban unbound wireguard wireguard-tools
 
 # ========================
-# 2. Configurar IP fixo
+# 2. Configurar IP fixo (via /etc/network/interfaces)
 # ========================
 echo "==> Configurando IP fixo em 192.168.0.100..."
-nmcli con mod eth0 ipv4.addresses 192.168.0.100/24
-nmcli con mod eth0 ipv4.gateway 192.168.0.1
-nmcli con mod eth0 ipv4.dns "192.168.0.100 1.1.1.1"
-nmcli con mod eth0 ipv4.method manual
-nmcli con up eth0
+IFACE="eth0"  # altere se necessário
+cat <<EOF >/etc/network/interfaces
+auto $IFACE
+iface $IFACE inet static
+    address 192.168.0.100
+    netmask 255.255.255.0
+    gateway 192.168.0.1
+    dns-nameservers 1.1.1.1 8.8.8.8
+EOF
+
+ifdown $IFACE || true
+ifup $IFACE || true
 
 # ========================
-# 3. Instalar Heimdall
+# 3. Heimdall (porta 80)
 # ========================
 echo "==> Instalando Heimdall Dashboard..."
 cd /var/www
+rm -rf Heimdall
 git clone https://github.com/linuxserver/Heimdall.git
 cd Heimdall
 composer install --no-dev
@@ -94,7 +102,7 @@ systemctl enable unbound
 systemctl restart unbound
 
 # ========================
-# 5. Filebrowser
+# 5. Filebrowser (porta 8082)
 # ========================
 echo "==> Instalando Filebrowser..."
 cd /usr/local/bin
@@ -125,7 +133,7 @@ systemctl enable filebrowser
 systemctl start filebrowser
 
 # ========================
-# 6. Cloudflared
+# 6. Cloudflared DoH (porta 5054)
 # ========================
 echo "==> Instalando Cloudflared..."
 wget -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm
@@ -182,7 +190,41 @@ systemctl enable wireguard-ui
 systemctl start wireguard-ui
 
 # ========================
-# 8. Firewall UFW
+# 8. Configurar serviços locais
+# ========================
+
+# Transmission
+sed -i 's/"rpc-enabled":.*/"rpc-enabled": true,/' /etc/transmission-daemon/settings.json
+sed -i 's/"rpc-port":.*/"rpc-port": 9091,/' /etc/transmission-daemon/settings.json
+systemctl restart transmission-daemon
+
+# Syncthing
+systemctl enable syncthing@$USER
+systemctl start syncthing@$USER
+
+# MiniDLNA
+sed -i 's/#friendly_name=.*/friendly_name=MiniDLNA Server/' /etc/minidlna.conf
+systemctl enable minidlna
+systemctl restart minidlna
+
+# Samba
+mkdir -p /srv/samba/publico
+chmod 777 /srv/samba/publico
+cat <<EOF >>/etc/samba/smb.conf
+[Publico]
+   path = /srv/samba/publico
+   browseable = yes
+   read only = no
+   guest ok = yes
+EOF
+systemctl restart smbd nmbd
+
+# Fail2Ban
+systemctl enable fail2ban
+systemctl start fail2ban
+
+# ========================
+# 9. Firewall UFW
 # ========================
 echo "==> Configurando Firewall..."
 ufw allow 22/tcp
@@ -199,4 +241,11 @@ ufw allow 5054/tcp # Cloudflared DoH
 ufw --force enable
 
 echo "✅ Instalação concluída!"
-echo "Acesse o painel Heimdall: http://192.168.0.100/"
+echo "Heimdall:        http://192.168.0.100/"
+echo "Pi-hole:         http://192.168.0.100:8080/admin/"
+echo "Filebrowser:     http://192.168.0.100:8082/"
+echo "Transmission:    http://192.168.0.100:9091/"
+echo "Syncthing:       http://192.168.0.100:8384/"
+echo "MiniDLNA:        http://192.168.0.100:8200/"
+echo "WireGuard-UI:    http://192.168.0.100:5000/"
+echo "Cloudflared DoH: 127.0.0.1:5054"
