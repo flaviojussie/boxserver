@@ -37,6 +37,10 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $*" | tee -a "$LOG_FILE"
 }
 
+log_step() {
+    echo -e "\n${BLUE}[STEP]${NC} $*" | tee -a "$LOG_FILE"
+}
+
 show_header() {
     clear
     cat << 'EOF'
