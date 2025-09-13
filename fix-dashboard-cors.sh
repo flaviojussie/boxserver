@@ -153,7 +153,9 @@ fix_api_configuration() {
     fi
 
     # Verificar e corrigir porta no arquivo API
-    if grep -q "port = 80" /var/www/html/dashboard-api.py; then
+    if grep -q "8081" /var/www/html/dashboard-api.py; then
+        log_info "✅ API já está configurada para porta 8081"
+    else
         log_info "Corrigindo porta da API de 80 para 8081..."
         sed -i 's/port = 80/port = 8081/g' /var/www/html/dashboard-api.py
         sed -i "s/('', 80)/('', 8081)/g" /var/www/html/dashboard-api.py
