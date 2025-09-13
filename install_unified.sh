@@ -1815,7 +1815,7 @@ quick_install() {
     echo "✅ Firewall e segurança"
     echo "✅ Serviços DNS (Pi-hole)"
     echo "✅ Armazenamento (Samba + FileBrowser)"
-    echo "✅ Flame Dashboard (Go-based)"
+    echo "✅ Flame Dashboard (Node.js-based)"
     echo ""
 
     read -p "Confirmar instalação? [S/N]: " confirm
