@@ -4,18 +4,19 @@ BoxServer Dashboard API
 Monitoramento inteligente de serviços em tempo real
 """
 
-import subprocess
-import json
-import socket
-import requests
-import os
-import sys
+import functools
+import logging
+import time
+import threading
+import urllib.parse
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import urllib.parse
-import threading
-import time
-import logging
+import sys
+import os
+import requests
+import socket
+import json
+import subprocess
 
 # Configurar logging
 logging.basicConfig(
@@ -365,7 +366,7 @@ def run_server():
     monitor = ServiceMonitor()
 
     def handler(*args, **kwargs):
-        DashboardAPI(*args, monitor=monitor, **kwargs)
+        return DashboardAPI(*args, monitor=monitor, **kwargs)
 
     try:
         server = HTTPServer(('0.0.0.0', 8081), handler)
