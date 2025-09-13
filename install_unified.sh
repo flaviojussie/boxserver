@@ -850,6 +850,16 @@ install_flame_dashboard() {
     fi
     log_success "Node.js e npm estão instalados."
 
+    # Instalar dependências de compilação para módulos nativos
+    log_info "Instalando dependências de compilação para módulos nativos..."
+    apt install -y python3 python3-dev build-essential make g++
+
+    # Criar link simbólico para python -> python3 se necessário
+    if ! command -v python &> /dev/null && command -v python3 &> /dev/null; then
+        log_info "Criando link simbólico python -> python3..."
+        ln -sf /usr/bin/python3 /usr/bin/python
+    fi
+
     # Instalar Git se necessário
     if ! command -v git &> /dev/null; then
         log_info "Instalando Git..."
