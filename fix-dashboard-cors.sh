@@ -81,7 +81,7 @@ diagnose_current_state() {
         log_info "📁 Arquivo da API: $api_file"
 
         # Verificar porta
-        local api_port=$(grep -o "port.*[0-9]*" "$api_file" 2>/dev/null | tail -1 | grep -o '[0-9]*' || echo "desconhecida")
+        local api_port=$(grep -oE "[0-9]{4}" "$api_file" 2>/dev/null | grep -v "2025\|30000\|600000" | tail -1 || echo "desconhecida")
         log_info "🔌 Porta da API: $api_port"
 
         if [[ "$api_port" != "8081" ]]; then
