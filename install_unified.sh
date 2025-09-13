@@ -2005,7 +2005,7 @@ show_status() {
 
     # Verificar sistema
     echo "🔧 Sistema:"
-    echo "   CPU: $(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1"%'}')%"
+    echo "   CPU: $(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1"%"}')%"
     echo "   RAM: $(free -h | grep Mem | awk '{print $3"/"$2}')"
     echo "   Disco: $(df -h / | awk 'NR==2{print $3"/"$2" ("$5")"}')"
 
@@ -2684,7 +2684,7 @@ main() {
 # TRATAMENTO DE SINAIS
 # =============================================================================
 
-trap 'log_error "Instalacao interrompida pelo usuario"; exit 1' INT TERM
+trap "log_error 'Instalacao interrompida pelo usuario'; exit 1" INT TERM
 
 # =============================================================================
 # EXECUCAO
