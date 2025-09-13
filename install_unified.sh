@@ -893,37 +893,22 @@ install_flame_dashboard() {
     # A partir daqui, só executa se realmente precisar reinstalar
     log_step "Executando instalação completa do Flame Dashboard"
 
-    # Verificar e resolver conflito na porta 80 antes de instalar
-    log_info "Verificando disponibilidade da porta 80 para o Flame..."
-    if ! check_port_availability 80; then
-        log_warning "Porta 80 está ocupada. Oferecendo alternativas..."
+    # Verificar e garantir que a porta 5005 esteja livre para o Flame
+    log_info "Garantindo disponibilidade da porta 5005 para o Flame (porta padrão)..."
 
-        local flame_port_choice
-        flame_port_choice=$(offer_flame_port_alternative)
+    if ! check_port_availability 5005; then
+        log_warning "Porta 5005 está ocupada. Tentando liberar automaticamente..."
 
-        case "$flame_port_choice" in
-            "80")
-                log_success "Usando porta 80 para o Flame"
-                ;;
-            "8080"|"5000")
-                log_info "Usando porta alternativa $flame_port_choice para o Flame"
-                ;;
-            "skip")
-                log_info "Instalação do Flame pulada pelo usuário"
-                return 0
-                ;;
-            "cancel"|"0")
-                log_error "Instalação cancelada"
-                return 1
-                ;;
-            *)
-                log_error "Opção inválida, usando porta padrão 80"
-                flame_port_choice="80"
-                ;;
-        esac
-    else
-        flame_port_choice="80"
+        if ! force_free_port_5005; then
+            log_error "❌ Falha crítica: não foi possível liberar a porta 5005"
+            log_error "   O Flame Dashboard requer a porta 5005 para funcionar corretamente"
+            log_error "   Verifique quais serviços estão usando a porta 5005 e pare-os manualmente"
+            return 1
+        fi
     fi
+
+    log_success "✅ Porta 5005 está disponível para o Flame"
+    local flame_port=5005
 
     # Verificar espaço em disco mínimo (500MB)
     local available_space=$(df / | awk 'NR==2{print $4}')
@@ -1034,7 +1019,7 @@ RestartSec=5
 # Variáveis de Ambiente
 Environment=NODE_ENV=production
 Environment=PASSWORD=${flame_password}
-Environment=PORT=${flame_port_choice}
+Environment=PORT=5005
 
 [Install]
 WantedBy=multi-user.target
@@ -1062,10 +1047,10 @@ EOF
         log_info "Executando verificação final de portas..."
         sleep 2
 
-        if check_port_usage "${flame_port_choice}" "flame"; then
-            log_success "✅ Flame Dashboard está na porta ${flame_port_choice}"
+        if check_port_usage 5005 "flame"; then
+            log_success "✅ Flame Dashboard está na porta 5005"
         else
-            log_warning "⚠️  Flame pode não estar na porta ${flame_port_choice} corretamente"
+            log_warning "⚠️  Flame pode não estar na porta 5005 corretamente"
         fi
 
         if check_port_usage 8090 "lighttpd"; then
@@ -1083,11 +1068,7 @@ EOF
     fi
 
     log_success "Flame Dashboard instalado e configurado com sucesso"
-    if [[ "$flame_port_choice" == "80" ]]; then
-        log_info "Flame Dashboard estará disponível em: http://$SERVER_IP"
-    else
-        log_info "Flame Dashboard estará disponível em: http://$SERVER_IP:$flame_port_choice"
-    fi
+    log_info "Flame Dashboard estará disponível em: http://$SERVER_IP:5005"
     log_info "Pi-hole Admin estará disponível em: http://$SERVER_IP:8090/admin"
 }
 
@@ -1115,134 +1096,117 @@ ensure_pihole_port_8090() {
     log_success "Pi-hole configurado para porta 8090, porta 80 liberada para Flame"
 }
 
-identify_and_resolve_port_80_conflict() {
-    log_info "Identificando e resolvendo conflito na porta 80..."
+identify_and_resolve_port_conflict() {
+    local target_port="$1"
+    log_info "Identificando e resolvendo conflito na porta $target_port..."
 
-    local port_80_process=""
-    local port_80_service=""
+    local port_process=""
+    local port_service=""
     local conflict_resolved=false
 
-    # Identificar processo usando porta 80
-    port_80_process=$(find_port_process 80)
+    # Identificar processo usando a porta
+    port_process=$(find_port_process "$target_port")
 
-    if [[ -n "$port_80_process" ]]; then
-        log_warning "Processo encontrado na porta 80: PID $port_80_process"
+    if [[ -n "$port_process" ]]; then
+        log_warning "Processo encontrado na porta $target_port: PID $port_process"
 
         # Identificar nome do serviço
-        port_80_service=$(ps -p "$port_80_process" -o comm= 2>/dev/null || echo "desconhecido")
-        log_warning "Serviço na porta 80: $port_80_service"
+        port_service=$(ps -p "$port_process" -o comm= 2>/dev/null || echo "desconhecido")
+        log_warning "Serviço na porta $target_port: $port_service"
 
         # Tentar resolver conflito baseado no serviço
-        case "$port_80_service" in
+        case "$port_service" in
             "nginx"|"apache2"|"httpd"|"lighttpd")
-                log_info "Tentando parar serviço $port_80_service..."
-                systemctl stop "$port_80_service" 2>/dev/null || true
-                systemctl disable "$port_80_service" 2>/dev/null || true
+                log_info "Tentando parar serviço $port_service..."
+                systemctl stop "$port_service" 2>/dev/null || true
+                systemctl disable "$port_service" 2>/dev/null || true
                 sleep 2
 
                 # Verificar se a porta foi liberada
-                if check_port_availability 80; then
-                    log_success "✅ Porta 80 liberada após parar $port_80_service"
+                if check_port_availability "$target_port"; then
+                    log_success "✅ Porta $target_port liberada após parar $port_service"
                     conflict_resolved=true
                 else
-                    log_error "❌ Falha ao liberar porta 80 parando $port_80_service"
+                    log_error "❌ Falha ao liberar porta $target_port parando $port_service"
                 fi
                 ;;
             "flame")
-                log_info "Flame já está rodando na porta 80 - verificando configuração..."
+                log_info "Flame já está rodando na porta $target_port - verificando configuração..."
                 if systemctl is-active --quiet flame; then
-                    log_success "✅ Flame já está configurado corretamente na porta 80"
+                    log_success "✅ Flame já está configurado corretamente na porta $target_port"
                     conflict_resolved=true
                 else
                     log_warning "Flame encontrado mas inativo - reiniciando..."
                     systemctl restart flame 2>/dev/null || true
                     sleep 3
-                    if systemctl is-active --quiet flame && check_port_usage 80 "flame"; then
-                        log_success "✅ Flame recuperado e funcionando na porta 80"
+                    if systemctl is-active --quiet flame && check_port_usage "$target_port" "flame"; then
+                        log_success "✅ Flame recuperado e funcionando na porta $target_port"
                         conflict_resolved=true
                     fi
                 fi
                 ;;
             *)
-                log_warning "Serviço desconhecido ($port_80_service) usando porta 80"
-                log_info "Tentando matar processo PID $port_80_process..."
-                kill -15 "$port_80_process" 2>/dev/null || true
+                log_warning "Serviço desconhecido ($port_service) usando porta $target_port"
+                log_info "Tentando matar processo PID $port_process..."
+                kill -15 "$port_process" 2>/dev/null || true
                 sleep 2
-                kill -9 "$port_80_process" 2>/dev/null || true
+                kill -9 "$port_process" 2>/dev/null || true
                 sleep 1
 
-                if check_port_availability 80; then
-                    log_success "✅ Porta 80 liberada após matar processo"
+                if check_port_availability "$target_port"; then
+                    log_success "✅ Porta $target_port liberada após matar processo"
                     conflict_resolved=true
                 else
-                    log_error "❌ Falha ao liberar porta 80"
+                    log_error "❌ Falha ao liberar porta $target_port"
                 fi
                 ;;
         esac
     else
-        log_success "✅ Porta 80 já está livre"
+        log_success "✅ Porta $target_port já está livre"
         conflict_resolved=true
     fi
 
     # Verificação final
     if [[ "$conflict_resolved" == "true" ]]; then
-        log_success "Conflito na porta 80 resolvido com sucesso"
+        log_success "Conflito na porta $target_port resolvido com sucesso"
         return 0
     else
-        log_error "Não foi possível resolver o conflito na porta 80"
+        log_error "Não foi possível resolver o conflito na porta $target_port"
         return 1
     fi
 }
 
-offer_flame_port_alternative() {
-    log_info "Oferecendo alternativas para configuração do Flame..."
+identify_and_resolve_port_80_conflict() {
+    identify_and_resolve_port_conflict 80
+}
 
-    echo ""
-    echo "🔧 Opções para resolver o conflito na porta 80:"
-    echo ""
-    echo "1) Tentar liberar porta 80 automaticamente (recomendado)"
-    echo "2) Configurar Flame para porta alternativa (8080)"
-    echo "3) Configurar Flame para porta alternativa (5000)"
-    echo "4) Pular instalação do Flame"
-    echo "0) Cancelar instalação"
-    echo ""
+force_free_port_5005() {
+    log_info "Forçando liberação da porta 5005 para o Flame..."
 
-    read -p "Selecione uma opção [0-4]: " port_choice
+    local max_attempts=3
+    local attempt=1
+    local port_freed=false
 
-    case "$port_choice" in
-        1)
-            log_info "Tentando liberar porta 80 automaticamente..."
-            if identify_and_resolve_port_80_conflict; then
-                log_success "Porta 80 liberada com sucesso"
-                echo "80"  # Retorna porta 80
-                return 0
-            else
-                log_error "Falha ao liberar porta 80"
-                echo "0"  # Indica falha
-                return 1
-            fi
-            ;;
-        2)
-            log_info "Configurando Flame para porta 8080"
-            echo "8080"
-            return 0
-            ;;
-        3)
-            log_info "Configurando Flame para porta 5000"
-            echo "5000"
-            return 0
-            ;;
-        4)
-            log_info "Pulando instalação do Flame"
-            echo "skip"
-            return 0
-            ;;
-        0|*)
-            log_error "Instalação cancelada pelo usuário"
-            echo "cancel"
-            return 1
-            ;;
-    esac
+    while [[ $attempt -le $max_attempts && "$port_freed" == "false" ]]; do
+        log_info "Tentativa $attempt/$max_attempts para liberar porta 5005..."
+
+        # Identificar e tentar resolver conflito
+        if identify_and_resolve_port_conflict 5005; then
+            log_success "✅ Porta 5005 liberada com sucesso"
+            port_freed=true
+        else
+            log_warning "Tentativa $attempt falhou, aguardando antes de tentar novamente..."
+            sleep 2
+            ((attempt++))
+        fi
+    done
+
+    if [[ "$port_freed" == "true" ]]; then
+        return 0
+    else
+        log_error "❌ Não foi possível liberar a porta 5005 após $max_attempts tentativas"
+        return 1
+    fi
 }
 
 reconfigure_flame_dashboard() {
@@ -1683,21 +1647,14 @@ verify_port_configuration() {
     log_info "Verificando configuração de portas..."
 
     local port_issues=0
-    local flame_port="80"
 
-    # Verificar porta do Flame (pode ser 80, 8080 ou 5000)
+    # Verificar porta 5005 (Flame Dashboard)
     if systemctl is-active --quiet flame; then
-        # Obter porta do arquivo de serviço
-        if [[ -f /etc/systemd/system/flame.service ]]; then
-            flame_port=$(grep "Environment=PORT=" /etc/systemd/system/flame.service | cut -d'=' -f2)
-            [[ -z "$flame_port" ]] && flame_port="80"
-        fi
-
-        if ! check_port_usage "$flame_port" "flame"; then
-            log_error "Porta $flame_port está ocupada ou Flame não está respondendo"
-            ((port_issues++))
+        if check_port_usage 5005 "flame"; then
+            log_success "Flame Dashboard está ativo na porta 5005"
         else
-            log_success "Flame Dashboard está ativo na porta $flame_port"
+            log_error "Porta 5005 não está sendo usada pelo Flame ou Flame não está respondendo"
+            ((port_issues++))
         fi
     else
         log_warning "Flame Dashboard está inativo"
@@ -1800,22 +1757,12 @@ verify_service_accessibility() {
     log_info "Verificando acessibilidade dos serviços..."
 
     local access_issues=0
-    local flame_port="80"
 
-    # Obter porta do Flame
-    if systemctl is-active --quiet flame && [[ -f /etc/systemd/system/flame.service ]]; then
-        flame_port=$(grep "Environment=PORT=" /etc/systemd/system/flame.service | cut -d'=' -f2)
-        [[ -z "$flame_port" ]] && flame_port="80"
-    fi
-
-    # Testar Flame Dashboard na porta correta
-    local flame_url="http://localhost"
-    [[ "$flame_port" != "80" ]] && flame_url="$flame_url:$flame_port"
-
-    if test_http_endpoint "$flame_url/" 5; then
-        log_success "✅ Flame Dashboard acessível na porta $flame_port"
+    # Testar Flame Dashboard (porta 5005)
+    if test_http_endpoint "http://localhost:5005/" 5; then
+        log_success "✅ Flame Dashboard acessível na porta 5005"
     else
-        log_error "❌ Flame Dashboard não responde na porta $flame_port"
+        log_error "❌ Flame Dashboard não responde na porta 5005"
         ((access_issues++))
     fi
 
@@ -2246,18 +2193,7 @@ quick_install() {
         echo "🎉 BoxServer v7.0 instalado com sucesso!"
         echo ""
 
-        # Obter porta do Flame para mostrar URL correta
-        local flame_display_port="80"
-        if systemctl is-active --quiet flame && [[ -f /etc/systemd/system/flame.service ]]; then
-            flame_display_port=$(grep "Environment=PORT=" /etc/systemd/system/flame.service | cut -d'=' -f2)
-            [[ -z "$flame_display_port" ]] && flame_display_port="80"
-        fi
-
-        if [[ "$flame_display_port" == "80" ]]; then
-            echo "🏠 Flame Dashboard: http://$SERVER_IP"
-        else
-            echo "🏠 Flame Dashboard: http://$SERVER_IP:$flame_display_port"
-        fi
+        echo "🏠 Flame Dashboard: http://$SERVER_IP:5005"
         echo "🛡️  Pi-hole: http://$SERVER_IP:8090/admin"
         echo "📁 FileBrowser: http://$SERVER_IP:8082"
         echo "🔗 Samba: \\\\$SERVER_IP\\shared"
@@ -2857,13 +2793,6 @@ quick_validation() {
     echo "================================"
 
     local issues=0
-    local flame_port="80"
-
-    # Obter porta do Flame
-    if systemctl is-active --quiet flame && [[ -f /etc/systemd/system/flame.service ]]; then
-        flame_port=$(grep "Environment=PORT=" /etc/systemd/system/flame.service | cut -d'=' -f2)
-        [[ -z "$flame_port" ]] && flame_port="80"
-    fi
 
     # Verificar serviços essenciais
     echo "Verificando serviços essenciais..."
@@ -2874,17 +2803,14 @@ quick_validation() {
 
     # Verificar portas
     echo "Verificando portas essenciais..."
-    if systemctl is-active --quiet flame && ! check_port_usage "$flame_port" "flame"; then
-        echo "❌ Porta $flame_port não está sendo usada pelo Flame"
+    if systemctl is-active --quiet flame && ! check_port_usage 5005 "flame"; then
+        echo "❌ Porta 5005 não está sendo usada pelo Flame"
         ((issues++))
     fi
 
     # Testar acesso rápido
     echo "Testando acessibilidade..."
-    local flame_url="http://localhost"
-    [[ "$flame_port" != "80" ]] && flame_url="$flame_url:$flame_port"
-
-    if test_http_endpoint "$flame_url/" 2; then
+    if test_http_endpoint "http://localhost:5005/" 2; then
         echo "✅ Flame Dashboard acessível"
     else
         echo "❌ Flame Dashboard inacessível"
