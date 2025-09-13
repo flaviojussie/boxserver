@@ -861,7 +861,7 @@ install_flame_dashboard() {
     # Limpar diretório se já existir
     if [[ -d /opt/flame ]]; then
         log_info "Limpando diretório existente do Flame..."
-        rm -rf /opt/flame/*
+        rm -rf /opt/flame
     fi
 
     # Clonar repositório do Flame com timeout
