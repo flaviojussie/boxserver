@@ -890,12 +890,27 @@ install_flame_dashboard() {
     fi
     log_success "Dependências instaladas."
 
+    # Aumentar swap temporariamente para o build em sistemas com pouca RAM
+    manage_swap_for_build "increase"
+
+    # Liberar memória antes do build e otimizar sistema
+    log_info "Otimizando memória para o build..."
+    sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+    sleep 2
+
     log_info "Construindo o frontend do Flame (npm run build)..."
+    # Aumentar memória disponível para Node.js durante o build
+    export NODE_OPTIONS="--max-old-space-size=3072"
     if ! (cd client && npm run build); then
         log_error "Falha ao construir o frontend."
+        # Reverter swap em caso de falha
+        manage_swap_for_build "revert"
         return 1
     fi
     log_success "Frontend construído com sucesso."
+
+    # Reverter swap após o build
+    manage_swap_for_build "revert"
 
     # Criar usuário e diretórios
     useradd -r -s /bin/false flame 2>/dev/null || true
@@ -1221,6 +1236,47 @@ install_go_arch_specific() {
     else
         log_error "Falha ao baixar Go para arquitetura $arch"
         return 1
+    fi
+}
+
+manage_swap_for_build() {
+    local action="$1"
+    local total_mem_mb=$(free -m | awk 'NR==2{print $2}')
+
+    # Aumentar o swap apenas em sistemas com menos de 1.5GB de RAM
+    if [[ $total_mem_mb -lt 1500 ]]; then
+        if [[ "$action" == "increase" ]]; then
+            log_warning "Memória RAM (${total_mem_mb}MB) é baixa. Aumentando o swap para 2GB para a compilação."
+            
+            # Desativa o swap existente, se houver
+            if swapon --show | grep -q '/swapfile'; then
+                log_info "Desativando swap principal temporariamente."
+                swapoff /swapfile
+            fi
+            
+            # Cria e ativa um novo swap de 2GB
+            log_info "Criando arquivo de swap temporário de 2GB (/swapfile.build)..."
+            fallocate -l 2G /swapfile.build
+            chmod 600 /swapfile.build
+            mkswap /swapfile.build
+            swapon /swapfile.build
+            log_success "Swap de compilação (2GB) ativado."
+            
+        elif [[ "$action" == "revert" ]]; then
+            log_info "Compilação finalizada. Removendo swap temporário."
+            
+            if swapon --show | grep -q '/swapfile.build'; then
+                swapoff /swapfile.build
+            fi
+            rm -f /swapfile.build
+            
+            # Reativa o swap original se ele existir
+            if [[ -f /swapfile ]]; then
+                log_info "Reativando swap principal."
+                swapon /swapfile
+            fi
+            log_success "Swap temporário removido."
+        fi
     fi
 }
 
