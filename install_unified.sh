@@ -865,7 +865,7 @@ install_flame_dashboard() {
     fi
 
     # Clonar repositório do Flame com timeout
-    if timeout 120 git clone https://github.com/pawelmalak/flame.git .; then
+    if timeout 120 git clone https://github.com/pawelmalak/flame.git /opt/flame; then
         log_success "Repositório do Flame clonado com sucesso"
     else
         log_error "Falha ao clonar repositório do Flame"
