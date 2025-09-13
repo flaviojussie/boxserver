@@ -868,6 +868,11 @@ install_flame_dashboard() {
 
     # Compilar Flame
     log_info "Compilando Flame..."
+    
+    # Inicializar módulo Go
+    cd /opt/flame
+    go mod init flame 2>/dev/null || true
+    
     if timeout 180 go build -o flame; then
         log_success "Flame compilado com sucesso"
 
