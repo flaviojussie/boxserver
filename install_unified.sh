@@ -858,6 +858,12 @@ install_flame_dashboard() {
         apt install -y git
     fi
 
+    # Limpar diretório se já existir
+    if [[ -d /opt/flame ]]; then
+        log_info "Limpando diretório existente do Flame..."
+        rm -rf /opt/flame/*
+    fi
+
     # Clonar repositório do Flame com timeout
     if timeout 120 git clone https://github.com/pawelmalak/flame.git .; then
         log_success "Repositório do Flame clonado com sucesso"
