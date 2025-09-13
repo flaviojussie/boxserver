@@ -1185,59 +1185,6 @@ EOF
 # FUNÇÕES SUPORTE
 # =============================================================================
 
-ensure_github_files() {
-    log_step "Verificando e baixando arquivos do GitHub"
-
-    local repo_url="https://github.com/flaviojussie/boxserver.git"
-    local required_files=("dashboard.html")
-    local missing_files=0
-
-    # Verificar quais arquivos estão faltando
-    for file in "${required_files[@]}"; do
-        if [[ ! -f "$SCRIPT_DIR/$file" ]]; then
-            log_warning "Arquivo $file não encontrado localmente"
-            ((missing_files++))
-        fi
-    done
-
-    if [[ $missing_files -gt 0 ]]; then
-        log_info "Baixando arquivos do repositório GitHub..."
-
-        # Tentar clonar o repositório
-        if command -v git &> /dev/null; then
-            log_info "Usando git para clonar repositório"
-
-            # Criar diretório temporário
-            local temp_dir="/tmp/boxserver-github-$$"
-            mkdir -p "$temp_dir"
-
-            if git clone "$repo_url" "$temp_dir" 2>/dev/null; then
-                log_success "Repositório clonado com sucesso"
-
-                # Copiar arquivos necessários
-                for file in "${required_files[@]}"; do
-                    if [[ -f "$temp_dir/$file" ]]; then
-                        cp "$temp_dir/$file" "$SCRIPT_DIR/"
-                        log_success "Arquivo $file copiado"
-                    else
-                        log_error "Arquivo $file não encontrado no repositório"
-                    fi
-                done
-
-                # Limpar diretório temporário
-                rm -rf "$temp_dir"
-            else
-                log_error "Falha ao clonar repositório GitHub"
-                return 1
-            fi
-        else
-            log_error "git não encontrado. Não foi possível baixar arquivos do GitHub"
-            return 1
-        fi
-    else
-        log_success "Todos os arquivos necessários estão disponíveis localmente"
-    fi
-}
 
 configure_lighttpd_for_pihole() {
     log_step "Configurando lighttpd para Pi-hole na porta 8090"
@@ -2565,7 +2512,7 @@ quick_validation() {
         echo "🎉 Sistema está funcional!"
         return 0
     else
-        echo "⚠️  Encontrados $issues problemas - execute validação completa"
+        echo "Encontrados $issues problemas - execute validacao completa"
         return 1
     fi
 }
@@ -2573,35 +2520,35 @@ quick_validation() {
 show_about() {
     show_header
     cat << 'EOF'
-🏗️  BoxServer Installer v7.0 (FastAPI Edition)
+BoxServer Installer v7.0 (FastAPI Edition)
 
 Um instalador profissional para transformar qualquer dispositivo
 em um servidor completo e otimizado com arquitetura moderna.
 
-🎯 Recursos:
-• Instalação assistida com menu interativo
+Recursos:
+• Instalacao assistida com menu interativo
 • API FastAPI moderna com uvicorn
-• Fluxo hierárquico com validação de dependências
-• Sistema de recuperação e rollback automático
+• Fluxo hierarquico com validacao de dependencias
+• Sistema de recuperacao e rollback automatico
 • Monitoramento em tempo real
-• Backup e restauração integrados
-• Otimizações para hardware limitado
+• Backup e restauracao integrados
+• Otimizacoes para hardware limitado
 
-📊 Arquitetura Suportada:
+Arquitetura Suportada:
 • ARMv7, ARM64, x86_64
-• Mínimo 512MB RAM
+• Minimo 512MB RAM
 • Linux com systemd
 
-⚡ Serviços:
+Servicos:
 • Pi-hole (DNS blocker)
 • Samba (compartilhamento de arquivos)
 • FileBrowser (interface web)
 • WireGuard-UI (VPN moderna)
 • Flame Dashboard (dashboard moderno)
 • qBittorrent (torrents)
-• Syncthing (sincronização)
+• Syncthing (sincronizacao)
 
-🔧 Tecnologias:
+Tecnologias:
 • Shell Script robusto
 • Systemd service management
 • Go (Flame Dashboard)
@@ -2609,7 +2556,7 @@ em um servidor completo e otimizado com arquitetura moderna.
 • Network optimization
 • Security hardening
 
-© 2023 BoxServer Team (Atualizado por Claude)
+(c) 2023 BoxServer Team (Atualizado por Claude)
 Licença: MIT
 EOF
 
@@ -2718,14 +2665,6 @@ main() {
     # Inicializar ambiente
     initialize_environment
 
-    # Verificar e baixar arquivos necessários do GitHub
-    log_info "Verificando arquivos necessários..."
-    if ! ensure_github_files; then
-        log_error "Não foi possível baixar arquivos necessários do GitHub"
-        log_info "Verifique sua conexão com a internet e tente novamente"
-        exit 1
-    fi
-
     # Verificar requisitos
     if ! check_requirements; then
         read -p "Requisitos mínimos não atendidos. Deseja continuar? [S/N]: " confirm
@@ -2745,13 +2684,13 @@ main() {
 # TRATAMENTO DE SINAIS
 # =============================================================================
 
-trap 'log_error "Instalação interrompida pelo usuário"; exit 1' INT TERM
+trap 'log_error "Instalacao interrompida pelo usuario"; exit 1' INT TERM
 
 # =============================================================================
-# EXECUÇÃO
+# EXECUCAO
 # =============================================================================
 
-# Verificar se o script está sendo sourcing ou executado
+# Verificar se o script esta sendo sourcing ou executado
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
