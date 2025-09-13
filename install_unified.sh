@@ -845,10 +845,6 @@ install_flame_dashboard() {
         fi
     fi
 
-    # Criar diretório para Flame
-    mkdir -p /opt/flame
-    cd /opt/flame
-
     # Baixar e compilar Flame
     log_info "Baixando e compilando Flame..."
 
