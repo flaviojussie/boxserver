@@ -825,33 +825,104 @@ EOF
 install_flame_dashboard() {
     log_step "Instalando/Configurando Flame Dashboard (Node.js-based)"
 
-    if [[ "$DASHBOARD_INSTALLED" == "true" ]]; then
-        log_info "Flame Dashboard já instalado, verificando configuração..."
+    # Verificação inteligente - apenas reinstalar se necessário
+    local needs_reinstall=false
+    local reinstall_reason=""
 
-        # Verificar se o serviço flame existe
-        if systemctl list-unit-files | grep -q "flame.service"; then
-            if systemctl is-active --quiet flame; then
-                log_info "Reconfigurando Flame Dashboard existente..."
+    # Verificar se o serviço flame existe e está funcionando
+    if systemctl list-unit-files | grep -q "flame.service"; then
+        if systemctl is-active --quiet flame; then
+            log_info "Flame Dashboard já está ativo e funcionando"
+
+            # Verificar se está na porta correta (80)
+            if check_port_usage 80 "flame"; then
+                log_success "✅ Flame Dashboard já está configurado corretamente na porta 80"
+
+                # Apenas garantir que Pi-hole está na porta 8090
+                ensure_pihole_port_8090
+
+                log_success "Nenhuma reinstalação necessária - Flame está funcional"
+                return 0
+            else
+                log_warning "Flame está ativo mas não na porta 80 - reconfigurando..."
                 reconfigure_flame_dashboard
                 return $?
-            else
-                log_warning "Flame Dashboard existe mas está inativo - tentando reiniciar"
-                systemctl start flame 2>/dev/null || true
-                sleep 2
-                if systemctl is-active --quiet flame; then
-                    log_info "Flame reiniciado, reconfigurando..."
-                    reconfigure_flame_dashboard
-                    return $?
-                else
-                    log_warning "Flame não conseguiu iniciar - reinstalando"
-                    # Continuar com instalação normal
-                fi
             fi
         else
-            log_warning "Flame Dashboard marcado como instalado mas serviço não existe"
-            log_info "Reinstalando Flame Dashboard..."
-            # Continuar com instalação normal
+            log_warning "Flame Dashboard existe mas está inativo"
+
+            # Tentar reiniciar antes de decidir reinstalar
+            systemctl start flame 2>/dev/null || true
+            sleep 3
+
+            if systemctl is-active --quiet flame; then
+                log_info "Flame reiniciado com sucesso, verificando configuração..."
+                if check_port_usage 80 "flame"; then
+                    log_success "Flame recuperado e funcionando corretamente"
+                    ensure_pihole_port_8090
+                    return 0
+                else
+                    log_warning "Flame recuperado mas configuração incorreta - reconfigurando..."
+                    reconfigure_flame_dashboard
+                    return $?
+                fi
+            else
+                needs_reinstall=true
+                reinstall_reason="serviço não consegue iniciar"
+            fi
         fi
+    else
+        # Verificar se a instalação existe mas o serviço não
+        if [[ -d /opt/flame ]] && [[ -f /opt/flame/server.js ]]; then
+            log_warning "Instalação do Flame existe mas serviço systemd não encontrado"
+            needs_reinstall=true
+            reinstall_reason="serviço systemd ausente"
+        else
+            needs_reinstall=true
+            reinstall_reason="instalação não encontrada"
+        fi
+    fi
+
+    if [[ "$needs_reinstall" == "true" ]]; then
+        log_info "Reinstalação necessária: $reinstall_reason"
+    else
+        log_success "Flame Dashboard já está configurado corretamente"
+        return 0
+    fi
+
+    # A partir daqui, só executa se realmente precisar reinstalar
+    log_step "Executando instalação completa do Flame Dashboard"
+
+    # Verificar e resolver conflito na porta 80 antes de instalar
+    log_info "Verificando disponibilidade da porta 80 para o Flame..."
+    if ! check_port_availability 80; then
+        log_warning "Porta 80 está ocupada. Oferecendo alternativas..."
+
+        local flame_port_choice
+        flame_port_choice=$(offer_flame_port_alternative)
+
+        case "$flame_port_choice" in
+            "80")
+                log_success "Usando porta 80 para o Flame"
+                ;;
+            "8080"|"5000")
+                log_info "Usando porta alternativa $flame_port_choice para o Flame"
+                ;;
+            "skip")
+                log_info "Instalação do Flame pulada pelo usuário"
+                return 0
+                ;;
+            "cancel"|"0")
+                log_error "Instalação cancelada"
+                return 1
+                ;;
+            *)
+                log_error "Opção inválida, usando porta padrão 80"
+                flame_port_choice="80"
+                ;;
+        esac
+    else
+        flame_port_choice="80"
     fi
 
     # Verificar espaço em disco mínimo (500MB)
@@ -890,9 +961,9 @@ install_flame_dashboard() {
         apt install -y git
     fi
 
-    # Limpar diretório se já existir
-    if [[ -d /opt/flame ]]; then
-        log_info "Limpando diretório existente do Flame..."
+    # Limpar diretório apenas se realmente necessário reinstalar
+    if [[ "$needs_reinstall" == "true" ]]; then
+        log_info "Preparando diretório para reinstalação..."
         rm -rf /opt/flame
     fi
 
@@ -963,34 +1034,14 @@ RestartSec=5
 # Variáveis de Ambiente
 Environment=NODE_ENV=production
 Environment=PASSWORD=${flame_password}
-Environment=PORT=80
+Environment=PORT=${flame_port_choice}
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
     # Garantir que Pi-hole esteja configurado para porta 8090
-    log_info "Verificando e garantindo configuração do Pi-hole na porta 8090..."
-
-    # Parar serviços web que possam estar usando porta 80
-    systemctl stop nginx apache2 httpd lighttpd 2>/dev/null || true
-
-    # Forçar Pi-hole a usar porta 8090
-    if systemctl is-active --quiet pihole-FTL; then
-        log_info "Reconfigurando Pi-hole para porta 8090..."
-        echo "BLOCKINGMODE=NULL" > /etc/pihole/pihole-FTL.conf
-        systemctl restart pihole-FTL 2>/dev/null || true
-    fi
-
-    # Configurar lighttpd para porta 8090
-    if [[ -f /etc/lighttpd/lighttpd.conf ]]; then
-        sed -i 's/^server\.port.*/server.port = 8090/' /etc/lighttpd/lighttpd.conf 2>/dev/null || true
-    fi
-
-    # Reiniciar lighttpd na porta 8090
-    systemctl restart lighttpd 2>/dev/null || true
-
-    log_success "Pi-hole configurado para porta 8090, porta 80 liberada para Flame"
+    ensure_pihole_port_8090
 
     systemctl daemon-reload
 
@@ -1011,10 +1062,10 @@ EOF
         log_info "Executando verificação final de portas..."
         sleep 2
 
-        if check_port_usage 80 "flame"; then
-            log_success "✅ Flame Dashboard está na porta 80"
+        if check_port_usage "${flame_port_choice}" "flame"; then
+            log_success "✅ Flame Dashboard está na porta ${flame_port_choice}"
         else
-            log_warning "⚠️  Flame pode não estar na porta 80 corretamente"
+            log_warning "⚠️  Flame pode não estar na porta ${flame_port_choice} corretamente"
         fi
 
         if check_port_usage 8090 "lighttpd"; then
@@ -1032,21 +1083,20 @@ EOF
     fi
 
     log_success "Flame Dashboard instalado e configurado com sucesso"
-    log_info "Flame Dashboard estará disponível em: http://$SERVER_IP"
+    if [[ "$flame_port_choice" == "80" ]]; then
+        log_info "Flame Dashboard estará disponível em: http://$SERVER_IP"
+    else
+        log_info "Flame Dashboard estará disponível em: http://$SERVER_IP:$flame_port_choice"
+    fi
     log_info "Pi-hole Admin estará disponível em: http://$SERVER_IP:8090/admin"
 }
 
-reconfigure_flame_dashboard() {
-    log_info "Iniciando reconfiguração do Flame Dashboard..."
-
-    # Parar temporariamente o serviço flame
-    systemctl stop flame 2>/dev/null || true
-
+ensure_pihole_port_8090() {
     # Garantir que Pi-hole esteja configurado para porta 8090
-    log_info "Reconfigurando Pi-hole para porta 8090..."
+    log_info "Garantindo configuração do Pi-hole na porta 8090..."
 
     # Parar serviços web que possam estar usando porta 80
-    systemctl stop nginx apache2 httpd 2>/dev/null || true
+    systemctl stop nginx apache2 httpd lighttpd 2>/dev/null || true
 
     # Forçar Pi-hole a usar porta 8090
     if systemctl is-active --quiet pihole-FTL; then
@@ -1061,6 +1111,148 @@ reconfigure_flame_dashboard() {
 
     # Reiniciar lighttpd na porta 8090
     systemctl restart lighttpd 2>/dev/null || true
+
+    log_success "Pi-hole configurado para porta 8090, porta 80 liberada para Flame"
+}
+
+identify_and_resolve_port_80_conflict() {
+    log_info "Identificando e resolvendo conflito na porta 80..."
+
+    local port_80_process=""
+    local port_80_service=""
+    local conflict_resolved=false
+
+    # Identificar processo usando porta 80
+    port_80_process=$(find_port_process 80)
+
+    if [[ -n "$port_80_process" ]]; then
+        log_warning "Processo encontrado na porta 80: PID $port_80_process"
+
+        # Identificar nome do serviço
+        port_80_service=$(ps -p "$port_80_process" -o comm= 2>/dev/null || echo "desconhecido")
+        log_warning "Serviço na porta 80: $port_80_service"
+
+        # Tentar resolver conflito baseado no serviço
+        case "$port_80_service" in
+            "nginx"|"apache2"|"httpd"|"lighttpd")
+                log_info "Tentando parar serviço $port_80_service..."
+                systemctl stop "$port_80_service" 2>/dev/null || true
+                systemctl disable "$port_80_service" 2>/dev/null || true
+                sleep 2
+
+                # Verificar se a porta foi liberada
+                if check_port_availability 80; then
+                    log_success "✅ Porta 80 liberada após parar $port_80_service"
+                    conflict_resolved=true
+                else
+                    log_error "❌ Falha ao liberar porta 80 parando $port_80_service"
+                fi
+                ;;
+            "flame")
+                log_info "Flame já está rodando na porta 80 - verificando configuração..."
+                if systemctl is-active --quiet flame; then
+                    log_success "✅ Flame já está configurado corretamente na porta 80"
+                    conflict_resolved=true
+                else
+                    log_warning "Flame encontrado mas inativo - reiniciando..."
+                    systemctl restart flame 2>/dev/null || true
+                    sleep 3
+                    if systemctl is-active --quiet flame && check_port_usage 80 "flame"; then
+                        log_success "✅ Flame recuperado e funcionando na porta 80"
+                        conflict_resolved=true
+                    fi
+                fi
+                ;;
+            *)
+                log_warning "Serviço desconhecido ($port_80_service) usando porta 80"
+                log_info "Tentando matar processo PID $port_80_process..."
+                kill -15 "$port_80_process" 2>/dev/null || true
+                sleep 2
+                kill -9 "$port_80_process" 2>/dev/null || true
+                sleep 1
+
+                if check_port_availability 80; then
+                    log_success "✅ Porta 80 liberada após matar processo"
+                    conflict_resolved=true
+                else
+                    log_error "❌ Falha ao liberar porta 80"
+                fi
+                ;;
+        esac
+    else
+        log_success "✅ Porta 80 já está livre"
+        conflict_resolved=true
+    fi
+
+    # Verificação final
+    if [[ "$conflict_resolved" == "true" ]]; then
+        log_success "Conflito na porta 80 resolvido com sucesso"
+        return 0
+    else
+        log_error "Não foi possível resolver o conflito na porta 80"
+        return 1
+    fi
+}
+
+offer_flame_port_alternative() {
+    log_info "Oferecendo alternativas para configuração do Flame..."
+
+    echo ""
+    echo "🔧 Opções para resolver o conflito na porta 80:"
+    echo ""
+    echo "1) Tentar liberar porta 80 automaticamente (recomendado)"
+    echo "2) Configurar Flame para porta alternativa (8080)"
+    echo "3) Configurar Flame para porta alternativa (5000)"
+    echo "4) Pular instalação do Flame"
+    echo "0) Cancelar instalação"
+    echo ""
+
+    read -p "Selecione uma opção [0-4]: " port_choice
+
+    case "$port_choice" in
+        1)
+            log_info "Tentando liberar porta 80 automaticamente..."
+            if identify_and_resolve_port_80_conflict; then
+                log_success "Porta 80 liberada com sucesso"
+                echo "80"  # Retorna porta 80
+                return 0
+            else
+                log_error "Falha ao liberar porta 80"
+                echo "0"  # Indica falha
+                return 1
+            fi
+            ;;
+        2)
+            log_info "Configurando Flame para porta 8080"
+            echo "8080"
+            return 0
+            ;;
+        3)
+            log_info "Configurando Flame para porta 5000"
+            echo "5000"
+            return 0
+            ;;
+        4)
+            log_info "Pulando instalação do Flame"
+            echo "skip"
+            return 0
+            ;;
+        0|*)
+            log_error "Instalação cancelada pelo usuário"
+            echo "cancel"
+            return 1
+            ;;
+    esac
+}
+
+reconfigure_flame_dashboard() {
+    log_info "Iniciando reconfiguração do Flame Dashboard..."
+
+    # Parar temporariamente o serviço flame
+    systemctl stop flame 2>/dev/null || true
+
+    # Garantir que Pi-hole esteja configurado para porta 8090
+    ensure_pihole_port_8090
 
     # Atualizar configuração do serviço flame para usar porta 80
     log_info "Atualizando serviço flame para usar porta 80..."
@@ -1391,13 +1583,13 @@ manage_swap_for_build() {
     if [[ $total_mem_mb -lt 1500 ]]; then
         if [[ "$action" == "increase" ]]; then
             log_warning "Memória RAM (${total_mem_mb}MB) é baixa. Aumentando o swap para 2GB para a compilação."
-            
+
             # Desativa o swap existente, se houver
             if swapon --show | grep -q '/swapfile'; then
                 log_info "Desativando swap principal temporariamente."
                 swapoff /swapfile
             fi
-            
+
             # Cria e ativa um novo swap de 2GB
             log_info "Criando arquivo de swap temporário de 2GB (/swapfile.build)..."
             fallocate -l 2G /swapfile.build
@@ -1405,15 +1597,15 @@ manage_swap_for_build() {
             mkswap /swapfile.build
             swapon /swapfile.build
             log_success "Swap de compilação (2GB) ativado."
-            
+
         elif [[ "$action" == "revert" ]]; then
             log_info "Compilação finalizada. Removendo swap temporário."
-            
+
             if swapon --show | grep -q '/swapfile.build'; then
                 swapoff /swapfile.build
             fi
             rm -f /swapfile.build
-            
+
             # Reativa o swap original se ele existir
             if [[ -f /swapfile ]]; then
                 log_info "Reativando swap principal."
@@ -1491,13 +1683,25 @@ verify_port_configuration() {
     log_info "Verificando configuração de portas..."
 
     local port_issues=0
+    local flame_port="80"
 
-    # Verificar porta 80 (Flame Dashboard)
-    if ! check_port_availability 80; then
-        log_error "Porta 80 está ocupada - Flame Dashboard não conseguirá iniciar"
-        ((port_issues++))
+    # Verificar porta do Flame (pode ser 80, 8080 ou 5000)
+    if systemctl is-active --quiet flame; then
+        # Obter porta do arquivo de serviço
+        if [[ -f /etc/systemd/system/flame.service ]]; then
+            flame_port=$(grep "Environment=PORT=" /etc/systemd/system/flame.service | cut -d'=' -f2)
+            [[ -z "$flame_port" ]] && flame_port="80"
+        fi
+
+        if ! check_port_usage "$flame_port" "flame"; then
+            log_error "Porta $flame_port está ocupada ou Flame não está respondendo"
+            ((port_issues++))
+        else
+            log_success "Flame Dashboard está ativo na porta $flame_port"
+        fi
     else
-        log_success "Porta 80 disponível para Flame Dashboard"
+        log_warning "Flame Dashboard está inativo"
+        ((port_issues++))
     fi
 
     # Verificar porta 8090 (Pi-hole via lighttpd)
@@ -1596,12 +1800,22 @@ verify_service_accessibility() {
     log_info "Verificando acessibilidade dos serviços..."
 
     local access_issues=0
+    local flame_port="80"
 
-    # Testar Flame Dashboard (porta 80)
-    if test_http_endpoint "http://localhost:80/" 5; then
-        log_success "✅ Flame Dashboard acessível na porta 80"
+    # Obter porta do Flame
+    if systemctl is-active --quiet flame && [[ -f /etc/systemd/system/flame.service ]]; then
+        flame_port=$(grep "Environment=PORT=" /etc/systemd/system/flame.service | cut -d'=' -f2)
+        [[ -z "$flame_port" ]] && flame_port="80"
+    fi
+
+    # Testar Flame Dashboard na porta correta
+    local flame_url="http://localhost"
+    [[ "$flame_port" != "80" ]] && flame_url="$flame_url:$flame_port"
+
+    if test_http_endpoint "$flame_url/" 5; then
+        log_success "✅ Flame Dashboard acessível na porta $flame_port"
     else
-        log_error "❌ Flame Dashboard não responde na porta 80"
+        log_error "❌ Flame Dashboard não responde na porta $flame_port"
         ((access_issues++))
     fi
 
@@ -2031,7 +2245,19 @@ quick_install() {
         echo ""
         echo "🎉 BoxServer v7.0 instalado com sucesso!"
         echo ""
-        echo "🏠 Flame Dashboard: http://$SERVER_IP"
+
+        # Obter porta do Flame para mostrar URL correta
+        local flame_display_port="80"
+        if systemctl is-active --quiet flame && [[ -f /etc/systemd/system/flame.service ]]; then
+            flame_display_port=$(grep "Environment=PORT=" /etc/systemd/system/flame.service | cut -d'=' -f2)
+            [[ -z "$flame_display_port" ]] && flame_display_port="80"
+        fi
+
+        if [[ "$flame_display_port" == "80" ]]; then
+            echo "🏠 Flame Dashboard: http://$SERVER_IP"
+        else
+            echo "🏠 Flame Dashboard: http://$SERVER_IP:$flame_display_port"
+        fi
         echo "🛡️  Pi-hole: http://$SERVER_IP:8090/admin"
         echo "📁 FileBrowser: http://$SERVER_IP:8082"
         echo "🔗 Samba: \\\\$SERVER_IP\\shared"
@@ -2631,6 +2857,13 @@ quick_validation() {
     echo "================================"
 
     local issues=0
+    local flame_port="80"
+
+    # Obter porta do Flame
+    if systemctl is-active --quiet flame && [[ -f /etc/systemd/system/flame.service ]]; then
+        flame_port=$(grep "Environment=PORT=" /etc/systemd/system/flame.service | cut -d'=' -f2)
+        [[ -z "$flame_port" ]] && flame_port="80"
+    fi
 
     # Verificar serviços essenciais
     echo "Verificando serviços essenciais..."
@@ -2641,14 +2874,17 @@ quick_validation() {
 
     # Verificar portas
     echo "Verificando portas essenciais..."
-    if ! check_port_availability 80; then
-        echo "❌ Porta 80 ocupada (Flame Dashboard)"
+    if systemctl is-active --quiet flame && ! check_port_usage "$flame_port" "flame"; then
+        echo "❌ Porta $flame_port não está sendo usada pelo Flame"
         ((issues++))
     fi
 
     # Testar acesso rápido
     echo "Testando acessibilidade..."
-    if test_http_endpoint "http://localhost:80/" 2; then
+    local flame_url="http://localhost"
+    [[ "$flame_port" != "80" ]] && flame_url="$flame_url:$flame_port"
+
+    if test_http_endpoint "$flame_url/" 2; then
         echo "✅ Flame Dashboard acessível"
     else
         echo "❌ Flame Dashboard inacessível"
