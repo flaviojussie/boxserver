@@ -484,7 +484,7 @@ install_firewall() {
     # Definir portas para abrir
     declare -A ports_to_open=(
         ["22/tcp"]="SSH"
-        ["80/tcp"]="Dashboard"
+        ["80/tcp"]="Flame Dashboard"
         ["443/tcp"]="HTTPS"
         ["5000/tcp"]="WireGuard-UI"
         ["51820/udp"]="WireGuard VPN"
@@ -823,11 +823,35 @@ EOF
 }
 
 install_flame_dashboard() {
-    log_step "Instalando Flame Dashboard (Node.js-based)"
+    log_step "Instalando/Configurando Flame Dashboard (Node.js-based)"
 
     if [[ "$DASHBOARD_INSTALLED" == "true" ]]; then
-        log_info "Flame Dashboard já instalado, pulando..."
-        return 0
+        log_info "Flame Dashboard já instalado, verificando configuração..."
+
+        # Verificar se o serviço flame existe
+        if systemctl list-unit-files | grep -q "flame.service"; then
+            if systemctl is-active --quiet flame; then
+                log_info "Reconfigurando Flame Dashboard existente..."
+                reconfigure_flame_dashboard
+                return $?
+            else
+                log_warning "Flame Dashboard existe mas está inativo - tentando reiniciar"
+                systemctl start flame 2>/dev/null || true
+                sleep 2
+                if systemctl is-active --quiet flame; then
+                    log_info "Flame reiniciado, reconfigurando..."
+                    reconfigure_flame_dashboard
+                    return $?
+                else
+                    log_warning "Flame não conseguiu iniciar - reinstalando"
+                    # Continuar com instalação normal
+                fi
+            fi
+        else
+            log_warning "Flame Dashboard marcado como instalado mas serviço não existe"
+            log_info "Reinstalando Flame Dashboard..."
+            # Continuar com instalação normal
+        fi
     fi
 
     # Verificar espaço em disco mínimo (500MB)
@@ -939,17 +963,34 @@ RestartSec=5
 # Variáveis de Ambiente
 Environment=NODE_ENV=production
 Environment=PASSWORD=${flame_password}
-Environment=PORT=5005
+Environment=PORT=80
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Configurar proxy reverso para Flame na porta 80
-    if ! install_flame_proxy; then
-        log_error "Falha ao configurar proxy reverso nginx"
-        return 1
+    # Garantir que Pi-hole esteja configurado para porta 8090
+    log_info "Verificando e garantindo configuração do Pi-hole na porta 8090..."
+
+    # Parar serviços web que possam estar usando porta 80
+    systemctl stop nginx apache2 httpd lighttpd 2>/dev/null || true
+
+    # Forçar Pi-hole a usar porta 8090
+    if systemctl is-active --quiet pihole-FTL; then
+        log_info "Reconfigurando Pi-hole para porta 8090..."
+        echo "BLOCKINGMODE=NULL" > /etc/pihole/pihole-FTL.conf
+        systemctl restart pihole-FTL 2>/dev/null || true
     fi
+
+    # Configurar lighttpd para porta 8090
+    if [[ -f /etc/lighttpd/lighttpd.conf ]]; then
+        sed -i 's/^server\.port.*/server.port = 8090/' /etc/lighttpd/lighttpd.conf 2>/dev/null || true
+    fi
+
+    # Reiniciar lighttpd na porta 8090
+    systemctl restart lighttpd 2>/dev/null || true
+
+    log_success "Pi-hole configurado para porta 8090, porta 80 liberada para Flame"
 
     systemctl daemon-reload
 
@@ -965,6 +1006,23 @@ EOF
     sleep 3
     if systemctl is-active --quiet flame; then
         log_success "Flame Dashboard está ativo e rodando"
+
+        # Verificação final de portas
+        log_info "Executando verificação final de portas..."
+        sleep 2
+
+        if check_port_usage 80 "flame"; then
+            log_success "✅ Flame Dashboard está na porta 80"
+        else
+            log_warning "⚠️  Flame pode não estar na porta 80 corretamente"
+        fi
+
+        if check_port_usage 8090 "lighttpd"; then
+            log_success "✅ Pi-hole está na porta 8090"
+        else
+            log_warning "⚠️  Pi-hole pode não estar na porta 8090 corretamente"
+        fi
+
         DASHBOARD_INSTALLED=true
         save_config
     else
@@ -974,6 +1032,92 @@ EOF
     fi
 
     log_success "Flame Dashboard instalado e configurado com sucesso"
+    log_info "Flame Dashboard estará disponível em: http://$SERVER_IP"
+    log_info "Pi-hole Admin estará disponível em: http://$SERVER_IP:8090/admin"
+}
+
+reconfigure_flame_dashboard() {
+    log_info "Iniciando reconfiguração do Flame Dashboard..."
+
+    # Parar temporariamente o serviço flame
+    systemctl stop flame 2>/dev/null || true
+
+    # Garantir que Pi-hole esteja configurado para porta 8090
+    log_info "Reconfigurando Pi-hole para porta 8090..."
+
+    # Parar serviços web que possam estar usando porta 80
+    systemctl stop nginx apache2 httpd 2>/dev/null || true
+
+    # Forçar Pi-hole a usar porta 8090
+    if systemctl is-active --quiet pihole-FTL; then
+        echo "BLOCKINGMODE=NULL" > /etc/pihole/pihole-FTL.conf
+        systemctl restart pihole-FTL 2>/dev/null || true
+    fi
+
+    # Configurar lighttpd para porta 8090
+    if [[ -f /etc/lighttpd/lighttpd.conf ]]; then
+        sed -i 's/^server\.port.*/server.port = 8090/' /etc/lighttpd/lighttpd.conf 2>/dev/null || true
+    fi
+
+    # Reiniciar lighttpd na porta 8090
+    systemctl restart lighttpd 2>/dev/null || true
+
+    # Atualizar configuração do serviço flame para usar porta 80
+    log_info "Atualizando serviço flame para usar porta 80..."
+
+    if [[ -f /etc/systemd/system/flame.service ]]; then
+        # Fazer backup do serviço atual
+        cp /etc/systemd/system/flame.service /etc/systemd/system/flame.service.backup
+
+        # Atualizar o arquivo de serviço para usar porta 80
+        sed -i 's/Environment=PORT=[0-9]*/Environment=PORT=80/' /etc/systemd/system/flame.service
+
+        # Recarregar systemd
+        systemctl daemon-reload
+
+        log_success "Configuração do serviço flame atualizada para porta 80"
+    else
+        log_error "Arquivo de serviço flame não encontrado - reinstalação necessária"
+        return 1
+    fi
+
+    # Iniciar serviço flame
+    log_info "Reiniciando Flame Dashboard..."
+    if systemctl start flame; then
+        sleep 3
+        if systemctl is-active --quiet flame; then
+            log_success "Flame Dashboard reiniciado com sucesso na porta 80"
+        else
+            log_error "Flame Dashboard não iniciou após reconfiguração"
+            journalctl -u flame -n 10
+            return 1
+        fi
+    else
+        log_error "Falha ao iniciar Flame Dashboard após reconfiguração"
+        return 1
+    fi
+
+    # Verificação final
+    log_info "Executando verificação pós-reconfiguração..."
+    sleep 2
+
+    if check_port_usage 80 "flame"; then
+        log_success "✅ Flame Dashboard está na porta 80"
+    else
+        log_warning "⚠️  Flame pode não estar na porta 80 corretamente"
+    fi
+
+    if check_port_usage 8090 "lighttpd"; then
+        log_success "✅ Pi-hole está na porta 8090"
+    else
+        log_warning "⚠️  Pi-hole pode não estar na porta 8090 corretamente"
+    fi
+
+    log_success "Reconfiguração do Flame Dashboard concluída com sucesso"
+    log_info "Flame Dashboard: http://$SERVER_IP"
+    log_info "Pi-hole Admin: http://$SERVER_IP:8090/admin"
+
+    return 0
 }
 
 install_flame_proxy() {
@@ -1348,12 +1492,12 @@ verify_port_configuration() {
 
     local port_issues=0
 
-    # Verificar porta 80 (Dashboard)
+    # Verificar porta 80 (Flame Dashboard)
     if ! check_port_availability 80; then
-        log_error "Porta 80 está ocupada - Dashboard não conseguirá iniciar"
+        log_error "Porta 80 está ocupada - Flame Dashboard não conseguirá iniciar"
         ((port_issues++))
     else
-        log_success "Porta 80 disponível para Dashboard"
+        log_success "Porta 80 disponível para Flame Dashboard"
     fi
 
     # Verificar porta 8090 (Pi-hole via lighttpd)
@@ -1399,7 +1543,6 @@ verify_essential_services() {
     local service_issues=0
     declare -A essential_services=(
         ["flame"]="Flame Dashboard"
-        ["nginx"]="Nginx Proxy"
         ["pihole-FTL"]="Pi-hole FTL"
         ["lighttpd"]="Lighttpd Web Server"
         ["smbd"]="Samba"
@@ -1454,19 +1597,12 @@ verify_service_accessibility() {
 
     local access_issues=0
 
-    # Testar Flame Dashboard (porta 80 via nginx proxy)
-    if test_http_endpoint "http://localhost:80/health" 5; then
+    # Testar Flame Dashboard (porta 80)
+    if test_http_endpoint "http://localhost:80/" 5; then
         log_success "✅ Flame Dashboard acessível na porta 80"
     else
         log_error "❌ Flame Dashboard não responde na porta 80"
         ((access_issues++))
-    fi
-
-    # Testar Flame diretamente na porta 5005
-    if test_http_endpoint "http://localhost:5005/" 5; then
-        log_success "✅ Flame rodando na porta 5005"
-    else
-        log_warning "⚠️  Flame não responde na porta 5005"
     fi
 
     # Testar Pi-hole na porta 8090
@@ -1511,8 +1647,8 @@ resolve_residual_conflicts() {
             # Tentar resolver conflito
             case "$port" in
                 80)
-                    # Matar processo na porta 80 (exceto nosso nginx)
-                    if [[ "$conflicting_process" != *"nginx"* ]]; then
+                    # Matar processo na porta 80 (exceto nosso flame)
+                    if [[ "$conflicting_process" != *"flame"* ]]; then
                         kill_process_on_port "$port"
                         ((conflicts_resolved++))
                         log_success "Conflito na porta 80 resolvido"
@@ -1610,24 +1746,11 @@ test_dashboard_integration() {
     if systemctl is-active --quiet flame; then
         log_success "✅ Serviço flame está ativo"
 
-        # Testar Flame na porta 5005
-        if test_http_endpoint "http://localhost:5005/" 3; then
-            log_success "✅ Flame acessível na porta 5005"
+        # Testar Flame na porta 80
+        if test_http_endpoint "http://localhost:80/" 3; then
+            log_success "✅ Flame acessível na porta 80"
         else
-            log_error "❌ Flame não responde na porta 5005"
-            ((integration_issues++))
-        fi
-
-        # Verificar se o proxy nginx está funcionando
-        if systemctl is-active --quiet nginx; then
-            log_success "✅ Proxy nginx ativo"
-            if test_http_endpoint "http://localhost:80/health" 3; then
-                log_success "✅ Proxy nginx respondendo na porta 80"
-            else
-                log_warning "⚠️  Proxy nginx não responde na porta 80"
-            fi
-        else
-            log_error "❌ Proxy nginx inativo"
+            log_error "❌ Flame não responde na porta 80"
             ((integration_issues++))
         fi
 
@@ -1736,7 +1859,7 @@ kill_process_on_port() {
 }
 
 check_duplicate_services() {
-    local services=("nginx" "apache2" "httpd")
+    local services=("apache2" "httpd")
 
     for service in "${services[@]}"; do
         if systemctl is-active --quiet "$service"; then
@@ -2094,12 +2217,13 @@ manage_services() {
         echo "4) 📊 Verificar uso de recursos"
         echo "5) 🔍 Diagnosticar problemas"
         echo "6) 🛠️  Reiniciar Flame Dashboard"
-        echo "7) 🔍 Validação Completa do Sistema"
-        echo "8) 🔄 Atualizar sistema"
+        echo "7) 🔄 Reconfigurar Flame Dashboard (Portas)"
+        echo "8) 🔍 Validação Completa do Sistema"
+        echo "9) 🔄 Atualizar sistema"
         echo "0) 🔙 Voltar"
         echo ""
 
-        read -p "Selecione uma opção [0-8]: " choice
+        read -p "Selecione uma opção [0-9]: " choice
 
         case $choice in
             1)
@@ -2154,13 +2278,21 @@ manage_services() {
                 ;;
             6)
                 log_step "Reiniciando Flame Dashboard"
-                systemctl restart flame nginx 2>/dev/null || true
+                systemctl restart flame 2>/dev/null || true
                 log_success "Flame Dashboard reiniciado"
                 ;;
             7)
-                post_install_verification
+                log_step "Reconfigurando Flame Dashboard"
+                if systemctl is-active --quiet flame; then
+                    reconfigure_flame_dashboard
+                else
+                    log_error "Flame Dashboard não está ativo. Instale primeiro."
+                fi
                 ;;
             8)
+                post_install_verification
+                ;;
+            9)
                 log_step "Atualizando sistema"
                 apt update && apt upgrade -y
                 log_success "Sistema atualizado"
@@ -2503,7 +2635,6 @@ quick_validation() {
     # Verificar serviços essenciais
     echo "Verificando serviços essenciais..."
     systemctl is-active --quiet flame || { echo "❌ Flame Dashboard inativo"; ((issues++)); }
-    systemctl is-active --quiet nginx || { echo "❌ Nginx Proxy inativo"; ((issues++)); }
     systemctl is-active --quiet pihole-FTL || { echo "❌ Pi-hole FTL inativo"; ((issues++)); }
     systemctl is-active --quiet lighttpd || { echo "❌ Lighttpd inativo"; ((issues++)); }
     systemctl is-active --quiet smbd || { echo "❌ Samba inativo"; ((issues++)); }
@@ -2511,13 +2642,13 @@ quick_validation() {
     # Verificar portas
     echo "Verificando portas essenciais..."
     if ! check_port_availability 80; then
-        echo "❌ Porta 80 ocupada (Nginx/Flame)"
+        echo "❌ Porta 80 ocupada (Flame Dashboard)"
         ((issues++))
     fi
 
     # Testar acesso rápido
     echo "Testando acessibilidade..."
-    if test_http_endpoint "http://localhost:80/health" 2; then
+    if test_http_endpoint "http://localhost:80/" 2; then
         echo "✅ Flame Dashboard acessível"
     else
         echo "❌ Flame Dashboard inacessível"
