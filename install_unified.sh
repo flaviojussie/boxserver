@@ -823,7 +823,7 @@ EOF
 }
 
 install_flame_dashboard() {
-    log_step "Instalando Flame Dashboard (Go-based)"
+    log_step "Instalando Flame Dashboard (Node.js-based)"
 
     if [[ "$DASHBOARD_INSTALLED" == "true" ]]; then
         log_info "Flame Dashboard já instalado, pulando..."
@@ -837,18 +837,20 @@ install_flame_dashboard() {
         return 1
     fi
 
-    # Instalar Go se necessário
-    if ! command -v go &> /dev/null; then
-        if ! install_go_arch_specific; then
-            log_error "Não foi possível instalar Go. Abortando instalação do Flame."
+    # Instalar Node.js e npm se necessário
+    if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
+        log_info "Instalando Node.js e npm..."
+        # Usar NodeSource para uma versão moderna do Node.js
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+        apt-get install -y nodejs
+        if ! command -v node &> /dev/null; then
+            log_error "Falha ao instalar Node.js. Abortando instalação do Flame."
             return 1
         fi
     fi
+    log_success "Node.js e npm estão instalados."
 
-    # Baixar e compilar Flame
-    log_info "Baixando e compilando Flame..."
-
-    # Verificar se Git está instalado
+    # Instalar Git se necessário
     if ! command -v git &> /dev/null; then
         log_info "Instalando Git..."
         apt install -y git
@@ -860,105 +862,59 @@ install_flame_dashboard() {
         rm -rf /opt/flame
     fi
 
-    # Clonar repositório do Flame com timeout
-    if timeout 120 git clone https://github.com/pawelmalak/flame.git /opt/flame; then
-        log_success "Repositório do Flame clonado com sucesso"
-    else
-        log_error "Falha ao clonar repositório do Flame"
+    # Clonar repositório
+    log_info "Clonando repositório do Flame..."
+    if ! git clone https://github.com/pawelmalak/flame.git /opt/flame; then
+        log_error "Falha ao clonar repositório do Flame."
         return 1
     fi
+    log_success "Repositório do Flame clonado com sucesso."
 
-    # Compilar Flame
-    log_info "Compilando Flame..."
-    
-    # Inicializar módulo Go
     cd /opt/flame
-    go mod init flame 2>/dev/null || true
-    
-    if timeout 180 go build -o flame; then
-        log_success "Flame compilado com sucesso"
 
-        # Verificar se o binário foi criado
-        if [[ -f /opt/flame/flame ]]; then
-            chmod +x /opt/flame/flame
-            log_success "Binário Flame criado e com permissões adequadas"
-        else
-            log_error "Binário Flame não foi criado após compilação"
-            return 1
-        fi
-    else
-        log_error "Falha ao compilar Flame (timeout de 3 minutos excedido)"
+    # Instalar dependências e construir
+    log_info "Instalando dependências do Flame (npm run dev-init)..."
+    if ! npm run dev-init; then
+        log_error "Falha ao executar 'npm run dev-init'."
         return 1
     fi
+    log_success "Dependências instaladas."
 
-    # Criar usuário para Flame
+    log_info "Construindo o frontend do Flame (npm run build)..."
+    if ! (cd client && npm run build); then
+        log_error "Falha ao construir o frontend."
+        return 1
+    fi
+    log_success "Frontend construído com sucesso."
+
+    # Criar usuário e diretórios
     useradd -r -s /bin/false flame 2>/dev/null || true
+    mkdir -p /opt/flame/data
     chown -R flame:flame /opt/flame
 
-    # Criar configuração básica do Flame
-    cat > /opt/flame/.flame.yml << EOF
-# Flame Configuration for BoxServer
-applications:
-  - name: "🛡️ Pi-hole"
-    url: "http://${SERVER_IP}:8090/admin"
-    icon: "shield-alt"
+    # Criar serviço systemd
+    local flame_password=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
+    log_warning "A senha de autenticação do Flame foi definida para: ${flame_password}"
+    log_warning "ANOTE ESTA SENHA! Ela será necessária para configurar o Flame."
 
-  - name: "📁 FileBrowser"
-    url: "http://${SERVER_IP}:8082"
-    icon: "folder-open"
-
-  - name: "🔗 Samba"
-    url: "smb://${SERVER_IP}/shared"
-    icon: "network-wired"
-    description: "Compartilhamento de arquivos"
-
-  - name: "🔒 WireGuard"
-    url: "http://${SERVER_IP}:5000"
-    icon: "lock"
-
-  - name: "⬇️ qBittorrent"
-    url: "http://${SERVER_IP}:9091"
-    icon: "download"
-
-  - name: "🔄 Syncthing"
-    url: "http://${SERVER_IP}:8384"
-    icon: "sync"
-
-  - name: "🌐 Flame Settings"
-    url: "http://${SERVER_IP}:5005/settings"
-    icon: "cog"
-    description: "Configurações do Dashboard"
-
-settings:
-  header: "BoxServer Dashboard"
-  pageTitle: "BoxServer v7.0"
-  logo: "🏠"
-  targets:
-    - name: "Local"
-      color: "#4cc9f0"
-
-  proxy:
-    title: "Proxy"
-    target: "http://${SERVER_IP}:5005"
-    auth:
-      password: "boxserver2024"
-EOF
-
-    # Criar serviço systemd para Flame
     cat > /etc/systemd/system/flame.service << EOF
 [Unit]
 Description=Flame Dashboard
 After=network.target
 
 [Service]
+Type=simple
 User=flame
 Group=flame
 WorkingDirectory=/opt/flame
-ExecStart=/opt/flame/flame
+ExecStart=/usr/bin/node server.js
 Restart=on-failure
 RestartSec=5
-Environment=FLAME_PORT=5005
-Environment=FLAME_CONFIG=/opt/flame/.flame.yml
+
+# Variáveis de Ambiente
+Environment=NODE_ENV=production
+Environment=PASSWORD=${flame_password}
+Environment=PORT=5005
 
 [Install]
 WantedBy=multi-user.target
@@ -973,17 +929,10 @@ EOF
     systemctl daemon-reload
 
     # Habilitar e iniciar serviços
-    if systemctl enable flame.service; then
-        log_success "Serviço flame habilitado"
+    if systemctl enable --now flame.service; then
+        log_success "Serviço flame habilitado e iniciado"
     else
-        log_error "Falha ao habilitar serviço flame"
-        return 1
-    fi
-
-    if systemctl start flame.service; then
-        log_success "Serviço flame iniciado"
-    else
-        log_error "Falha ao iniciar serviço flame"
+        log_error "Falha ao habilitar/iniciar serviço flame"
         return 1
     fi
 
@@ -995,6 +944,7 @@ EOF
         save_config
     else
         log_error "Flame Dashboard não iniciou corretamente"
+        journalctl -u flame -n 20
         return 1
     fi
 
